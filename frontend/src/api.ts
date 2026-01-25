@@ -6,6 +6,11 @@ import type {
   FloodEpisode,
   EpisodeAnalysis,
   RiskScore,
+  MultiStationData,
+  NetatmoData,
+  InfoclimatData,
+  DataSource,
+  ForecastData,
 } from './types'
 
 const API_BASE = '/api'
@@ -42,6 +47,43 @@ export async function getTimelineData(
   if (end) params.set('end', end)
 
   return fetchJson<TimelineData>(`${API_BASE}/timeline?${params}`)
+}
+
+// Multi-station timeline data
+export interface StationTimelineData {
+  name: string
+  river: string
+  distance_km: number
+  thresholds: {
+    yellow?: number
+    orange?: number
+    red?: number
+  }
+  data: {
+    timestamp: string
+    height_m: number
+  }[]
+}
+
+export interface MultiStationTimelineData {
+  start: string
+  end: string
+  stations: Record<string, StationTimelineData>
+}
+
+export async function getMultiStationTimeline(
+  start?: string,
+  end?: string,
+  stationIds?: string[]
+): Promise<MultiStationTimelineData> {
+  const params = new URLSearchParams()
+  if (start) params.set('start', start)
+  if (end) params.set('end', end)
+  if (stationIds && stationIds.length > 0) {
+    params.set('station_ids', stationIds.join(','))
+  }
+
+  return fetchJson<MultiStationTimelineData>(`${API_BASE}/timeline/stations?${params}`)
 }
 
 // Episodes
@@ -116,4 +158,29 @@ export async function simulateRisk(params: {
 // Status
 export async function getStatus(): Promise<any> {
   return fetchJson<any>(`${API_BASE}/status`)
+}
+
+// Stations
+export async function getStations(): Promise<MultiStationData> {
+  return fetchJson<MultiStationData>(`${API_BASE}/realtime/stations`)
+}
+
+// Netatmo
+export async function getNetatmoData(): Promise<NetatmoData> {
+  return fetchJson<NetatmoData>(`${API_BASE}/realtime/netatmo`)
+}
+
+// Infoclimat
+export async function getInfoclimatData(): Promise<InfoclimatData> {
+  return fetchJson<InfoclimatData>(`${API_BASE}/realtime/infoclimat`)
+}
+
+// Data sources status
+export async function getDataSourcesStatus(): Promise<{ sources: DataSource[] }> {
+  return fetchJson<{ sources: DataSource[] }>(`${API_BASE}/realtime/sources`)
+}
+
+// Forecast
+export async function getForecast(hours: number = 48): Promise<ForecastData> {
+  return fetchJson<ForecastData>(`${API_BASE}/risk/forecast?hours=${hours}`)
 }

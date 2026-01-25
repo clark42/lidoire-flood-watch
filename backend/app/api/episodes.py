@@ -18,6 +18,11 @@ from app.services.data_store import (
     delete_episode,
 )
 from app.services.episode_analyzer import analyze_episode
+from app.services.episode_analyzer_v2 import (
+    analyze_episode as analyze_episode_v2,
+    compare_episodes,
+    get_station_max_levels,
+)
 
 router = APIRouter()
 
@@ -196,4 +201,148 @@ async def extract_patterns(min_episodes: int = Query(3, ge=2, le=20)):
     return {
         "status": "success",
         "patterns": patterns,
+    }
+
+
+# ============================================================================
+# V2 Endpoints - Multi-station analysis with Hub'Eau
+# ============================================================================
+
+
+@router.post("/analyze-v2", response_model=EpisodeAnalysis)
+async def analyze_flood_episode_v2(
+    date: datetime = Query(..., description="Date/time of the flood peak"),
+    severity: int = Query(3, ge=1, le=5, description="Estimated severity"),
+    description: str = Query("", description="Description of the event"),
+    hours_before: int = Query(72, ge=24, le=168, description="Hours of context before"),
+    hours_after: int = Query(24, ge=0, le=72, description="Hours of context after"),
+):
+    """
+    Analyze a flood episode using the enhanced v2 multi-station model.
+
+    This endpoint fetches historical data from:
+    - Hub'Eau: All configured stations (Dordogne, Isle, Dronne)
+    - Open-Meteo Archive: Historical rainfall
+    - Tide archives: Historical tide data
+
+    Returns a comprehensive analysis with:
+    - River levels from all stations around the event
+    - Rainfall cumulative and patterns
+    - Tide context
+    - Identified contributing factors
+
+    Example: POST /api/episodes/analyze-v2?date=2024-01-15T14:00:00&severity=4
+    """
+    analysis = await analyze_episode_v2(
+        episode_date=date,
+        severity=severity,
+        description=description,
+        hours_before=hours_before,
+        hours_after=hours_after,
+    )
+    return analysis
+
+
+@router.post("/compare")
+async def compare_flood_episodes(
+    dates: list[datetime] = Query(..., description="List of episode dates to compare"),
+):
+    """
+    Compare multiple flood episodes to identify common patterns.
+
+    Provide a list of known flood dates and get a comparison showing:
+    - Rainfall before each event
+    - River levels at each station
+    - Tide coefficients
+    - Common contributing factors
+
+    Example: POST /api/episodes/compare?dates=2024-01-15T14:00&dates=2023-12-10T08:00
+    """
+    if len(dates) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Need at least 2 dates to compare",
+        )
+
+    comparisons = await compare_episodes(dates)
+
+    # Calculate summary statistics
+    rain_24h_values = [c["rain_24h_mm"] for c in comparisons]
+    rain_72h_values = [c["rain_72h_mm"] for c in comparisons]
+    dordogne_values = [c["dordogne_max_m"] for c in comparisons]
+    tide_values = [c["tide_coef"] for c in comparisons]
+
+    summary = {
+        "episode_count": len(comparisons),
+        "rain_24h": {
+            "min": min(rain_24h_values),
+            "max": max(rain_24h_values),
+            "avg": sum(rain_24h_values) / len(rain_24h_values),
+        },
+        "rain_72h": {
+            "min": min(rain_72h_values),
+            "max": max(rain_72h_values),
+            "avg": sum(rain_72h_values) / len(rain_72h_values),
+        },
+        "dordogne_max": {
+            "min": min(dordogne_values),
+            "max": max(dordogne_values),
+            "avg": sum(dordogne_values) / len(dordogne_values),
+        },
+        "tide_coef": {
+            "min": min(tide_values),
+            "max": max(tide_values),
+            "avg": sum(tide_values) / len(tide_values),
+        },
+    }
+
+    # Find common criteria
+    all_criteria = []
+    for c in comparisons:
+        all_criteria.extend(c.get("criteria", []))
+
+    # Count criteria occurrences
+    criteria_counts = {}
+    for criterion in all_criteria:
+        # Normalize criterion (remove numbers for grouping)
+        base = criterion.split(":")[0].strip()
+        criteria_counts[base] = criteria_counts.get(base, 0) + 1
+
+    common_criteria = [
+        {"criterion": k, "occurrences": v, "frequency": v / len(comparisons)}
+        for k, v in criteria_counts.items()
+        if v >= len(comparisons) * 0.5  # Present in at least 50% of episodes
+    ]
+    common_criteria.sort(key=lambda x: x["occurrences"], reverse=True)
+
+    return {
+        "episodes": comparisons,
+        "summary": summary,
+        "common_criteria": common_criteria,
+    }
+
+
+@router.get("/station-extremes")
+async def get_station_extremes(
+    start_date: datetime = Query(..., description="Start of analysis period"),
+    end_date: datetime = Query(..., description="End of analysis period"),
+):
+    """
+    Get maximum recorded levels for each station over a period.
+
+    Useful for:
+    - Identifying extreme events
+    - Calibrating threshold values
+    - Understanding historical ranges
+
+    Example: GET /api/episodes/station-extremes?start_date=2020-01-01&end_date=2024-12-31
+    """
+    max_levels = await get_station_max_levels(start_date, end_date)
+
+    return {
+        "period": {
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat(),
+        },
+        "stations": max_levels,
     }

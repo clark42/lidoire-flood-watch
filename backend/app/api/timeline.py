@@ -55,6 +55,87 @@ async def get_timeline(
     )
 
 
+@router.get("/stations")
+async def get_multi_station_timeline(
+    start: Optional[datetime] = Query(None, description="Start datetime (default: 48h ago)"),
+    end: Optional[datetime] = Query(None, description="End datetime (default: now)"),
+    station_ids: Optional[str] = Query(None, description="Comma-separated station IDs (default: all)"),
+):
+    """
+    Get timeline data for multiple hydrometric stations.
+
+    Returns time-series height data for each requested station.
+    Useful for comparing water levels across the Dordogne, Isle, and Dronne rivers.
+    """
+    from app.services.collectors.hubeau import fetch_realtime_observations
+    from app.config import get_settings
+
+    settings = get_settings()
+    now = datetime.utcnow()
+
+    if end is None:
+        end = now
+    if start is None:
+        start = end - timedelta(hours=48)
+
+    # Make datetimes naive for comparison
+    if start.tzinfo is not None:
+        start = start.replace(tzinfo=None)
+    if end.tzinfo is not None:
+        end = end.replace(tzinfo=None)
+
+    # Calculate hours back from now
+    hours_back = max(1, int((now - start).total_seconds() / 3600))
+
+    # Determine which stations to fetch
+    if station_ids:
+        requested_ids = [s.strip() for s in station_ids.split(",")]
+    else:
+        requested_ids = [s["id"] for s in settings.hubeau_stations]
+
+    # Build station config lookup
+    station_configs = {s["id"]: s for s in settings.hubeau_stations}
+
+    result = {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "stations": {},
+    }
+
+    for station_id in requested_ids:
+        if station_id not in station_configs:
+            continue
+
+        config = station_configs[station_id]
+        levels = await fetch_realtime_observations(station_id, hours_back)
+
+        # Filter to our date range (handle timezone-aware timestamps)
+        levels_in_range = []
+        for lv in levels:
+            ts = lv.timestamp
+            if ts.tzinfo is not None:
+                ts = ts.replace(tzinfo=None)
+            if start <= ts <= end:
+                levels_in_range.append(lv)
+
+        if levels_in_range:
+            result["stations"][station_id] = {
+                "name": config["name"],
+                "river": config["river"],
+                "distance_km": config.get("distance_km", 0),
+                "thresholds": config.get("thresholds", {}),
+                "data": [
+                    {
+                        "timestamp": lv.timestamp.isoformat(),
+                        "height_m": lv.height_m,
+                    }
+                    for lv in levels_in_range
+                ],
+            }
+
+    return result
+
+
 @router.get("/compare")
 async def compare_periods(
     period1_start: datetime = Query(..., description="First period start"),

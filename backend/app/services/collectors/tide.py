@@ -1,14 +1,15 @@
 """Tide data collector.
 
 Fetches tide data from:
-- maree.info (primary, free)
+- Open-Meteo Marine API (primary, free, no API key needed)
 - SHOM API (secondary, requires API key)
+- Calculated tides (fallback)
 """
 
 import httpx
 from datetime import datetime, timedelta
 from typing import Optional
-import re
+import math
 
 from app.config import get_settings
 from app.models.schemas import TideData, TideForecast, TideType
@@ -18,44 +19,100 @@ _tide_cache: dict = {}
 _cache_expiry: Optional[datetime] = None
 
 
-async def fetch_maree_info(port: str = "bordeaux") -> list[TideData]:
+async def fetch_open_meteo_marine() -> list[TideData]:
     """
-    Fetch tide data from maree.info.
+    Fetch tide data from Open-Meteo Marine API.
 
-    Port codes:
-    - bordeaux: Port 161
-    - pauillac: Port 160
-    - libourne: Port 162 (if available)
+    This API provides sea level data which can be used to infer tides.
+    Free, no API key required.
     """
-    port_mapping = {
-        "bordeaux": "161",
-        "pauillac": "160",
-        "libourne": "162",
-    }
+    settings = get_settings()
 
-    port_id = port_mapping.get(port.lower(), "161")
-    url = f"https://maree.info/{port_id}"
+    # Coordinates for Bordeaux/Gironde estuary
+    lat = 45.0  # Bordeaux area
+    lon = -0.9  # Gironde estuary
 
-    tides = []
+    url = "https://marine-api.open-meteo.com/v1/marine"
 
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, timeout=30.0)
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            response = await client.get(
+                url,
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "hourly": "sea_level_height_msl",
+                    "forecast_days": 7,
+                    "timezone": "Europe/Paris",
+                },
+                timeout=30.0,
+            )
             response.raise_for_status()
+            data = response.json()
 
-            # Parse HTML response to extract tide data
-            # This is a simplified parser - real implementation would need proper HTML parsing
-            html = response.text
+            hourly = data.get("hourly", {})
+            times = hourly.get("time", [])
+            levels = hourly.get("sea_level_height_msl", [])
 
-            # Look for tide times and heights in the HTML
-            # Format varies, this is approximate
-            # Real implementation would use BeautifulSoup
+            if not times or not levels:
+                return []
 
-            # For now, return mock data structure
-            # TODO: Implement proper HTML parsing
+            # Find high and low tides from the data
+            tides = _extract_tides_from_levels(times, levels)
+            return tides
 
     except Exception as e:
-        print(f"Error fetching tide data from maree.info: {e}")
+        print(f"Error fetching tide data from Open-Meteo Marine: {e}")
+        return []
+
+
+def _extract_tides_from_levels(times: list[str], levels: list[float]) -> list[TideData]:
+    """
+    Extract high and low tides from sea level time series.
+
+    Finds local maxima (high tides) and minima (low tides).
+    """
+    tides = []
+
+    if len(times) < 3 or len(levels) < 3:
+        return tides
+
+    # Smooth the data slightly and find peaks/troughs
+    for i in range(1, len(levels) - 1):
+        if levels[i] is None:
+            continue
+
+        prev_level = levels[i - 1] if levels[i - 1] is not None else levels[i]
+        next_level = levels[i + 1] if levels[i + 1] is not None else levels[i]
+
+        # Local maximum = high tide
+        if levels[i] > prev_level and levels[i] >= next_level:
+            # Estimate coefficient from height (rough approximation)
+            # Average tide height in Bordeaux is ~4-5m, range 2-6m depending on coef
+            height = levels[i]
+            coef = int(50 + (height - 3) * 20)  # Rough mapping
+            coef = max(30, min(120, coef))
+
+            tides.append(
+                TideData(
+                    timestamp=datetime.fromisoformat(times[i]),
+                    port="BORDEAUX",
+                    tide_type=TideType.HIGH,
+                    height_m=height,
+                    coefficient=coef,
+                )
+            )
+        # Local minimum = low tide
+        elif levels[i] < prev_level and levels[i] <= next_level:
+            tides.append(
+                TideData(
+                    timestamp=datetime.fromisoformat(times[i]),
+                    port="BORDEAUX",
+                    tide_type=TideType.LOW,
+                    height_m=levels[i],
+                    coefficient=None,
+                )
+            )
 
     return tides
 
@@ -153,15 +210,16 @@ async def get_current_tide_data() -> TideForecast:
     if _cache_expiry and _cache_expiry > now and _tide_cache:
         tides = _tide_cache.get("tides", [])
     else:
-        # Try to fetch real data
+        # Try to fetch real data from various sources
         tides = await fetch_shom_api()
 
         if not tides:
-            tides = await fetch_maree_info("bordeaux")
+            tides = await fetch_open_meteo_marine()
 
         if not tides:
-            # Fall back to mock data
+            # Fall back to calculated tides
             tides = _generate_mock_tides()
+            print("Using calculated tide data (no API source available)")
 
         # Update cache (6 hours)
         _tide_cache = {"tides": tides}

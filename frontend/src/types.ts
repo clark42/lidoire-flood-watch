@@ -52,6 +52,8 @@ export interface RiskFactors {
   tide_score: number
   tide_phase_score: number
   video_level_score: number | null
+  tendency_score?: number
+  conjunction_multiplier?: number
 }
 
 export interface RiskScore {
@@ -71,6 +73,89 @@ export interface VideoAnalysis {
   snapshot_url: string | null
 }
 
+export interface StationData {
+  station_id: string
+  station_name: string
+  river: string
+  current_level: {
+    timestamp: string
+    height_m: number
+  }
+  tendency: Tendency
+  rate_cm_per_hour: number
+  distance_km: number
+  delay_hours: number
+  weight: number
+  threshold_yellow: number
+  threshold_orange: number
+  threshold_red: number
+}
+
+export interface MultiStationData {
+  timestamp: string
+  primary_station_id: string
+  stations: StationData[]
+}
+
+export interface NetatmoStation {
+  city: string
+  distance_km: number
+  rain_1h_mm: number | null
+  rain_24h_mm: number | null
+  lat?: number
+  lon?: number
+  is_lidoire?: boolean
+  position?: 'amont' | 'milieu' | 'aval'
+}
+
+export interface NetatmoData {
+  available: boolean
+  timestamp?: string
+  stations_count: number
+  rain_1h_avg_mm: number
+  rain_24h_avg_mm: number
+  closest_station?: NetatmoStation
+  lidoire_stations?: NetatmoStation[]
+  stations?: NetatmoStation[]
+}
+
+export interface InfoclimatData {
+  stations_found: number
+  nearest_stations: {
+    name: string
+    distance_km: number
+    source: string
+    departement?: string
+  }[]
+  rainfall: {
+    available: boolean
+    reason?: string
+  }
+}
+
+export interface DataSource {
+  name: string
+  status: 'ok' | 'degraded' | 'error'
+  description: string
+  details?: string
+  url?: string
+}
+
+export interface ForecastPoint {
+  timestamp: string
+  hours_ahead: number
+  score: number
+  level: RiskLevel
+  tide_coefficient: number
+  rain_forecast_mm: number
+}
+
+export interface ForecastData {
+  generated_at: string
+  hours_ahead: number
+  forecasts: ForecastPoint[]
+}
+
 export interface RealtimeData {
   timestamp: string
   risk: RiskScore
@@ -79,6 +164,8 @@ export interface RealtimeData {
   rainfall: RainfallSummary
   video: VideoAnalysis | null
   alerts: string[]
+  stations?: MultiStationData
+  netatmo_available?: boolean
 }
 
 export interface TimelinePoint {

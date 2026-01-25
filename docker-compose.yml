@@ -6,6 +6,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/lidoire_flood
       - INFLUXDB_URL=http://influxdb:8086
@@ -16,6 +18,13 @@ services:
       - MOULIN_LAT=44.8759811
       - MOULIN_LON=0.0015091
       - CAMERA_RTSP_URL=${CAMERA_RTSP_URL:-}
+      # Netatmo API
+      - NETATMO_CLIENT_ID=${NETATMO_CLIENT_ID:-}
+      - NETATMO_CLIENT_SECRET=${NETATMO_CLIENT_SECRET:-}
+      - NETATMO_REFRESH_TOKEN=${NETATMO_REFRESH_TOKEN:-}
+      - NETATMO_ACCESS_TOKEN=${NETATMO_ACCESS_TOKEN:-}
+      # Infoclimat API
+      - INFOCLIMAT_API_KEY=${INFOCLIMAT_API_KEY:-}
     depends_on:
       - postgres
       - influxdb
@@ -23,6 +32,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./backend:/app
+      - backend_data:/app/data
     networks:
       - lidoire-network
 
@@ -87,6 +97,7 @@ volumes:
   postgres_data:
   influxdb_data:
   redis_data:
+  backend_data:
 
 networks:
   lidoire-network:

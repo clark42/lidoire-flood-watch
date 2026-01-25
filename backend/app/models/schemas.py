@@ -65,6 +65,29 @@ class RiverLevelForecast(BaseModel):
     forecast_scenarios: list[dict] = []
 
 
+class StationLevel(BaseModel):
+    """Current level data for a single monitoring station."""
+    station_id: str
+    station_name: str
+    river: str
+    current_level: RiverLevel
+    tendency: Tendency
+    rate_cm_per_hour: float = 0.0  # Positive = rising
+    distance_km: float = 0.0  # Distance from moulin
+    delay_hours: float = 0.0  # Estimated propagation delay
+    weight: float = 0.1  # Weight in risk calculation
+    threshold_yellow: float = 3.0
+    threshold_orange: float = 4.0
+    threshold_red: float = 5.0
+
+
+class MultiStationData(BaseModel):
+    """Aggregated data from all monitoring stations."""
+    timestamp: datetime
+    stations: list[StationLevel] = []
+    primary_station_id: str = "P577001001"  # Libourne by default
+
+
 # Weather data
 class WeatherForecast(BaseModel):
     """Weather forecast data point."""
@@ -109,6 +132,19 @@ class VideoAnalysis(BaseModel):
 
 
 # Risk scoring
+class StationRiskScore(BaseModel):
+    """Risk score contribution from a single station."""
+    station_id: str
+    station_name: str
+    river: str
+    height_m: float
+    score: float = Field(..., ge=0, le=1)
+    weight: float
+    weighted_score: float
+    tendency: Tendency
+    rate_cm_per_hour: float = 0.0
+
+
 class RiskFactors(BaseModel):
     """Individual risk factors."""
     rain_24h_score: float = Field(..., ge=0, le=1)
@@ -117,6 +153,10 @@ class RiskFactors(BaseModel):
     tide_score: float = Field(..., ge=0, le=1)
     tide_phase_score: float = Field(..., ge=0, le=1)
     video_level_score: Optional[float] = Field(None, ge=0, le=1)
+    # New multi-station factors
+    tendency_score: float = Field(0.0, ge=0, le=1)  # Rate of rise
+    conjunction_multiplier: float = Field(1.0, ge=1.0, le=2.0)  # Tide + high level
+    stations_detail: list[StationRiskScore] = []  # Per-station breakdown
 
 
 class RiskScore(BaseModel):
@@ -184,6 +224,9 @@ class RealtimeData(BaseModel):
     rainfall: RainfallSummary
     video: Optional[VideoAnalysis] = None
     alerts: list[str] = []
+    # V2: Multi-station data
+    stations: Optional[MultiStationData] = None
+    netatmo_available: bool = False
 
 
 # Timeline data
