@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/lidoire_flood
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-lidoire-flood-watch-token}
+      - INFLUXDB_ORG=lidoire
+      - INFLUXDB_BUCKET=flood_data
+      - REDIS_URL=redis://redis:6379
+      - MOULIN_LAT=44.8759811
+      - MOULIN_LON=0.0015091
+      - CAMERA_RTSP_URL=${CAMERA_RTSP_URL:-}
+    depends_on:
+      - postgres
+      - influxdb
+      - redis
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app
+    networks:
+      - lidoire-network
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - lidoire-network
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=lidoire_flood
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - lidoire-network
+
+  # InfluxDB for time-series data
+  influxdb:
+    image: influxdb:2.7-alpine
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword
+      - DOCKER_INFLUXDB_INIT_ORG=lidoire
+      - DOCKER_INFLUXDB_INIT_BUCKET=flood_data
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-lidoire-flood-watch-token}
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    ports:
+      - "8086:8086"
+    restart: unless-stopped
+    networks:
+      - lidoire-network
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - lidoire-network
+
+volumes:
+  postgres_data:
+  influxdb_data:
+  redis_data:
+
+networks:
+  lidoire-network:
+    driver: bridge
