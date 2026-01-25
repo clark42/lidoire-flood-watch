@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Save, RefreshCw, Sliders, MapPin, Database } from 'lucide-react'
+import { RefreshCw, Sliders, MapPin, Database } from 'lucide-react'
 import { getStatus, simulateRisk } from '../api'
 
 export default function Configuration() {

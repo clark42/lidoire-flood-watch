@@ -16,13 +16,6 @@ import type { RealtimeData, RiskLevel } from '../types'
 import RiskGauge from '../components/RiskGauge'
 import DataCard from '../components/DataCard'
 
-const RISK_COLORS: Record<RiskLevel, string> = {
-  green: 'bg-green-500',
-  yellow: 'bg-yellow-500',
-  orange: 'bg-orange-500',
-  red: 'bg-red-500',
-}
-
 const RISK_BG_COLORS: Record<RiskLevel, string> = {
   green: 'bg-green-50 border-green-200',
   yellow: 'bg-yellow-50 border-yellow-200',
