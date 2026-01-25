@@ -58,7 +58,7 @@ async def fetch_realtime_observations(
                     "grandeur_hydro": "H",  # Height
                     "date_debut_obs": start_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "date_fin_obs": end_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "size": 2000,
+                    "size": 10000,  # ~35 days at 5-min intervals
                     "sort": "asc",
                 },
                 timeout=30.0,
