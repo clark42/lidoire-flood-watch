@@ -8,13 +8,9 @@ import {
   Cloud,
   Navigation,
 } from 'lucide-react'
-import type { NetatmoData, NetatmoStation } from '../types'
-
-interface InfoclimatStation {
-  name: string
-  distance_km: number
-  source: string
-}
+import type { NetatmoData, NetatmoStation, InfoclimatStation, InfoclimatRainfall } from '../types'
+import InfoTooltip from './InfoTooltip'
+import { TOOLTIPS } from '../tooltipContent'
 
 interface RainfallPanelProps {
   netatmo: NetatmoData | null
@@ -22,6 +18,7 @@ interface RainfallPanelProps {
     available: boolean
     stations_found?: number
     nearest_stations?: InfoclimatStation[]
+    rainfall?: InfoclimatRainfall
   }
   forecast?: {
     forecast_24h_mm: number
@@ -57,26 +54,52 @@ function getPositionColor(position?: string): string {
 }
 
 function LidoireStationRow({ station }: { station: NetatmoStation }) {
+  const formatRain = (value: number | null | undefined) => {
+    if (value == null) return '-'
+    return value.toFixed(1)
+  }
+
+  const rainClass = (value: number | null | undefined) => {
+    if (value == null || value === 0) return ''
+    if (value >= 20) return 'text-purple-600'
+    if (value >= 10) return 'text-blue-600'
+    if (value >= 5) return 'text-cyan-600'
+    return 'text-sky-600'
+  }
+
   return (
     <div className="flex items-center justify-between p-2 text-sm hover:bg-emerald-50 rounded">
-      <div className="flex items-center gap-2">
-        <Navigation className="w-3 h-3 text-emerald-600" />
-        <span className="font-medium">{station.city}</span>
-        <span className={`text-xs px-1.5 py-0.5 rounded ${getPositionColor(station.position)}`}>
+      <div className="flex items-center gap-2 min-w-0">
+        <Navigation className="w-3 h-3 text-emerald-600 flex-shrink-0" />
+        <span className="font-medium truncate">{station.city}</span>
+        <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${getPositionColor(station.position)}`}>
           {getPositionLabel(station.position)}
         </span>
-        <span className="text-xs text-gray-400">{station.distance_km}km</span>
       </div>
-      <div className="flex gap-3">
-        <span className="text-xs">
-          1h: <strong className={station.rain_1h_mm && station.rain_1h_mm > 0 ? 'text-blue-600' : ''}>
-            {station.rain_1h_mm?.toFixed(1) || '0'}
-          </strong>mm
+      <div className="flex gap-2 text-xs flex-shrink-0">
+        <span className="w-14 text-right" title="Derniere heure">
+          <span className="text-gray-400">1h:</span>{' '}
+          <strong className={rainClass(station.rain_1h_mm)}>
+            {formatRain(station.rain_1h_mm)}
+          </strong>
         </span>
-        <span className="text-xs">
-          24h: <strong className={station.rain_24h_mm && station.rain_24h_mm > 0 ? 'text-blue-600' : ''}>
-            {station.rain_24h_mm?.toFixed(1) || '0'}
-          </strong>mm
+        <span className="w-14 text-right" title="Dernieres 24 heures">
+          <span className="text-gray-400">24h:</span>{' '}
+          <strong className={rainClass(station.rain_24h_mm)}>
+            {formatRain(station.rain_24h_mm)}
+          </strong>
+        </span>
+        <span className="w-14 text-right" title="Dernieres 72 heures">
+          <span className="text-gray-400">72h:</span>{' '}
+          <strong className={rainClass(station.rain_72h_mm)}>
+            {formatRain(station.rain_72h_mm)}
+          </strong>
+        </span>
+        <span className="w-14 text-right" title="Derniers 7 jours">
+          <span className="text-gray-400">7j:</span>{' '}
+          <strong className={rainClass(station.rain_7d_mm)}>
+            {formatRain(station.rain_7d_mm)}
+          </strong>
         </span>
       </div>
     </div>
@@ -157,7 +180,10 @@ export default function RainfallPanel({
               </div>
             </div>
             <div className="p-3 bg-gray-50 rounded-lg">
-              <div className="text-xs text-gray-500 mb-1">24 heures</div>
+              <div className="text-xs text-gray-500 mb-1 flex items-center gap-1">
+                24 heures
+                <InfoTooltip {...TOOLTIPS.rain24h} />
+              </div>
               <div className={`text-xl font-bold ${getRainIntensityColor(netatmo?.rain_24h_avg_mm || 0)}`}>
                 {netatmo?.rain_24h_avg_mm?.toFixed(1) || '0.0'} mm
               </div>
@@ -166,6 +192,7 @@ export default function RainfallPanel({
               <div className="text-xs text-blue-600 mb-1 flex items-center gap-1">
                 <Cloud className="w-3 h-3" />
                 Prevu 24h
+                <InfoTooltip {...TOOLTIPS.rainfallForecast} />
               </div>
               <div className="text-xl font-bold text-blue-700">
                 {forecast?.forecast_24h_mm?.toFixed(1) || '0.0'} mm
@@ -175,6 +202,7 @@ export default function RainfallPanel({
               <div className="text-xs text-blue-600 mb-1 flex items-center gap-1">
                 <Cloud className="w-3 h-3" />
                 Prevu 72h
+                <InfoTooltip {...TOOLTIPS.rain72h} />
               </div>
               <div className="text-xl font-bold text-blue-700">
                 {forecast?.forecast_72h_mm?.toFixed(1) || '0.0'} mm
@@ -211,6 +239,7 @@ export default function RainfallPanel({
                   <div className="flex items-center gap-2">
                     <div className={`w-2 h-2 rounded-full ${netatmo.available ? 'bg-green-500' : 'bg-red-500'}`} />
                     <span className="font-medium text-sm">Netatmo</span>
+                    <InfoTooltip {...TOOLTIPS.netatmoSource} />
                     <span className="text-xs text-gray-500">
                       {netatmo.stations_count} stations
                     </span>
@@ -262,13 +291,49 @@ export default function RainfallPanel({
                   <div className="flex items-center gap-2">
                     <div className={`w-2 h-2 rounded-full ${infoclimat.available ? 'bg-green-500' : 'bg-yellow-500'}`} />
                     <span className="font-medium text-sm">Infoclimat</span>
+                    <InfoTooltip {...TOOLTIPS.infoclimatSource} />
                     <span className="text-xs text-gray-500">
-                      {infoclimat.stations_found || 0} stations proches
+                      {infoclimat.rainfall?.stations_count || infoclimat.stations_found || 0} stations
                     </span>
                   </div>
+                  {infoclimat.rainfall?.available && infoclimat.rainfall.rain_24h_avg_mm != null && (
+                    <span className="text-xs text-gray-500">
+                      Moy 24h: <strong className={getRainIntensityColor(infoclimat.rainfall.rain_24h_avg_mm).split(' ')[0]}>
+                        {infoclimat.rainfall.rain_24h_avg_mm.toFixed(1)}mm
+                      </strong>
+                    </span>
+                  )}
                 </div>
 
-                {infoclimat.nearest_stations && infoclimat.nearest_stations.length > 0 && (
+                {/* Rainfall observation stations (when API key works) */}
+                {infoclimat.rainfall?.available && infoclimat.rainfall.stations && infoclimat.rainfall.stations.length > 0 && (
+                  <div className="p-2 space-y-1">
+                    {infoclimat.rainfall.stations.map((station, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between p-2 text-sm hover:bg-gray-50 rounded"
+                      >
+                        <div className="flex items-center gap-2">
+                          <MapPin className="w-3 h-3 text-purple-400" />
+                          <span>{station.station_name}</span>
+                          <span className="text-xs text-gray-400">
+                            {station.distance_km}km
+                          </span>
+                        </div>
+                        <span className="text-xs">
+                          <span className="text-gray-400">24h:</span>{' '}
+                          <strong className={station.rain_24h_mm >= 10 ? 'text-blue-600' : station.rain_24h_mm >= 5 ? 'text-cyan-600' : station.rain_24h_mm > 0 ? 'text-sky-600' : 'text-gray-500'}>
+                            {station.rain_24h_mm.toFixed(1)}
+                          </strong>
+                          <span className="text-gray-400">mm</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Discovery stations (when no rainfall data) */}
+                {!infoclimat.rainfall?.available && infoclimat.nearest_stations && infoclimat.nearest_stations.length > 0 && (
                   <div className="p-2 space-y-1">
                     {infoclimat.nearest_stations.slice(0, 3).map((station, idx) => (
                       <div

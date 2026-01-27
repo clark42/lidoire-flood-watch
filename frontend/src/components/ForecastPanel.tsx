@@ -9,6 +9,8 @@ import {
 import { format } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import type { RiskLevel } from '../types'
+import InfoTooltip from './InfoTooltip'
+import { TOOLTIPS } from '../tooltipContent'
 
 interface ForecastPoint {
   timestamp: string
@@ -90,6 +92,7 @@ export default function ForecastPanel({ forecast, loading }: ForecastPanelProps)
         <div className="flex items-center gap-2">
           <Clock className="w-5 h-5 text-amber-600" />
           <h3 className="font-semibold text-amber-800">Previsions</h3>
+          <InfoTooltip {...TOOLTIPS.forecastHeader} />
           <span className="text-sm text-amber-600">
             ({forecast.hours_ahead}h)
           </span>
@@ -191,7 +194,12 @@ export default function ForecastPanel({ forecast, loading }: ForecastPanelProps)
                   <tr className="border-b">
                     <th className="text-left p-2">Heure</th>
                     <th className="text-center p-2">Risque</th>
-                    <th className="text-center p-2">Coef maree</th>
+                    <th className="text-center p-2">
+                      <span className="inline-flex items-center gap-1">
+                        Coef maree
+                        <InfoTooltip {...TOOLTIPS.tideCoefficient} />
+                      </span>
+                    </th>
                     <th className="text-center p-2">Pluie prevue</th>
                   </tr>
                 </thead>

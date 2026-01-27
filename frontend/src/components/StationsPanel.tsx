@@ -11,6 +11,8 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { fr } from 'date-fns/locale'
+import InfoTooltip from './InfoTooltip'
+import { TOOLTIPS } from '../tooltipContent'
 
 interface StationData {
   station_id: string
@@ -95,6 +97,7 @@ export default function StationsPanel({
         <div className="flex items-center gap-2">
           <Activity className="w-5 h-5 text-cyan-600" />
           <h3 className="font-semibold text-cyan-800">Stations hydrometriques</h3>
+          <InfoTooltip {...TOOLTIPS.stationsHeader} />
           <span className="text-sm text-cyan-600">({stations.length} stations)</span>
         </div>
         {expanded ? (
@@ -191,7 +194,7 @@ function StationCard({
   return (
     <div
       onClick={onSelect}
-      className={`p-3 rounded-lg border-2 cursor-pointer transition-all ${
+      className={`group p-3 rounded-lg border-2 cursor-pointer transition-all ${
         isSelected
           ? 'border-cyan-500 bg-cyan-50'
           : 'border-gray-200 hover:border-gray-300 bg-white'
@@ -214,6 +217,7 @@ function StationCard({
               <span className="flex items-center gap-1">
                 <Clock className="w-3 h-3" />
                 +{station.delay_hours}h
+                <InfoTooltip {...TOOLTIPS.delayHours} />
               </span>
             )}
           </div>
@@ -237,6 +241,7 @@ function StationCard({
               {station.rate_cm_per_hour > 0 ? '+' : ''}
               {station.rate_cm_per_hour.toFixed(1)} cm/h
             </span>
+            <InfoTooltip {...TOOLTIPS.rateOfRise} />
           </div>
         </div>
       </div>
@@ -284,18 +289,23 @@ function StationCard({
         <div
           className="absolute w-0.5 h-2 bg-yellow-500 -top-1"
           style={{ left: `${(thresholds.yellow / (thresholds.red * 1.2)) * 100}%` }}
-          title={`Jaune: ${thresholds.yellow}m`}
         />
         <div
           className="absolute w-0.5 h-2 bg-orange-500 -top-1"
           style={{ left: `${(thresholds.orange / (thresholds.red * 1.2)) * 100}%` }}
-          title={`Orange: ${thresholds.orange}m`}
         />
         <div
           className="absolute w-0.5 h-2 bg-red-500 -top-1"
           style={{ left: `${(thresholds.red / (thresholds.red * 1.2)) * 100}%` }}
-          title={`Rouge: ${thresholds.red}m`}
         />
+      </div>
+
+      {/* Threshold labels - visible on hover */}
+      <div className="flex items-center gap-2 mt-1 text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">
+        <span className="text-yellow-600 font-medium">J:{thresholds.yellow}m</span>
+        <span className="text-orange-600 font-medium">O:{thresholds.orange}m</span>
+        <span className="text-red-600 font-medium">R:{thresholds.red}m</span>
+        <InfoTooltip {...TOOLTIPS.thresholds} />
       </div>
 
       {/* Timestamp */}

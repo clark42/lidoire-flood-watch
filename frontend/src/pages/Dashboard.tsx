@@ -10,6 +10,8 @@ import {
   Clock,
   AlertTriangle,
   RefreshCw,
+  Activity,
+  CloudRain,
 } from 'lucide-react'
 import {
   getRealtimeData,
@@ -17,6 +19,9 @@ import {
   getInfoclimatData,
   getDataSourcesStatus,
   getForecast,
+  getBasinRainfall,
+  getRealtimeDataAt,
+  getEpisodesList,
 } from '../api'
 import type {
   RealtimeData,
@@ -25,6 +30,8 @@ import type {
   InfoclimatData,
   DataSource,
   ForecastData,
+  BasinRainfallData,
+  FloodEpisode,
 } from '../types'
 import RiskGauge from '../components/RiskGauge'
 import DataCard from '../components/DataCard'
@@ -32,6 +39,13 @@ import StationsPanel from '../components/StationsPanel'
 import RainfallPanel from '../components/RainfallPanel'
 import ForecastPanel from '../components/ForecastPanel'
 import DataSourcesStatus from '../components/DataSourcesStatus'
+import RiskBreakdownPanel from '../components/RiskBreakdownPanel'
+import HydroMap from '../components/HydroMap'
+import BasinRainfallGauge from '../components/BasinRainfallGauge'
+import MetricSparkline from '../components/MetricSparkline'
+import TimeMachineBanner from '../components/TimeMachineBanner'
+import InfoTooltip from '../components/InfoTooltip'
+import { TOOLTIPS } from '../tooltipContent'
 
 const RISK_BG_COLORS: Record<RiskLevel, string> = {
   green: 'bg-green-50 border-green-200',
@@ -53,35 +67,72 @@ export default function Dashboard() {
   const [sources, setSources] = useState<DataSource[]>([])
   const [forecast, setForecast] = useState<ForecastData | null>(null)
   const [selectedStation, setSelectedStation] = useState<string | null>(null)
+  const [breakdownExpanded, setBreakdownExpanded] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
+  const [basinRainfall, setBasinRainfall] = useState<BasinRainfallData | null>(null)
+  const [episodes, setEpisodes] = useState<FloodEpisode[]>([])
+
+  // TimeMachine state
+  const [timeMachineActive, setTimeMachineActive] = useState(false)
+  const [timeMachineDate, setTimeMachineDate] = useState<Date | null>(null)
+  const [timeMachineLoading, setTimeMachineLoading] = useState(false)
+
+  // Sparkline accumulation
+  const [sparklineData, setSparklineData] = useState<{
+    river: { t: number; v: number }[]
+    tide: { t: number; v: number }[]
+    rain: { t: number; v: number }[]
+    risk: { t: number; v: number }[]
+  }>({ river: [], tide: [], rain: [], risk: [] })
 
   const fetchData = async () => {
     try {
       setLoading(true)
 
       // Fetch all data in parallel
-      const [realtimeResult, netatmoResult, infoclimatResult, sourcesResult, forecastResult] =
-        await Promise.allSettled([
-          getRealtimeData(),
-          getNetatmoData(),
-          getInfoclimatData(),
-          getDataSourcesStatus(),
-          getForecast(48),
-        ])
+      const [
+        realtimeResult,
+        netatmoResult,
+        infoclimatResult,
+        sourcesResult,
+        forecastResult,
+        basinResult,
+        episodesResult,
+      ] = await Promise.allSettled([
+        getRealtimeData(),
+        getNetatmoData(),
+        getInfoclimatData(),
+        getDataSourcesStatus(),
+        getForecast(48),
+        getBasinRainfall(),
+        getEpisodesList(),
+      ])
 
       if (realtimeResult.status === 'fulfilled') {
-        setData(realtimeResult.value)
+        const d = realtimeResult.value
+        setData(d)
         // Set default selected station to primary
-        if (realtimeResult.value.stations && !selectedStation) {
-          setSelectedStation(realtimeResult.value.stations.primary_station_id)
+        if (d.stations && !selectedStation) {
+          setSelectedStation(d.stations.primary_station_id)
         }
+
+        // Accumulate sparkline data
+        const now = Date.now()
+        setSparklineData(prev => ({
+          river: [...prev.river, { t: now, v: d.river.current.height_m }].slice(-60),
+          tide: [...prev.tide, { t: now, v: d.tide.current_coefficient || 0 }].slice(-60),
+          rain: [...prev.rain, { t: now, v: d.rainfall.last_hour_mm }].slice(-60),
+          risk: [...prev.risk, { t: now, v: d.risk.score }].slice(-60),
+        }))
       }
       if (netatmoResult.status === 'fulfilled') setNetatmo(netatmoResult.value)
       if (infoclimatResult.status === 'fulfilled') setInfoclimat(infoclimatResult.value)
       if (sourcesResult.status === 'fulfilled') setSources(sourcesResult.value.sources)
       if (forecastResult.status === 'fulfilled') setForecast(forecastResult.value)
+      if (basinResult.status === 'fulfilled') setBasinRainfall(basinResult.value)
+      if (episodesResult.status === 'fulfilled') setEpisodes(episodesResult.value)
 
       setLastUpdate(new Date())
       setError(null)
@@ -92,11 +143,40 @@ export default function Dashboard() {
     }
   }
 
+  const handleTimeMachineToggle = () => {
+    if (timeMachineActive) {
+      // Return to live
+      setTimeMachineActive(false)
+      setTimeMachineDate(null)
+      fetchData() // Refresh live data
+    } else {
+      setTimeMachineActive(true)
+    }
+  }
+
+  const handleTimeMachineDateChange = async (date: Date) => {
+    setTimeMachineDate(date)
+    setTimeMachineLoading(true)
+    try {
+      const result = await getRealtimeDataAt(date.toISOString())
+      setData(result)
+      if (result.stations && !selectedStation) {
+        setSelectedStation(result.stations.primary_station_id)
+      }
+    } catch (err) {
+      console.error('TimeMachine error:', err)
+    } finally {
+      setTimeMachineLoading(false)
+    }
+  }
+
   useEffect(() => {
-    fetchData()
-    const interval = setInterval(fetchData, 60000) // Refresh every minute
-    return () => clearInterval(interval)
-  }, [])
+    if (!timeMachineActive) {
+      fetchData()
+      const interval = setInterval(fetchData, 60000)
+      return () => clearInterval(interval)
+    }
+  }, [timeMachineActive])
 
   if (loading && !data) {
     return (
@@ -128,21 +208,33 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {/* TimeMachine Banner */}
+      <TimeMachineBanner
+        active={timeMachineActive}
+        onToggle={handleTimeMachineToggle}
+        selectedDate={timeMachineDate}
+        onDateChange={handleTimeMachineDateChange}
+        episodes={episodes}
+        loading={timeMachineLoading}
+      />
+
       {/* Data Sources Status - Compact at top */}
       <DataSourcesStatus sources={sources} loading={loading} />
 
       {/* Alerts */}
       {data.alerts.length > 0 && (
         <div className="space-y-2">
-          {data.alerts.filter(a => !a.includes('Netatmo')).map((alert, i) => (
-            <div
-              key={i}
-              className="bg-orange-50 border border-orange-200 rounded-lg p-4 flex items-center gap-3"
-            >
-              <AlertTriangle className="w-5 h-5 text-orange-500 flex-shrink-0" />
-              <span className="text-orange-800">{alert}</span>
-            </div>
-          ))}
+          {data.alerts
+            .filter(a => !a.includes('Netatmo') && !a.includes('Mode TimeMachine'))
+            .map((alert, i) => (
+              <div
+                key={i}
+                className="bg-orange-50 border border-orange-200 rounded-lg p-4 flex items-center gap-3"
+              >
+                <AlertTriangle className="w-5 h-5 text-orange-500 flex-shrink-0" />
+                <span className="text-orange-800">{alert}</span>
+              </div>
+            ))}
         </div>
       )}
 
@@ -163,30 +255,95 @@ export default function Dashboard() {
               ))}
             </div>
           </div>
-          <RiskGauge score={data.risk.score} level={riskLevel} />
+          <RiskGauge
+            score={data.risk.score}
+            level={riskLevel}
+            onClick={() => setBreakdownExpanded(!breakdownExpanded)}
+            clickable
+          />
         </div>
+      </div>
+
+      {/* Risk Breakdown Panel */}
+      <RiskBreakdownPanel risk={data.risk} defaultExpanded={breakdownExpanded} />
+
+      {/* HydroMap - Full Width */}
+      <HydroMap
+        stations={stations}
+        netatmoStations={netatmo?.lidoire_stations}
+        infoclimatStations={infoclimat?.nearest_stations}
+        tide={data.tide}
+      />
+
+      {/* Sparklines Row - 4 cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <MetricSparkline
+          title="Dordogne"
+          value={`${(stations.find(s => s.station_id === 'P577001001')?.current_level.height_m || 0).toFixed(2)} m`}
+          subtitle={stations.find(s => s.station_id === 'P577001001')?.tendency}
+          data={sparklineData.river}
+          color="#0891b2"
+          icon={<Waves className="w-4 h-4" />}
+        />
+        <MetricSparkline
+          title="Maree"
+          value={`Coef ${data.tide.current_coefficient || '-'}`}
+          subtitle={
+            data.tide.next_high_tide
+              ? `PM ${format(new Date(data.tide.next_high_tide.timestamp), 'HH:mm', { locale: fr })}`
+              : undefined
+          }
+          data={sparklineData.tide}
+          color="#3b82f6"
+          icon={<Waves className="w-4 h-4" />}
+        />
+        <MetricSparkline
+          title="Pluie bassin"
+          value={`${basinRainfall?.weighted_average_24h_mm?.toFixed(1) || data.rainfall.last_24h_mm.toFixed(1)} mm`}
+          subtitle="24h cumul"
+          data={sparklineData.rain}
+          color="#6366f1"
+          icon={<CloudRain className="w-4 h-4" />}
+        />
+        <MetricSparkline
+          title="Risque"
+          value={`${data.risk.score.toFixed(0)}/100`}
+          subtitle={data.risk.level}
+          data={sparklineData.risk}
+          color={
+            data.risk.level === 'red'
+              ? '#ef4444'
+              : data.risk.level === 'orange'
+                ? '#f97316'
+                : data.risk.level === 'yellow'
+                  ? '#eab308'
+                  : '#22c55e'
+          }
+          icon={<Activity className="w-4 h-4" />}
+        />
       </div>
 
       {/* Main Grid - 2 columns on desktop */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Left Column - Stations */}
-        <div className="space-y-6">
-          <StationsPanel
-            stations={stations}
-            selectedStation={selectedStation}
-            onSelectStation={setSelectedStation}
-            loading={loading}
-          />
-        </div>
+        <StationsPanel
+          stations={stations}
+          selectedStation={selectedStation}
+          onSelectStation={setSelectedStation}
+          loading={loading}
+        />
 
-        {/* Right Column - Weather & Forecasts */}
+        {/* Right Column - Basin Rainfall + Weather & Forecasts */}
         <div className="space-y-6">
+          <BasinRainfallGauge data={basinRainfall} loading={loading} />
+
           <RainfallPanel
             netatmo={netatmo}
             infoclimat={infoclimat ? {
               available: infoclimat.rainfall?.available || false,
               stations_found: infoclimat.stations_found,
               nearest_stations: infoclimat.nearest_stations,
+              rainfall: infoclimat.rainfall,
             } : undefined}
             forecast={{
               forecast_24h_mm: data.rainfall.forecast_24h_mm,
@@ -209,14 +366,20 @@ export default function Dashboard() {
         >
           <div className="space-y-2">
             <div className="flex justify-between">
-              <span className="text-gray-500">Coefficient</span>
+              <span className="text-gray-500 flex items-center gap-1">
+                Coefficient
+                <InfoTooltip {...TOOLTIPS.tideCoefficient} />
+              </span>
               <span className="font-bold text-lg">
                 {data.tide.current_coefficient || '-'}
               </span>
             </div>
             {data.tide.next_high_tide && (
               <div className="flex justify-between text-sm">
-                <span className="text-gray-500">Prochaine PM</span>
+                <span className="text-gray-500 flex items-center gap-1">
+                  Prochaine PM
+                  <InfoTooltip {...TOOLTIPS.tidePhaseBmPm} />
+                </span>
                 <span>
                   {format(new Date(data.tide.next_high_tide.timestamp), 'HH:mm', {
                     locale: fr,
@@ -226,7 +389,9 @@ export default function Dashboard() {
             )}
             {data.tide.next_low_tide && (
               <div className="flex justify-between text-sm">
-                <span className="text-gray-500">Prochaine BM</span>
+                <span className="text-gray-500 flex items-center gap-1">
+                  Prochaine BM
+                </span>
                 <span>
                   {format(new Date(data.tide.next_low_tide.timestamp), 'HH:mm', {
                     locale: fr,
@@ -267,7 +432,7 @@ export default function Dashboard() {
                     <TendencyIcon tendency={station.tendency} />
                   </div>
                 </div>
-                <div className="text-sm text-gray-500">
+                <div className="text-sm text-gray-500 flex items-center gap-1">
                   {station.tendency === 'hausse' && (
                     <span className="text-red-500">
                       +{station.rate_cm_per_hour.toFixed(1)} cm/h
@@ -279,6 +444,9 @@ export default function Dashboard() {
                     </span>
                   )}
                   {station.tendency === 'stable' && 'Stable'}
+                  {station.tendency !== 'stable' && (
+                    <InfoTooltip {...TOOLTIPS.rateOfRise} />
+                  )}
                 </div>
               </div>
             )
@@ -310,20 +478,6 @@ export default function Dashboard() {
             </div>
           </div>
         </DataCard>
-
-        {/* Risk Factors */}
-        <DataCard
-          title="Facteurs de risque"
-          icon={<AlertTriangle className="w-5 h-5" />}
-          color="amber"
-        >
-          <div className="space-y-1">
-            <FactorBar label="Niveau" value={data.risk.factors.river_level_score} />
-            <FactorBar label="Pluie 24h" value={data.risk.factors.rain_24h_score} />
-            <FactorBar label="Maree" value={data.risk.factors.tide_score} />
-            <FactorBar label="Tendance" value={data.risk.factors.tendency_score || 0} />
-          </div>
-        </DataCard>
       </div>
 
       {/* Last Update */}
@@ -331,40 +485,20 @@ export default function Dashboard() {
         <div className="flex items-center gap-2">
           <Clock className="w-4 h-4" />
           <span>
-            Derniere mise a jour :{' '}
-            {lastUpdate
-              ? format(lastUpdate, 'dd/MM/yyyy HH:mm:ss', { locale: fr })
-              : '-'}
+            {timeMachineActive && timeMachineDate
+              ? `Mode TimeMachine - ${format(timeMachineDate, 'dd/MM/yyyy HH:mm', { locale: fr })}`
+              : `Derniere mise a jour : ${lastUpdate ? format(lastUpdate, 'dd/MM/yyyy HH:mm:ss', { locale: fr }) : '-'}`}
           </span>
         </div>
         <button
           onClick={fetchData}
-          disabled={loading}
-          className="flex items-center gap-2 px-3 py-1 rounded hover:bg-gray-100"
+          disabled={loading || timeMachineActive}
+          className="flex items-center gap-2 px-3 py-1 rounded hover:bg-gray-100 disabled:opacity-50"
         >
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           Actualiser
         </button>
       </div>
-    </div>
-  )
-}
-
-function FactorBar({ label, value }: { label: string; value: number }) {
-  const percent = Math.round(value * 100)
-  const color =
-    percent < 33 ? 'bg-green-500' : percent < 66 ? 'bg-yellow-500' : 'bg-red-500'
-
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs text-gray-500 w-16">{label}</span>
-      <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-        <div
-          className={`h-full ${color} transition-all`}
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-      <span className="text-xs w-8 text-right">{percent}%</span>
     </div>
   )
 }
