@@ -1,16 +1,20 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { format } from 'date-fns'
 import { fr } from 'date-fns/locale'
-import { Plus, Search, ChevronRight, AlertTriangle } from 'lucide-react'
+import { Plus, Search, ChevronRight, AlertTriangle, RefreshCw, Clock, BarChart3 } from 'lucide-react'
 import { getEpisodes, createEpisode, analyzeExistingEpisode } from '../api'
 import type { FloodEpisode, EpisodeAnalysis } from '../types'
 
 export default function Episodes() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [episodes, setEpisodes] = useState<FloodEpisode[]>([])
   const [loading, setLoading] = useState(true)
   const [showAddForm, setShowAddForm] = useState(false)
   const [selectedAnalysis, setSelectedAnalysis] = useState<EpisodeAnalysis | null>(null)
   const [analyzingId, setAnalyzingId] = useState<number | null>(null)
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchEpisodes()
@@ -28,17 +32,33 @@ export default function Episodes() {
     }
   }
 
-  const handleAnalyze = async (id: number) => {
+  const handleAnalyze = useCallback(async (id: number) => {
     setAnalyzingId(id)
+    setAnalyzeError(null)
+    // Sync URL
+    setSearchParams({ id: id.toString() }, { replace: true })
     try {
       const analysis = await analyzeExistingEpisode(id)
       setSelectedAnalysis(analysis)
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Erreur lors de l\'analyse'
+      setAnalyzeError(message)
       console.error('Error analyzing episode:', err)
     } finally {
       setAnalyzingId(null)
     }
-  }
+  }, [setSearchParams])
+
+  // Auto-analyze from URL ?id= on mount
+  useEffect(() => {
+    const idParam = searchParams.get('id')
+    if (idParam && episodes.length > 0) {
+      const id = parseInt(idParam, 10)
+      if (!isNaN(id) && !selectedAnalysis && !analyzingId) {
+        handleAnalyze(id)
+      }
+    }
+  }, [episodes]) // trigger once episodes are loaded
 
   const severityColors = [
     'bg-green-100 text-green-800',
@@ -123,7 +143,24 @@ export default function Episodes() {
             <h3 className="font-medium">Analyse de l'episode</h3>
           </div>
 
-          {selectedAnalysis ? (
+          {analyzeError ? (
+            <div className="p-6 text-center space-y-4">
+              <AlertTriangle className="w-12 h-12 text-red-400 mx-auto" />
+              <p className="text-red-600">{analyzeError}</p>
+              {analyzingId === null && searchParams.get('id') && (
+                <button
+                  onClick={() => {
+                    const id = parseInt(searchParams.get('id')!, 10)
+                    if (!isNaN(id)) handleAnalyze(id)
+                  }}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  Reessayer
+                </button>
+              )}
+            </div>
+          ) : selectedAnalysis ? (
             <div className="p-4 space-y-4">
               {/* Episode info */}
               <div className="bg-gray-50 rounded-lg p-4">
@@ -179,6 +216,39 @@ export default function Episodes() {
                   </ul>
                 </div>
               )}
+
+              {/* Cross-page navigation */}
+              <div className="flex gap-2 pt-2 border-t">
+                <button
+                  onClick={() => {
+                    const ep = selectedAnalysis.episode
+                    const targetDate = ep.peak_time || ep.start_time
+                    navigate(`/?tm=${new Date(targetDate).toISOString()}`)
+                  }}
+                  className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-cyan-50 text-cyan-700 rounded-lg hover:bg-cyan-100 text-sm font-medium"
+                >
+                  <Clock className="w-4 h-4" />
+                  Dashboard (TimeMachine)
+                </button>
+                <button
+                  onClick={() => {
+                    const ep = selectedAnalysis.episode
+                    const start = new Date(ep.start_time)
+                    const end = ep.end_time
+                      ? new Date(ep.end_time)
+                      : new Date(start.getTime() + 5 * 24 * 60 * 60 * 1000)
+                    // Pre-fill timeline with a 3-day buffer before start
+                    const bufferStart = new Date(start.getTime() - 3 * 24 * 60 * 60 * 1000)
+                    navigate(
+                      `/timeline?start=${bufferStart.toISOString()}&end=${end.toISOString()}`
+                    )
+                  }}
+                  className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100 text-sm font-medium"
+                >
+                  <BarChart3 className="w-4 h-4" />
+                  Timeline
+                </button>
+              </div>
             </div>
           ) : (
             <div className="p-8 text-center text-gray-400">

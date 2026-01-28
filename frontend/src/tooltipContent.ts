@@ -51,7 +51,7 @@ export const TOOLTIPS = {
 
   // Risque
   riskScore: {
-    text: 'Score composite 0-100 combinant 7 facteurs ponderes. Vert (0-25) = normal. Jaune (25-50) = vigilance. Orange (50-75) = alerte. Rouge (75-100) = danger.',
+    text: 'Score composite 0-100 combinant 10 facteurs ponderes (rivieres, pluie, maree, vent, sol). Vert (0-25) = normal. Jaune (25-50) = vigilance. Orange (50-75) = alerte. Rouge (75-100) = danger.',
   },
   conjunctionMultiplier: {
     text: "Bonus de risque (x1.0 a x1.5) quand maree haute + niveau eleve + montee des eaux se combinent. Ces conditions ensemble sont bien plus dangereuses que separement.",
@@ -59,7 +59,7 @@ export const TOOLTIPS = {
 
   // Facteurs de risque (pour le tableau de detail)
   factorRiver: {
-    text: "Niveaux d'eau sur 7 stations ponderes par distance au moulin. C'est le facteur dominant (50% du score).",
+    text: "Niveaux d'eau sur 7 stations ponderes par distance au moulin. C'est le facteur dominant (45% du score).",
   },
   factorRain24h: {
     text: 'Pluie cumulee sur 24h. Contribue au ruissellement immediat vers les rivieres.',
@@ -76,8 +76,34 @@ export const TOOLTIPS = {
   factorTendency: {
     text: "Vitesse de montee des eaux. Une hausse rapide amplifie le risque meme si le niveau absolu est modere.",
   },
+  factorRain7d: {
+    text: 'Pluie cumulee sur 7 jours. Indique la saturation profonde du bassin versant de la Lidoire.',
+  },
+  factorWindWest: {
+    text: "Vent d'ouest (composante westerly). Un vent fort d'ouest pousse la maree dans l'estuaire de la Gironde, amplifiant la surcote a Libourne.",
+  },
+  factorSoilSat: {
+    text: "Saturation du sol (1.0=sec, 1.5=sature). Un sol sature ne peut plus absorber la pluie, qui ruisselle directement vers la Lidoire.",
+    link: { url: 'https://open-meteo.com/en/docs', label: 'Open-Meteo Soil' },
+  },
   factorVideo: {
     text: "Niveau d'eau detecte par analyse video de la camera du moulin. Complement visuel aux capteurs.",
+  },
+
+  // Sol & Conditions agricoles
+  soilMoisture: {
+    text: "Humidite volumetrique du sol (m3/m3). 0.15 = sec, 0.25 = normal, 0.35 = humide, 0.45 = sature. Mesure Open-Meteo couche 0-9cm.",
+    link: { url: 'https://open-meteo.com/en/docs', label: 'Open-Meteo Soil API' },
+  },
+  soilSaturationFactor: {
+    text: "Facteur de saturation du sol (1.0 a 1.5). Amplifie l'impact de la pluie sur le ruissellement. 1.0 = sol sec (absorbe), 1.5 = sol sature (tout ruisselle).",
+  },
+  et0: {
+    text: "Evapotranspiration de reference (mm/jour). Mesure l'eau qui s'evapore du sol et des plantes. Si < 0.5 mm/j, le sol seche tres lentement.",
+  },
+  waterBalance30d: {
+    text: "Bilan hydrique sur 30 jours. Surplus = plus de pluie que la normale (sol gorge). Deficit = moins de pluie que la normale (sol sec). Source: La Meteo Agricole.",
+    link: { url: 'https://www.lameteoagricole.net/', label: 'La Meteo Agricole' },
   },
 
   // Sources
@@ -88,6 +114,39 @@ export const TOOLTIPS = {
   infoclimatSource: {
     text: 'Reseau de stations meteo amateur StatIC. Donnees complementaires aux capteurs Netatmo pour la pluviometrie du bassin.',
     link: { url: 'https://www.infoclimat.fr/stations-meteo/', label: 'Infoclimat' },
+  },
+
+  // Maree timeline
+  timelineTide: {
+    text: "Hauteur d'eau maregraphique a Libourne, en metres par rapport au zero hydrographique (reference des cartes marines). Les valeurs negatives sont normales : elles indiquent une basse mer sous le zero de reference. La sinusoide ~12h correspond au cycle naturel des marees. Attention : ce referentiel est different de celui des stations de riviere (zero local de chaque echelle).",
+    link: { url: 'https://maree.info/82', label: 'Marees Libourne' },
+  },
+
+  // Timeline panels
+  timelineLevels: {
+    text: "Niveaux d'eau mesures en continu sur les stations du bassin (Dordogne, Isle, Dronne). Chaque courbe correspond a une station hydrometrique Hub'Eau. La maree de Libourne (tirets) a un referentiel different (zero hydrographique) et peut etre negative en basse mer.",
+    link: { url: 'https://hubeau.eaufrance.fr/page/api-hydrometrie', label: "Hub'Eau API" },
+  },
+  timelineRainfall: {
+    text: "Pluviometrie horaire mesuree et prevue. Sources : Open-Meteo (modeles AROME/ARPEGE), Netatmo (stations citoyennes) et Infoclimat (stations amateur). Un cumul > 10 mm/h indique une pluie forte.",
+    link: { url: 'https://open-meteo.com/', label: 'Open-Meteo' },
+  },
+  timelineRisk: {
+    text: "Score de risque composite (0-100) calcule toutes les 15 minutes. Combine niveaux de rivieres (50%), pluie (20%), maree (20%) et autres facteurs. Vert < 25, Jaune < 50, Orange < 75, Rouge >= 75.",
+  },
+  timelineSoilMoisture: {
+    text: "Humidite volumetrique du sol en m3/m3. Couche superficielle (0-7cm) et profonde (7-100cm). Un sol sature (> 0.40) ne peut plus absorber la pluie, augmentant le ruissellement vers la Lidoire.",
+    link: { url: 'https://open-meteo.com/en/docs', label: 'Open-Meteo Soil API' },
+  },
+  timelineSoilTemp: {
+    text: "Temperature du sol (0-7cm). Un sol gele (< 0C) est impermeable et provoque un ruissellement total. Donnees Open-Meteo historiques.",
+  },
+  timelineET0: {
+    text: "Evapotranspiration de reference FAO (mm/jour). Quantite d'eau qui s'evapore du sol et transpire par les plantes. Si < 0.5 mm/j en hiver, le sol seche tres lentement et reste gorge d'eau.",
+  },
+  timelineNowcast: {
+    text: "Prevision radar minute par minute de la pluie dans la prochaine heure. Donnees issues du radar meteorologique via La Meteo Agricole. Precision elevee mais horizon limite a 60 minutes.",
+    link: { url: 'https://www.lameteoagricole.net/', label: 'La Meteo Agricole' },
   },
 
   // Bassin

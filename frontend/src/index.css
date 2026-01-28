@@ -16,3 +16,28 @@ body {
 .risk-yellow { @apply bg-yellow-500; }
 .risk-orange { @apply bg-orange-500; }
 .risk-red { @apply bg-red-500; }
+
+/* HydroMap markers */
+.marker-moulin {
+  animation: pulse-marker 2s infinite;
+}
+
+.pinch-line {
+  animation: pulse-pinch 1.5s infinite;
+}
+
+@keyframes pulse-marker {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.2); }
+}
+
+@keyframes pulse-pinch {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+/* TimeMachine banner */
+.time-machine-active {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border-bottom: 2px solid #f59e0b;
+}

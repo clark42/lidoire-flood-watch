@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     netatmo_refresh_token: str = ""
     netatmo_access_token: str = ""  # Optional: direct access token for testing
 
+    # La Meteo Agricole (scraping)
+    meteo_agricole_url: str = "https://www.lameteoagricole.net/previsions-meteo-agricole/Castillon-la-Bataille-33350.html"
+
     # Camera
     camera_rtsp_url: str = ""
     camera_snapshot_interval: int = 60  # seconds
@@ -65,6 +68,12 @@ class Settings(BaseSettings):
 
     # Hub'Eau hydrometric stations - comprehensive monitoring network
     # Stations ordered by proximity to moulin and importance for flood prediction
+    #
+    # NOTE v2.2 (Jan 2026): Libourne weight=0 — excluded from risk calculation.
+    # Libourne is tidally modulated (~4m oscillation) which masks the flood signal.
+    # It remains in the list for display/monitoring but does not contribute to the
+    # weighted river risk score. Weights redistributed to non-tidal stations.
+    # Analysis: episode avril 2025 (id=1).
     hubeau_stations: list[dict] = [
         # Dordogne - main river (downstream to upstream)
         {
@@ -73,7 +82,9 @@ class Settings(BaseSettings):
             "river": "Dordogne",
             "distance_km": 5,
             "delay_hours": 0,
-            "weight": 0.35,
+            "weight": 0.0,  # Excluded: tidal oscillation ~4m masks flood signal
+            "lat": 44.9167,
+            "lon": -0.2333,
             "thresholds": {"yellow": 3.0, "orange": 4.0, "red": 5.0},
         },
         {
@@ -82,7 +93,9 @@ class Settings(BaseSettings):
             "river": "Dordogne",
             "distance_km": 30,
             "delay_hours": 4,
-            "weight": 0.15,
+            "weight": 0.30,  # Primary non-tidal Dordogne station
+            "lat": 44.8131,
+            "lon": 0.0381,
             "thresholds": {"yellow": 3.5, "orange": 4.5, "red": 5.5},
         },
         {
@@ -91,7 +104,9 @@ class Settings(BaseSettings):
             "river": "Dordogne",
             "distance_km": 60,
             "delay_hours": 8,
-            "weight": 0.10,
+            "weight": 0.15,  # Upstream Dordogne, good lead time
+            "lat": 44.8531,
+            "lon": 0.4836,
             "thresholds": {"yellow": 3.0, "orange": 4.0, "red": 5.0},
         },
         # Isle - major tributary (confluence at Libourne)
@@ -101,7 +116,9 @@ class Settings(BaseSettings):
             "river": "Isle",
             "distance_km": 15,
             "delay_hours": 2,
-            "weight": 0.15,
+            "weight": 0.25,  # Closest non-tidal station (Isle)
+            "lat": 44.8789,
+            "lon": -0.1278,
             "thresholds": {"yellow": 2.5, "orange": 3.5, "red": 4.5},
         },
         {
@@ -110,7 +127,9 @@ class Settings(BaseSettings):
             "river": "Isle",
             "distance_km": 80,
             "delay_hours": 12,
-            "weight": 0.05,
+            "weight": 0.10,  # Far upstream Isle
+            "lat": 45.1837,
+            "lon": 0.7187,
             "thresholds": {"yellow": 2.0, "orange": 3.0, "red": 4.0},
         },
         # Dronne - tributary of Isle (confluence at Coutras)
@@ -120,7 +139,9 @@ class Settings(BaseSettings):
             "river": "Dronne",
             "distance_km": 25,
             "delay_hours": 3,
-            "weight": 0.10,
+            "weight": 0.15,  # Dronne at confluence
+            "lat": 45.0411,
+            "lon": -0.1233,
             "thresholds": {"yellow": 2.0, "orange": 3.0, "red": 4.0},
         },
         {
@@ -129,13 +150,16 @@ class Settings(BaseSettings):
             "river": "Dronne",
             "distance_km": 70,
             "delay_hours": 10,
-            "weight": 0.05,
+            "weight": 0.05,  # Far upstream Dronne, early warning
+            "lat": 45.2461,
+            "lon": 0.3450,
             "thresholds": {"yellow": 1.5, "orange": 2.5, "red": 3.5},
         },
     ]
 
-    # Primary station for main display (Libourne)
-    hubeau_primary_station: str = "P577001001"
+    # Primary station for tendency/rate calculation (non-tidal)
+    # Changed from Libourne (P577001001) to Pessac-sur-Dordogne in v2.2
+    hubeau_primary_station: str = "P555001001"
 
     # Tide ports
     tide_port_bordeaux: str = "BORDEAUX"

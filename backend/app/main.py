@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.api import router as api_router
 from app.services.scheduler import start_scheduler, stop_scheduler
+from app.db import init_db, close_db
 
 
 @asynccontextmanager
@@ -17,6 +18,9 @@ async def lifespan(app: FastAPI):
     print(f"Starting Lidoire Flood Watch API...")
     print(f"Moulin location: {settings.moulin_lat}, {settings.moulin_lon}")
 
+    # Create PostgreSQL tables
+    await init_db()
+
     # Start background data collection
     await start_scheduler()
 
@@ -24,6 +28,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     await stop_scheduler()
+    await close_db()
     print("Lidoire Flood Watch API stopped.")
 
 

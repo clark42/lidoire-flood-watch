@@ -2,10 +2,15 @@
 
 All data is read from InfluxDB. If not present, it's fetched from
 external APIs and stored for future use.
+
+Episodes are persisted in PostgreSQL via SQLAlchemy async.
 """
 
 from datetime import datetime, timedelta
 from typing import Optional
+
+from sqlalchemy import select, delete as sa_delete
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.schemas import (
     FloodEpisode,
@@ -15,12 +20,22 @@ from app.models.schemas import (
     RiverLevel,
     RainfallObservation,
 )
+from app.models.orm import FloodEpisodeRow
+from app.db import get_session_factory
 from app.services import influx_client
 
 
-# In-memory storage for episodes (PostgreSQL TODO)
-_episodes_store: list[FloodEpisode] = []
-_episode_id_counter = 1
+def _row_to_episode(row: FloodEpisodeRow) -> FloodEpisode:
+    return FloodEpisode(
+        id=row.id,
+        start_time=row.start_time,
+        peak_time=row.peak_time,
+        end_time=row.end_time,
+        severity=row.severity,
+        description=row.description,
+        notes=row.notes,
+        created_at=row.created_at,
+    )
 
 
 async def get_all_episodes(
@@ -28,77 +43,84 @@ async def get_all_episodes(
     offset: int = 0,
     min_severity: Optional[int] = None,
 ) -> list[FloodEpisode]:
-    """Get all recorded flood episodes."""
-    episodes = _episodes_store.copy()
-
-    if min_severity:
-        episodes = [e for e in episodes if e.severity >= min_severity]
-
-    episodes.sort(key=lambda e: e.start_time, reverse=True)
-    return episodes[offset:offset + limit]
+    """Get all recorded flood episodes from PostgreSQL."""
+    factory = get_session_factory()
+    async with factory() as session:
+        stmt = select(FloodEpisodeRow).order_by(FloodEpisodeRow.start_time.desc())
+        if min_severity:
+            stmt = stmt.where(FloodEpisodeRow.severity >= min_severity)
+        stmt = stmt.offset(offset).limit(limit)
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+        return [_row_to_episode(r) for r in rows]
 
 
 async def get_episode_by_id(episode_id: int) -> Optional[FloodEpisode]:
     """Get a specific episode by ID."""
-    for episode in _episodes_store:
-        if episode.id == episode_id:
-            return episode
-    return None
+    factory = get_session_factory()
+    async with factory() as session:
+        row = await session.get(FloodEpisodeRow, episode_id)
+        return _row_to_episode(row) if row else None
 
 
 async def create_episode(episode: FloodEpisodeCreate) -> FloodEpisode:
-    """Create a new flood episode."""
-    global _episode_id_counter
-
-    new_episode = FloodEpisode(
-        id=_episode_id_counter,
-        start_time=episode.start_time,
-        peak_time=episode.peak_time,
-        end_time=episode.end_time,
-        severity=episode.severity,
-        description=episode.description,
-        notes=episode.notes,
-        created_at=datetime.utcnow(),
-    )
-
-    _episodes_store.append(new_episode)
-    _episode_id_counter += 1
-
-    return new_episode
+    """Create a new flood episode in PostgreSQL."""
+    factory = get_session_factory()
+    async with factory() as session:
+        row = FloodEpisodeRow(
+            start_time=episode.start_time,
+            peak_time=episode.peak_time,
+            end_time=episode.end_time,
+            severity=episode.severity,
+            description=episode.description,
+            notes=episode.notes,
+            created_at=datetime.utcnow(),
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return _row_to_episode(row)
 
 
 async def update_episode(episode_id: int, episode: FloodEpisodeCreate) -> FloodEpisode:
     """Update an existing episode."""
-    for i, ep in enumerate(_episodes_store):
-        if ep.id == episode_id:
-            updated = FloodEpisode(
-                id=episode_id,
-                start_time=episode.start_time,
-                peak_time=episode.peak_time,
-                end_time=episode.end_time,
-                severity=episode.severity,
-                description=episode.description,
-                notes=episode.notes,
-                created_at=ep.created_at,
-            )
-            _episodes_store[i] = updated
-            return updated
-
-    raise ValueError(f"Episode {episode_id} not found")
+    factory = get_session_factory()
+    async with factory() as session:
+        row = await session.get(FloodEpisodeRow, episode_id)
+        if not row:
+            raise ValueError(f"Episode {episode_id} not found")
+        row.start_time = episode.start_time
+        row.peak_time = episode.peak_time
+        row.end_time = episode.end_time
+        row.severity = episode.severity
+        row.description = episode.description
+        row.notes = episode.notes
+        await session.commit()
+        await session.refresh(row)
+        return _row_to_episode(row)
 
 
 async def delete_episode(episode_id: int) -> None:
     """Delete an episode."""
-    global _episodes_store
-    _episodes_store = [e for e in _episodes_store if e.id != episode_id]
+    factory = get_session_factory()
+    async with factory() as session:
+        stmt = sa_delete(FloodEpisodeRow).where(FloodEpisodeRow.id == episode_id)
+        await session.execute(stmt)
+        await session.commit()
 
 
 async def get_episodes_in_range(start: datetime, end: datetime) -> list[FloodEpisode]:
     """Get episodes that occurred within a time range."""
-    return [
-        e for e in _episodes_store
-        if start <= e.start_time <= end
-    ]
+    factory = get_session_factory()
+    async with factory() as session:
+        stmt = (
+            select(FloodEpisodeRow)
+            .where(FloodEpisodeRow.start_time >= start)
+            .where(FloodEpisodeRow.start_time <= end)
+        )
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+        return [_row_to_episode(r) for r in rows]
 
 
 async def get_timeline_data(
@@ -230,6 +252,69 @@ async def _fetch_and_store_river_levels(start: datetime, end: datetime) -> int:
             written = await influx_client.write_river_levels_batch(level_dicts)
             total_stored += written
             print(f"  Stored {written} points for {station['name']}")
+
+    return total_stored
+
+
+async def _fetch_and_store_river_levels_elab(
+    start: datetime,
+    end: datetime,
+    station_ids: list[str] | None = None,
+) -> int:
+    """Fetch historical river levels and store in InfluxDB.
+
+    Priority:
+    1. Hydroportail (hydro.eaufrance.fr) — sub-hourly, full history
+    2. Hub'Eau obs_elab HIXnJ — daily max
+    3. Hub'Eau obs_elab HIXM — monthly max (last resort)
+
+    Args:
+        start: Start datetime
+        end: End datetime
+        station_ids: Optional list of station IDs to fetch (default: all configured)
+    """
+    from app.services.collectors.hubeau import fetch_historical_data, fetch_hydroportail_data
+    from app.config import get_settings
+
+    settings = get_settings()
+    total_stored = 0
+
+    for station in settings.hubeau_stations:
+        station_id = station["id"]
+        if station_ids and station_id not in station_ids:
+            continue
+
+        # 1. Try Hydroportail (sub-hourly historical data)
+        levels = await fetch_hydroportail_data(station_id, start, end)
+
+        # 2. Fallback: Hub'Eau obs_elab daily max (HIXnJ)
+        if not levels:
+            levels = await fetch_historical_data(station_id, start, end, granularity="daily_max")
+
+        # 3. Last resort: monthly max (HIXM)
+        if not levels:
+            levels = await fetch_historical_data(station_id, start, end, granularity="monthly_max")
+            if levels:
+                print(f"  obs_elab: using monthly max (HIXM) for {station['name']} — {len(levels)} points")
+
+        if levels:
+            level_dicts = [
+                {
+                    "station_id": station_id,
+                    "station_name": station["name"],
+                    "river": station["river"],
+                    "height_m": lv.height_m,
+                    "timestamp": lv.timestamp,
+                    "flow_m3s": lv.flow_m3s,
+                }
+                for lv in levels
+            ]
+
+            written = await influx_client.write_river_levels_batch(level_dicts)
+            total_stored += written
+            print(f"  Stored {written} points for {station['name']}")
+        else:
+            print(f"  No data for {station['name']} (period may be too recent)")
 
     return total_stored
 

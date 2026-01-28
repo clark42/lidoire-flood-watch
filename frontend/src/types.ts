@@ -41,19 +41,55 @@ export interface RainfallSummary {
   last_6h_mm: number
   last_24h_mm: number
   last_72h_mm: number
+  last_7d_mm: number
   forecast_24h_mm: number
   forecast_72h_mm: number
+}
+
+export interface RiskWeights {
+  river: number   // 42% (v2.3)
+  rain_24h: number // 8%
+  rain_72h: number // 10%
+  rain_7d: number  // 5%
+  tide: number     // 8%
+  tide_phase: number // 8%
+  tendency: number   // 5%
+  wind_west: number  // 3%
+  soil_sat: number   // 5%
+  video: number      // 5%
+}
+
+export interface StationRiskScore {
+  station_id: string
+  station_name: string
+  river: string
+  height_m: number
+  score: number
+  weight: number
+  weighted_score: number
+  tendency: Tendency
+  rate_cm_per_hour: number
 }
 
 export interface RiskFactors {
   rain_24h_score: number
   rain_72h_score: number
+  rain_7d_score?: number
   river_level_score: number
   tide_score: number
   tide_phase_score: number
+  wind_west_score?: number
+  soil_saturation_factor?: number
   video_level_score: number | null
   tendency_score?: number
   conjunction_multiplier?: number
+  stations_detail?: StationRiskScore[]
+  weights?: RiskWeights
+  rain_24h_raw_mm?: number
+  rain_72h_raw_mm?: number
+  tide_coefficient_raw?: number
+  tide_hours_to_high?: number
+  tendency_rate_cm_h?: number
 }
 
 export interface RiskScore {
@@ -89,6 +125,8 @@ export interface StationData {
   threshold_yellow: number
   threshold_orange: number
   threshold_red: number
+  lat?: number
+  lon?: number
 }
 
 export interface MultiStationData {
@@ -102,6 +140,8 @@ export interface NetatmoStation {
   distance_km: number
   rain_1h_mm: number | null
   rain_24h_mm: number | null
+  rain_72h_mm?: number | null
+  rain_7d_mm?: number | null
   lat?: number
   lon?: number
   is_lidoire?: boolean
@@ -119,18 +159,34 @@ export interface NetatmoData {
   stations?: NetatmoStation[]
 }
 
+export interface InfoclimatStation {
+  name: string
+  distance_km: number
+  source: string
+  departement?: string
+  lat?: number
+  lon?: number
+}
+
+export interface InfoclimatRainfallStation {
+  station_id: string
+  station_name: string
+  distance_km: number
+  rain_24h_mm: number
+}
+
+export interface InfoclimatRainfall {
+  available: boolean
+  reason?: string
+  stations_count?: number
+  rain_24h_avg_mm?: number
+  stations?: InfoclimatRainfallStation[]
+}
+
 export interface InfoclimatData {
   stations_found: number
-  nearest_stations: {
-    name: string
-    distance_km: number
-    source: string
-    departement?: string
-  }[]
-  rainfall: {
-    available: boolean
-    reason?: string
-  }
+  nearest_stations: InfoclimatStation[]
+  rainfall: InfoclimatRainfall
 }
 
 export interface DataSource {
@@ -156,6 +212,49 @@ export interface ForecastData {
   forecasts: ForecastPoint[]
 }
 
+export interface SoilConditions {
+  soil_moisture: number | null
+  moisture_deep: number | null
+  soil_temperature_0cm: number | null
+  et0_mm: number | null
+  soil_saturation_factor: number
+  precip_probability: number | null
+  water_balance_30d_mm: number | null
+  surplus_deficit_30d_pct: number | null
+  deficit_12m_mm: number | null
+}
+
+export interface WindData {
+  wind_speed_kmh: number
+  wind_direction_deg: number
+  westerly_wind_kmh: number
+}
+
+export interface NowcastRainData {
+  timestamp: string
+  commune: string
+  total_60min_mm: number
+  max_intensity_mm: number
+  rain_minutes: number
+  minute_data: { minute: string; mm: number }[]
+}
+
+export interface MeteoAgricoleData {
+  timestamp: string
+  commune: string
+  rain_min_mm: number
+  rain_max_mm: number
+  rain_probability_pct: number
+  wind_avg_kmh: number
+  wind_gust_kmh: number
+  wind_direction: string
+  precip_30d_mm: number | null
+  surplus_deficit_30d_pct: number | null
+  deficit_12m_mm: number | null
+  rain_forecast_3d_mm: number
+  rain_forecast_7d_mm: number
+}
+
 export interface RealtimeData {
   timestamp: string
   risk: RiskScore
@@ -166,6 +265,10 @@ export interface RealtimeData {
   alerts: string[]
   stations?: MultiStationData
   netatmo_available?: boolean
+  soil?: SoilConditions
+  wind?: WindData
+  meteo_agricole?: MeteoAgricoleData
+  nowcast_rain?: NowcastRainData
 }
 
 export interface TimelinePoint {
@@ -214,4 +317,76 @@ export interface EpisodeAnalysis {
   rainfall: any[]
   video_data: VideoAnalysis[]
   matched_criteria: string[]
+}
+
+// Unified Timeline Types (Multi-Source Comparison)
+export interface TimelineDataPoint {
+  timestamp: string
+  value: number
+}
+
+export interface TimelineSeries {
+  type: 'river_level' | 'rainfall' | 'rainfall_cumul' | 'tide' | 'risk_score' | 'soil_moisture' | 'soil_temperature' | 'evapotranspiration' | 'wind_speed' | 'wind_westerly'
+  name: string
+  unit: string
+  color: string
+  data: TimelineDataPoint[]
+}
+
+export interface UnifiedTimelineData {
+  start: string
+  end: string
+  resolution: string
+  series: Record<string, TimelineSeries>
+}
+
+export interface RiverStationInfo {
+  id: string
+  name: string
+  river: string
+  color: string
+  distance_km: number
+  delay_hours: number
+}
+
+export interface RainfallStationInfo {
+  id: string
+  name: string
+  position: 'amont' | 'milieu' | 'aval'
+  color: string
+}
+
+export interface AvailableSources {
+  river_stations: RiverStationInfo[]
+  rainfall_stations: RainfallStationInfo[]
+  has_tide: boolean
+  has_risk_score: boolean
+  has_infoclimat: boolean
+  has_wind: boolean
+  has_soil: boolean
+}
+
+export interface RainfallTimelineSeries {
+  name: string
+  position: string
+  color: string
+  unit: string
+  data: TimelineDataPoint[]
+}
+
+export interface RainfallTimelineData {
+  start: string
+  end: string
+  resolution: string
+  series: Record<string, RainfallTimelineSeries>
+}
+
+// Basin Rainfall (aggregated Lidoire basin)
+export interface BasinRainfallData {
+  timestamp: string
+  basin_average_1h_mm: number
+  basin_average_24h_mm: number
+  weighted_average_24h_mm: number
+  by_position: Record<string, { total: number; count: number; avg: number }>
+  sparkline_24h: { timestamp: string; value: number }[]
 }

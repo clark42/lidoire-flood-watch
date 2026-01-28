@@ -33,6 +33,9 @@ python-dotenv==1.0.1
 # Scheduling
 apscheduler==3.10.4
 
+# HTML parsing
+beautifulsoup4>=4.12
+
 # Caching
 redis==5.0.1
 

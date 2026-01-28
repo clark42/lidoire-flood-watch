@@ -108,17 +108,20 @@ async def analyze_flood_episode(
 
 @router.get("/analyze/{episode_id}", response_model=EpisodeAnalysis)
 async def analyze_existing_episode(episode_id: int):
-    """Analyze an existing recorded episode."""
+    """Analyze an existing recorded episode using v2 multi-station model."""
     episode = await get_episode_by_id(episode_id)
     if episode is None:
         raise HTTPException(status_code=404, detail="Episode not found")
 
-    # Use the episode's start time for analysis
-    analysis = await analyze_episode(
-        date=episode.start_time,
-        window_before=timedelta(days=3),
-        window_after=timedelta(days=2),
-        episode=episode,
+    # Use peak_time if available, otherwise start_time
+    episode_date = episode.peak_time or episode.start_time
+
+    analysis = await analyze_episode_v2(
+        episode_date=episode_date,
+        severity=episode.severity,
+        description=episode.description or "",
+        hours_before=72,
+        hours_after=24,
     )
     return analysis
 

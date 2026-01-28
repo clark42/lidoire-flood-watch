@@ -4,9 +4,14 @@ Fetches river level data from the French Hub'Eau API.
 https://hubeau.eaufrance.fr/page/api-hydrometrie
 
 Supports:
-- Real-time observations (last 30 days)
-- Historical elaborated data (since 1900 for some stations)
+- Real-time observations (last 30 days) via Hub'Eau observations_tr
+- Historical sub-hourly data (unlimited) via Hydroportail AJAX API
+- Historical elaborated data (daily/monthly aggregates) via Hub'Eau obs_elab
 - Multiple stations across Dordogne, Isle, and Dronne rivers
+
+Data source priority for historical periods (> 30 days):
+1. Hydroportail (hydro.eaufrance.fr) — sub-hourly, full history
+2. Hub'Eau obs_elab HIXnJ — daily max, full history
 """
 
 import httpx
@@ -19,6 +24,9 @@ from app.models.schemas import RiverLevel, Tendency, MultiStationData, StationLe
 
 # Hub'Eau API base URLs
 HUBEAU_API_BASE = "https://hubeau.eaufrance.fr/api/v2/hydrometrie"
+
+# Hydroportail AJAX API (sub-hourly historical data, no time limit)
+HYDROPORTAIL_BASE = "https://www.hydro.eaufrance.fr/stationhydro/ajax"
 
 # Cache for river data
 _stations_cache: dict[str, list[RiverLevel]] = {}
@@ -130,11 +138,13 @@ async def fetch_historical_data(
     url = f"{HUBEAU_API_BASE}/obs_elab"
 
     # Map granularity to Hub'Eau parameter
+    # Valid values: QmnJ, QmM, HIXnJ, HIXM, QIXnJ, QIXM, QINnJ, QINM
     grandeur_map = {
-        "daily_max": "HXI",  # Hauteur instantanée maximale journalière
-        "monthly_max": "HXIM",  # Hauteur instantanée maximale mensuelle
+        "daily_max": "HIXnJ",   # Hauteur Instantanée maXimale n-Jours (daily max)
+        "monthly_max": "HIXM",  # Hauteur Instantanée maXimale Mensuelle
+        "daily_min": "QINnJ",   # Débit Instantané miNimal n-Jours
     }
-    grandeur = grandeur_map.get(granularity, "HXI")
+    grandeur = grandeur_map.get(granularity, "HIXnJ")
 
     try:
         async with httpx.AsyncClient() as client:
@@ -188,6 +198,96 @@ async def fetch_historical_data(
         return []
     except Exception as e:
         print(f"Error fetching Hub'Eau historical data for station {station_id}: {e}")
+        return []
+
+
+async def fetch_hydroportail_data(
+    station_id: str,
+    start_date: datetime,
+    end_date: datetime,
+) -> list[RiverLevel]:
+    """
+    Fetch sub-hourly historical data from the Hydroportail (hydro.eaufrance.fr).
+
+    The Hydroportail serves the full Banque Hydro national database with no time
+    limit, unlike Hub'Eau observations_tr which only keeps 30 days.
+
+    Returns data at ~5-15 min intervals (same granularity as realtime).
+
+    Args:
+        station_id: Hub'Eau station code (e.g., P577001001)
+        start_date: Start of the period
+        end_date: End of the period
+
+    Returns:
+        List of RiverLevel observations sorted by timestamp
+    """
+    station_config = _get_station_config(station_id)
+
+    url = f"{HYDROPORTAIL_BASE}/{station_id}/series"
+
+    # Hydroportail expects DD/MM/YYYY date format
+    params = {
+        "hydro_series[startAt]": start_date.strftime("%d/%m/%Y"),
+        "hydro_series[endAt]": end_date.strftime("%d/%m/%Y"),
+        "hydro_series[variableType]": "simple_and_interpolated_and_hourly_variable",
+        "hydro_series[simpleAndInterpolatedAndHourlyVariable]": "H",
+        "hydro_series[statusData]": "most_valid",
+    }
+
+    # Hydroportail requires browser-like headers to avoid 403
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"https://www.hydro.eaufrance.fr/stationhydro/{station_id}/series",
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers=headers, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+
+            series_data = data.get("series", {}).get("data", [])
+            if not series_data:
+                return []
+
+            levels = []
+            for obs in series_data:
+                try:
+                    height_mm = obs.get("v")
+                    if height_mm is None:
+                        continue
+
+                    timestamp_str = obs.get("t")
+                    if not timestamp_str:
+                        continue
+
+                    levels.append(
+                        RiverLevel(
+                            timestamp=datetime.fromisoformat(
+                                timestamp_str.replace("Z", "+00:00")
+                            ),
+                            station_id=station_id,
+                            station_name=station_config.get("name", "Unknown"),
+                            river=station_config.get("river", "Unknown"),
+                            height_m=float(height_mm) / 1000,
+                            flow_m3s=None,
+                        )
+                    )
+                except (KeyError, ValueError, TypeError) as e:
+                    print(f"Error parsing Hydroportail observation: {e}")
+                    continue
+
+            print(f"  Hydroportail: {len(levels)} sub-hourly points for {station_config.get('name', station_id)}")
+            return sorted(levels, key=lambda x: x.timestamp)
+
+    except httpx.HTTPStatusError as e:
+        print(f"Hydroportail API error for {station_id}: {e.response.status_code}")
+        return []
+    except Exception as e:
+        print(f"Error fetching Hydroportail data for {station_id}: {e}")
         return []
 
 
@@ -317,13 +417,20 @@ async def fetch_episode_context(
                 if start_date <= lv.timestamp <= end_date
             ]
         else:
-            # Use historical API
-            levels = await fetch_historical_data(
+            # Use Hydroportail for sub-hourly historical data
+            levels = await fetch_hydroportail_data(
                 station_id,
                 start_date,
                 end_date,
-                granularity="daily_max",
             )
+            # Fallback to Hub'Eau obs_elab (daily max) if Hydroportail fails
+            if not levels:
+                levels = await fetch_historical_data(
+                    station_id,
+                    start_date,
+                    end_date,
+                    granularity="daily_max",
+                )
 
         if levels:
             results[station_id] = levels

@@ -182,6 +182,10 @@ async def _fetch_historical_rainfall(
                         )
                     )
 
+            total_mm = sum(p for p in precip if p is not None)
+            print(f"Open-Meteo archive: {len(rainfall)} hourly points, total={total_mm:.1f}mm "
+                  f"({start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')})")
+
     except Exception as e:
         print(f"Error fetching historical rainfall: {e}")
 
@@ -197,24 +201,33 @@ def _calculate_episode_context(
     """Calculate summary context metrics for an episode."""
     settings = get_settings()
 
+    # Strip timezone to avoid naive/aware comparison failures
+    ep_date = episode_date.replace(tzinfo=None) if episode_date.tzinfo else episode_date
+
+    def _strip_tz(dt: datetime) -> datetime:
+        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
     # Calculate rainfall sums
     rain_24h = sum(
         r.precipitation_mm_h for r in rainfall
-        if episode_date - timedelta(hours=24) <= r.timestamp <= episode_date
+        if ep_date - timedelta(hours=24) <= _strip_tz(r.timestamp) <= ep_date
     )
     rain_48h = sum(
         r.precipitation_mm_h for r in rainfall
-        if episode_date - timedelta(hours=48) <= r.timestamp <= episode_date
+        if ep_date - timedelta(hours=48) <= _strip_tz(r.timestamp) <= ep_date
     )
     rain_72h = sum(
         r.precipitation_mm_h for r in rainfall
-        if episode_date - timedelta(hours=72) <= r.timestamp <= episode_date
+        if ep_date - timedelta(hours=72) <= _strip_tz(r.timestamp) <= ep_date
     )
 
-    # Find max Dordogne level (Libourne station)
+    # Find max Dordogne level — prefer Pessac (non-tidal) over Libourne
+    # Libourne is tidally modulated; its peaks reflect tide, not flood
+    pessac_levels = river_data.get("P555001001", [])
     libourne_levels = river_data.get("P577001001", [])
+    dordogne_levels = pessac_levels or libourne_levels
     max_dordogne = max(
-        (lv.height_m for lv in libourne_levels),
+        (lv.height_m for lv in dordogne_levels),
         default=0.0,
     )
 
@@ -233,9 +246,9 @@ def _calculate_episode_context(
         # Find closest high tide to episode peak
         closest_high = min(
             high_tides,
-            key=lambda t: abs((t.timestamp - episode_date).total_seconds()),
+            key=lambda t: abs((_strip_tz(t.timestamp) - ep_date).total_seconds()),
         )
-        hours_diff = (episode_date - closest_high.timestamp).total_seconds() / 3600
+        hours_diff = (ep_date - _strip_tz(closest_high.timestamp)).total_seconds() / 3600
 
         if hours_diff > 0:
             tide_phase = "après PM"
@@ -309,13 +322,35 @@ def _identify_flood_criteria(
                     f"{level.height_m:.2f}m"
                 )
 
-    # Check for conjunction
-    high_river = context.max_dordogne_level_m > settings.risk_dordogne_level_yellow
-    high_tide = context.max_tide_coefficient > 80
-    high_rain = context.rain_24h_before_mm > settings.risk_rain_24h_yellow
+    # Check for conjunction — list actual contributing factors
+    conjunction_factors = []
+    if context.max_dordogne_level_m > settings.risk_dordogne_level_yellow:
+        conjunction_factors.append(f"niveau riviere eleve ({context.max_dordogne_level_m:.1f}m)")
+    if context.max_tide_coefficient > 80:
+        conjunction_factors.append(f"maree forte (coef {context.max_tide_coefficient})")
+    if context.rain_24h_before_mm > settings.risk_rain_24h_yellow:
+        conjunction_factors.append(f"pluie 24h significative ({context.rain_24h_before_mm:.0f}mm)")
+    if context.rain_72h_before_mm > settings.risk_rain_24h_yellow * 2:
+        conjunction_factors.append(f"pluie cumulative 72h ({context.rain_72h_before_mm:.0f}mm)")
 
-    if sum([high_river, high_tide, high_rain]) >= 2:
-        criteria.append("Conjonction de facteurs défavorables")
+    # Count elevated stations
+    elevated_stations = []
+    for station_id, level in max_levels.items():
+        station_config = next(
+            (s for s in settings.hubeau_stations if s["id"] == station_id), None
+        )
+        if station_config:
+            threshold_yellow = station_config.get("thresholds", {}).get("yellow", 3.0)
+            if level.height_m > threshold_yellow:
+                elevated_stations.append(station_config["name"])
+    if len(elevated_stations) >= 3:
+        conjunction_factors.append(
+            f"{len(elevated_stations)} stations simultanement elevees "
+            f"({', '.join(elevated_stations)})"
+        )
+
+    if len(conjunction_factors) >= 2:
+        criteria.append(f"Conjonction: {' + '.join(conjunction_factors)}")
 
     return criteria
 

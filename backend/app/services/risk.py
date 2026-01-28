@@ -53,8 +53,13 @@ def _calculate_tide_phase_score(
     """
     Calculate risk from tide phase.
 
-    Risk is highest at high tide (pleine mer).
-    Returns 0-1 score.
+    Based on FLOOD_RISK_ANALYSIS.md:
+    - Risk is HIGHEST at PM-2h (2 hours BEFORE high tide)
+    - This is because flood risk comes from blocking of Lidoire outflow
+    - The blocking is worst during rising tide, just before high tide
+    - Window PM-4h to PM+1h is critical
+
+    Returns 0-1 score (0-15 points in doc, normalized here)
     """
     if timestamp is None:
         timestamp = datetime.utcnow()
@@ -62,7 +67,7 @@ def _calculate_tide_phase_score(
     if not tide.next_high_tide:
         return 0.0
 
-    # Calculate hours until next high tide
+    # Calculate hours until next high tide (positive = before PM)
     hours_to_high = (tide.next_high_tide.timestamp - timestamp).total_seconds() / 3600
 
     # Also check if we just passed high tide
@@ -72,24 +77,24 @@ def _calculate_tide_phase_score(
     ]
     if past_high_times:
         hours_since_high = (timestamp - past_high_times[-1].timestamp).total_seconds() / 3600
-    else:
-        hours_since_high = 12  # Assume long time ago
+        # Use negative to indicate "after high tide"
+        if hours_since_high < hours_to_high:
+            hours_to_high = -hours_since_high
 
-    # Closest high tide (past or future)
-    min_hours = min(abs(hours_to_high), abs(hours_since_high))
-
-    # Risk is highest at high tide (0 hours), decreases with time
-    # Full tidal cycle is ~12.4 hours, so max distance is ~6.2 hours
-    if min_hours <= 1:
-        return 1.0
-    elif min_hours <= 2:
-        return 0.8
-    elif min_hours <= 3:
-        return 0.5
-    elif min_hours <= 4:
-        return 0.3
+    # Scoring based on document:
+    # Peak risk at PM-2h (hours_to_high = 2)
+    # Risk window: PM-6h to PM+3h
+    if hours_to_high < -3:  # More than 3h after PM
+        return 0.0
+    elif hours_to_high > 6:  # More than 6h before PM
+        return 0.0
     else:
-        return 0.1
+        # Peak at PM-2h (hours_to_high = 2)
+        # Gaussian-like curve centered at 2h before PM
+        distance_from_peak = abs(hours_to_high - 2)
+        # Max at 0 distance, decreases to 0 at distance 5
+        score = max(0, 1 - (distance_from_peak / 5))
+        return score
 
 
 def _score_to_level(score: float) -> RiskLevel:
@@ -118,15 +123,22 @@ def _generate_description(level: RiskLevel, factors: RiskFactors) -> str:
     # Add specific factors
     high_factors = []
     if factors.rain_24h_score > 0.5:
-        high_factors.append("pluie 24h")
+        if factors.soil_saturation_factor > 1.2:
+            high_factors.append("pluie 24h (sols saturés)")
+        else:
+            high_factors.append("pluie 24h")
     if factors.rain_72h_score > 0.5:
         high_factors.append("pluie 72h")
+    if factors.rain_7d_score > 0.5:
+        high_factors.append("pluie 7j")
     if factors.river_level_score > 0.5:
         high_factors.append("niveau Dordogne")
     if factors.tide_score > 0.5:
         high_factors.append("coefficient marée")
-    if factors.tide_phase_score > 0.7:
-        high_factors.append("pleine mer")
+    if factors.tide_phase_score > 0.6:
+        high_factors.append("approche pleine mer")
+    if factors.wind_west_score > 0.3:
+        high_factors.append("vent d'ouest (surcote)")
 
     if high_factors:
         desc += f" ({', '.join(high_factors)})"
@@ -157,83 +169,140 @@ def _generate_recommendations(level: RiskLevel, factors: RiskFactors) -> list[st
     return recommendations
 
 
+async def _store_risk_to_influx(risk: RiskScore) -> bool:
+    """Store risk score to InfluxDB."""
+    from app.services import influx_client
+
+    try:
+        return await influx_client.write_risk_score(
+            score=risk.score,
+            level=risk.level.value,
+            timestamp=risk.timestamp,
+            factors={
+                "rain_24h": risk.factors.rain_24h_score,
+                "rain_72h": risk.factors.rain_72h_score,
+                "river_level": risk.factors.river_level_score,
+                "tide": risk.factors.tide_score,
+                "tide_phase": risk.factors.tide_phase_score,
+                "video_level": risk.factors.video_level_score,
+            },
+        )
+    except Exception as e:
+        print(f"Error storing risk to InfluxDB: {e}")
+        return False
+
+
 async def calculate_risk_score(
     tide: TideForecast,
     river: RiverLevelForecast,
     rainfall: RainfallSummary,
     video_level: Optional[float] = None,
+    westerly_wind_kmh: float = 0.0,
 ) -> RiskScore:
     """
-    Calculate overall flood risk score.
+    Calculate overall flood risk score based on FLOOD_RISK_ANALYSIS.md.
 
-    Weights:
-    - Rainfall 24h: 25%
-    - Rainfall 72h: 15%
-    - River level: 30%
-    - Tide coefficient: 15%
-    - Tide phase: 10%
-    - Video level: 5% (if available)
+    Weights (out of 100 points):
+    - Rainfall (with soil saturation): 0-30 points
+    - River level (Dordogne): 0-25 points
+    - Tide coefficient: 0-25 points
+    - Tide phase (peak at PM-2h): 0-15 points
+    - Westerly wind (surge): 0-5 points
+
+    Soil saturation factor (1.0-1.5) multiplies rainfall impact.
     """
     settings = get_settings()
     now = datetime.utcnow()
 
-    # Calculate individual scores (0-1)
-    rain_24h_score = _normalize_score(
-        rainfall.last_24h_mm + rainfall.forecast_24h_mm * 0.5,  # Weight forecast less
-        (settings.risk_rain_24h_yellow, settings.risk_rain_24h_orange, settings.risk_rain_24h_red),
-    )
+    # === Soil saturation factor ===
+    saturation = rainfall.soil_saturation_factor or 1.0
 
+    # === Rain score (0-30 points) ===
+    # Apply saturation factor to effective rainfall
+    effective_rain_24h = (rainfall.last_24h_mm + rainfall.forecast_24h_mm * 0.5) * saturation
+
+    # Scoring from doc: <20mm = 0-10pts, 20-50mm = 10-20pts, >50mm = 20-30pts
+    if effective_rain_24h < 20:
+        rain_points = (effective_rain_24h / 20) * 10
+    elif effective_rain_24h < 50:
+        rain_points = 10 + ((effective_rain_24h - 20) / 30) * 10
+    else:
+        rain_points = 20 + ((effective_rain_24h - 50) / 30) * 10
+    rain_points = min(30, rain_points)
+
+    # Bonus for 72h/7d rain (if significant)
+    if rainfall.last_72h_mm > 80:
+        rain_points = min(30, rain_points + 3)
+    if rainfall.last_7d_mm > 120:
+        rain_points = min(30, rain_points + 2)
+
+    rain_24h_score = rain_points / 30  # Normalize to 0-1
     rain_72h_score = _normalize_score(
-        rainfall.last_72h_mm + rainfall.forecast_72h_mm * 0.3,
-        (settings.risk_rain_24h_yellow * 2, settings.risk_rain_24h_orange * 2, settings.risk_rain_24h_red * 2),
+        rainfall.last_72h_mm * saturation,
+        (40, 70, 110),
+    )
+    rain_7d_score = _normalize_score(
+        rainfall.last_7d_mm * saturation,
+        (60, 100, 150),
     )
 
-    river_score = _normalize_score(
-        river.current.height_m,
-        (settings.risk_dordogne_level_yellow, settings.risk_dordogne_level_orange, settings.risk_dordogne_level_red),
-    )
+    # === River level score (0-25 points) ===
+    # Doc seuils: <2.5m OK, 2.5-4m vigilance, >4m danger
+    level_m = river.current.height_m
+    if level_m < 2.5:
+        river_points = (level_m / 2.5) * 5
+    elif level_m < 4.0:
+        river_points = 5 + ((level_m - 2.5) / 1.5) * 10
+    elif level_m < 5.5:
+        river_points = 15 + ((level_m - 4.0) / 1.5) * 10
+    else:
+        river_points = 25
+    river_points = min(25, river_points)
+    river_score = river_points / 25
 
-    # Tide coefficient score
+    # === Tide coefficient score (0-25 points) ===
+    # Doc: <70 faible, 70-90 modéré, 90-105 fort, >105 très fort
     coef = tide.current_coefficient or 70
-    tide_score = _normalize_score(
-        coef,
-        (70, settings.risk_tide_coef_high, 110),
-    )
+    if coef < 70:
+        tide_points = (coef / 70) * 5
+    elif coef < 90:
+        tide_points = 5 + ((coef - 70) / 20) * 10
+    elif coef < 105:
+        tide_points = 15 + ((coef - 90) / 15) * 7
+    else:
+        tide_points = 22 + ((coef - 105) / 15) * 3
+    tide_points = min(25, tide_points)
+    tide_score = tide_points / 25
 
-    # Tide phase score
+    # === Tide phase score (0-15 points) ===
+    # Peak at PM-2h based on document
     tide_phase_score = _calculate_tide_phase_score(tide, now)
+    phase_points = tide_phase_score * 15
 
-    # Video level score (if available)
+    # === Westerly wind score (0-5 points) ===
+    # Surge from west wind (doc: >30 km/h = risk)
+    if westerly_wind_kmh < 30:
+        wind_points = 0
+    elif westerly_wind_kmh < 60:
+        wind_points = ((westerly_wind_kmh - 30) / 30) * 2
+    elif westerly_wind_kmh < 100:
+        wind_points = 2 + ((westerly_wind_kmh - 60) / 40) * 2
+    else:
+        wind_points = 4 + min(1, (westerly_wind_kmh - 100) / 50)
+    wind_points = min(5, wind_points)
+    wind_score = wind_points / 5 if wind_points > 0 else 0
+
+    # === Video level score (bonus, not in doc weights) ===
     video_score = (video_level / 100) if video_level is not None else None
 
-    # Calculate weighted score
-    weights = {
-        "rain_24h": 0.25,
-        "rain_72h": 0.15,
-        "river": 0.30,
-        "tide": 0.15,
-        "tide_phase": 0.10,
-        "video": 0.05,
-    }
+    # === Total score (0-100) ===
+    total_points = rain_points + river_points + tide_points + phase_points + wind_points
 
-    total_weight = sum(weights.values())
-    if video_score is None:
-        # Redistribute video weight to other factors
-        total_weight -= weights["video"]
+    # Video adds bonus (max +5 if very high)
+    if video_score is not None and video_score > 0.5:
+        total_points = min(100, total_points + (video_score - 0.5) * 10)
 
-    weighted_score = (
-        rain_24h_score * weights["rain_24h"] +
-        rain_72h_score * weights["rain_72h"] +
-        river_score * weights["river"] +
-        tide_score * weights["tide"] +
-        tide_phase_score * weights["tide_phase"]
-    )
-
-    if video_score is not None:
-        weighted_score += video_score * weights["video"]
-
-    # Normalize to 0-100
-    final_score = (weighted_score / total_weight) * 100
+    final_score = min(100, total_points)
 
     # Determine level
     level = _score_to_level(final_score)
@@ -241,13 +310,16 @@ async def calculate_risk_score(
     factors = RiskFactors(
         rain_24h_score=rain_24h_score,
         rain_72h_score=rain_72h_score,
+        rain_7d_score=rain_7d_score,
         river_level_score=river_score,
         tide_score=tide_score,
         tide_phase_score=tide_phase_score,
+        wind_west_score=wind_score,
+        soil_saturation_factor=saturation,
         video_level_score=video_score,
     )
 
-    return RiskScore(
+    risk = RiskScore(
         timestamp=now,
         level=level,
         score=round(final_score, 1),
@@ -255,6 +327,11 @@ async def calculate_risk_score(
         description=_generate_description(level, factors),
         recommendations=_generate_recommendations(level, factors),
     )
+
+    # Store to InfluxDB
+    await _store_risk_to_influx(risk)
+
+    return risk
 
 
 async def calculate_risk_from_values(
@@ -264,67 +341,99 @@ async def calculate_risk_from_values(
     tide_coefficient: int,
     hours_to_high_tide: float,
     video_level: Optional[float] = None,
+    westerly_wind_kmh: float = 0.0,
+    soil_saturation_factor: float = 1.0,
+    rain_7d_mm: float = 0.0,
 ) -> RiskScore:
-    """Calculate risk from explicit values (for simulation)."""
-    settings = get_settings()
+    """
+    Calculate risk from explicit values (for simulation).
+
+    Uses same algorithm as calculate_risk_score but with direct values.
+    Based on FLOOD_RISK_ANALYSIS.md weights.
+    """
     now = datetime.utcnow()
 
-    # Calculate individual scores
-    rain_24h_score = _normalize_score(
-        rain_24h_mm,
-        (settings.risk_rain_24h_yellow, settings.risk_rain_24h_orange, settings.risk_rain_24h_red),
-    )
-
-    rain_72h_score = _normalize_score(
-        rain_72h_mm,
-        (settings.risk_rain_24h_yellow * 2, settings.risk_rain_24h_orange * 2, settings.risk_rain_24h_red * 2),
-    )
-
-    river_score = _normalize_score(
-        dordogne_level_m,
-        (settings.risk_dordogne_level_yellow, settings.risk_dordogne_level_orange, settings.risk_dordogne_level_red),
-    )
-
-    tide_score = _normalize_score(
-        tide_coefficient,
-        (70, settings.risk_tide_coef_high, 110),
-    )
-
-    # Tide phase from hours
-    if abs(hours_to_high_tide) <= 1:
-        tide_phase_score = 1.0
-    elif abs(hours_to_high_tide) <= 2:
-        tide_phase_score = 0.8
-    elif abs(hours_to_high_tide) <= 3:
-        tide_phase_score = 0.5
+    # === Rain score (0-30 points) ===
+    effective_rain = rain_24h_mm * soil_saturation_factor
+    if effective_rain < 20:
+        rain_points = (effective_rain / 20) * 10
+    elif effective_rain < 50:
+        rain_points = 10 + ((effective_rain - 20) / 30) * 10
     else:
-        tide_phase_score = 0.2
+        rain_points = 20 + ((effective_rain - 50) / 30) * 10
+    rain_points = min(30, rain_points)
+
+    if rain_72h_mm > 80:
+        rain_points = min(30, rain_points + 3)
+    if rain_7d_mm > 120:
+        rain_points = min(30, rain_points + 2)
+
+    rain_24h_score = rain_points / 30
+    rain_72h_score = _normalize_score(rain_72h_mm * soil_saturation_factor, (40, 70, 110))
+    rain_7d_score = _normalize_score(rain_7d_mm * soil_saturation_factor, (60, 100, 150))
+
+    # === River level score (0-25 points) ===
+    if dordogne_level_m < 2.5:
+        river_points = (dordogne_level_m / 2.5) * 5
+    elif dordogne_level_m < 4.0:
+        river_points = 5 + ((dordogne_level_m - 2.5) / 1.5) * 10
+    elif dordogne_level_m < 5.5:
+        river_points = 15 + ((dordogne_level_m - 4.0) / 1.5) * 10
+    else:
+        river_points = 25
+    river_points = min(25, river_points)
+    river_score = river_points / 25
+
+    # === Tide coefficient score (0-25 points) ===
+    if tide_coefficient < 70:
+        tide_points = (tide_coefficient / 70) * 5
+    elif tide_coefficient < 90:
+        tide_points = 5 + ((tide_coefficient - 70) / 20) * 10
+    elif tide_coefficient < 105:
+        tide_points = 15 + ((tide_coefficient - 90) / 15) * 7
+    else:
+        tide_points = 22 + ((tide_coefficient - 105) / 15) * 3
+    tide_points = min(25, tide_points)
+    tide_score = tide_points / 25
+
+    # === Tide phase score (0-15 points) ===
+    # Peak at PM-2h (hours_to_high_tide = 2)
+    distance_from_peak = abs(hours_to_high_tide - 2)
+    tide_phase_score = max(0, 1 - (distance_from_peak / 5))
+    phase_points = tide_phase_score * 15
+
+    # === Wind score (0-5 points) ===
+    if westerly_wind_kmh < 30:
+        wind_points = 0
+    elif westerly_wind_kmh < 60:
+        wind_points = ((westerly_wind_kmh - 30) / 30) * 2
+    elif westerly_wind_kmh < 100:
+        wind_points = 2 + ((westerly_wind_kmh - 60) / 40) * 2
+    else:
+        wind_points = 4 + min(1, (westerly_wind_kmh - 100) / 50)
+    wind_points = min(5, wind_points)
+    wind_score = wind_points / 5 if wind_points > 0 else 0
 
     video_score = (video_level / 100) if video_level is not None else None
 
-    # Weighted calculation
-    weights = {"rain_24h": 0.25, "rain_72h": 0.15, "river": 0.30, "tide": 0.15, "tide_phase": 0.10, "video": 0.05}
-    total_weight = sum(weights.values()) - (weights["video"] if video_score is None else 0)
+    # === Total score ===
+    total_points = rain_points + river_points + tide_points + phase_points + wind_points
 
-    weighted_score = (
-        rain_24h_score * weights["rain_24h"] +
-        rain_72h_score * weights["rain_72h"] +
-        river_score * weights["river"] +
-        tide_score * weights["tide"] +
-        tide_phase_score * weights["tide_phase"]
-    )
-    if video_score is not None:
-        weighted_score += video_score * weights["video"]
+    if video_score is not None and video_score > 0.5:
+        total_points = min(100, total_points + (video_score - 0.5) * 10)
 
-    final_score = (weighted_score / total_weight) * 100
+    final_score = min(100, total_points)
     level = _score_to_level(final_score)
 
     factors = RiskFactors(
         rain_24h_score=rain_24h_score,
         rain_72h_score=rain_72h_score,
+        rain_7d_score=rain_7d_score,
         river_level_score=river_score,
         tide_score=tide_score,
         tide_phase_score=tide_phase_score,
+        wind_west_score=wind_score,
+        soil_saturation_factor=soil_saturation_factor,
         video_level_score=video_score,
     )
 

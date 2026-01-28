@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo } from 'react'
-import { format, subDays, addDays } from 'date-fns'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { format, subDays, addDays, parseISO } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import {
   LineChart,
@@ -8,92 +9,139 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer,
-  ReferenceLine,
+  Brush,
 } from 'recharts'
-import { ChevronLeft, ChevronRight, Calendar, MapPin, Check } from 'lucide-react'
-import { getTimelineData, getMultiStationTimeline, getStations } from '../api'
-import type { TimelineData, StationData } from '../types'
-import type { MultiStationTimelineData } from '../api'
+import { ChevronLeft, ChevronRight, Calendar, AlertTriangle } from 'lucide-react'
+import InfoTooltip from '../components/InfoTooltip'
+import { TOOLTIPS } from '../tooltipContent'
+import {
+  getAvailableSources,
+  getUnifiedTimeline,
+  getEpisodesList,
+} from '../api'
+import type {
+  AvailableSources,
+  UnifiedTimelineData,
+  FloodEpisode,
+} from '../types'
+import TimelineSourceSelector from '../components/TimelineSourceSelector'
 
-type Resolution = '15m' | '1h' | '6h' | '1d'
-
-// Station colors for multi-station display
-const STATION_COLORS: Record<string, string> = {
-  'P577001001': '#0891b2', // Libourne - cyan
-  'P555001001': '#0ea5e9', // Pessac-sur-Dordogne - sky
-  'P514001001': '#06b6d4', // Bergerac - teal
-  'P726151001': '#8b5cf6', // Abzac (Isle) - violet
-  'P704151001': '#a855f7', // Périgueux (Isle) - purple
-  'P846251001': '#f59e0b', // Coutras (Dronne) - amber
-  'P816251001': '#fbbf24', // Ribérac (Dronne) - yellow
-}
+type Resolution = '15m' | '1h' | '6h' | '12h' | '1d'
 
 export default function Timeline() {
-  const [data, setData] = useState<TimelineData | null>(null)
-  const [multiStationData, setMultiStationData] = useState<MultiStationTimelineData | null>(null)
-  const [stations, setStations] = useState<StationData[]>([])
-  const [selectedStations, setSelectedStations] = useState<string[]>([])
-  const [loading, setLoading] = useState(true)
-  const [startDate, setStartDate] = useState(() => subDays(new Date(), 7))
-  const [endDate, setEndDate] = useState(() => new Date())
-  const [resolution, setResolution] = useState<Resolution>('1h')
-  const [viewMode, setViewMode] = useState<'combined' | 'multi-station'>('combined')
-  const [visibleSeries, setVisibleSeries] = useState({
-    river: true,
-    tide: true,
-    rainfall: true,
-    risk: true,
-  })
+  const [searchParams, setSearchParams] = useSearchParams()
+  const isInitialMount = useRef(true)
 
-  // Fetch available stations on mount
+  // Parse URL params with defaults
+  const parseParamList = (key: string, fallback: string[]): string[] => {
+    const val = searchParams.get(key)
+    return val ? val.split(',').filter(Boolean) : fallback
+  }
+
+  // Sources — initialized from URL
+  const [selectedRiverStations, setSelectedRiverStations] = useState<string[]>(
+    () => parseParamList('rivers', ['P577001001'])
+  )
+  const [selectedRainfallStations, setSelectedRainfallStations] = useState<string[]>(
+    () => parseParamList('rain', [])
+  )
+  const [tideEnabled, setTideEnabled] = useState(() => searchParams.get('tide') !== '0')
+  const [riskEnabled, setRiskEnabled] = useState(() => searchParams.get('risk') === '1')
+  const [soilEnabled, setSoilEnabled] = useState(() => searchParams.get('soil') === '1')
+  const [infoclimatEnabled, setInfoclimatEnabled] = useState(() => searchParams.get('infoclimat') !== '0')
+  const [windEnabled, setWindEnabled] = useState(() => searchParams.get('wind') === '1')
+
+  // Data
+  const [unifiedData, setUnifiedData] = useState<UnifiedTimelineData | null>(null)
+  const [availableSources, setAvailableSources] = useState<AvailableSources | null>(null)
+  const [episodes, setEpisodes] = useState<FloodEpisode[]>([])
+
+  // Controls — initialized from URL
+  const [startDate, setStartDate] = useState(() => {
+    const s = searchParams.get('start')
+    return s ? parseISO(s) : subDays(new Date(), 7)
+  })
+  const [endDate, setEndDate] = useState(() => {
+    const e = searchParams.get('end')
+    return e ? parseISO(e) : new Date()
+  })
+  const [resolution, setResolution] = useState<Resolution>(
+    () => (searchParams.get('resolution') as Resolution) || '1h'
+  )
+  const [loading, setLoading] = useState(true)
+
+  // Sync state → URL (skip initial mount)
   useEffect(() => {
-    async function fetchStations() {
+    if (isInitialMount.current) {
+      isInitialMount.current = false
+      return
+    }
+    const params: Record<string, string> = {
+      start: startDate.toISOString(),
+      end: endDate.toISOString(),
+      resolution,
+    }
+    if (selectedRiverStations.length > 0) {
+      params.rivers = selectedRiverStations.join(',')
+    }
+    if (selectedRainfallStations.length > 0) {
+      params.rain = selectedRainfallStations.join(',')
+    }
+    if (!tideEnabled) params.tide = '0'
+    if (riskEnabled) params.risk = '1'
+    if (soilEnabled) params.soil = '1'
+    if (!infoclimatEnabled) params.infoclimat = '0'
+    if (windEnabled) params.wind = '1'
+    setSearchParams(params, { replace: true })
+  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, setSearchParams])
+
+  // Fetch available sources and episodes on mount
+  useEffect(() => {
+    async function fetchSources() {
       try {
-        const result = await getStations()
-        setStations(result.stations)
-        // Default to primary station selected
-        if (result.primary_station_id) {
-          setSelectedStations([result.primary_station_id])
-        }
+        const [sources, eps] = await Promise.all([
+          getAvailableSources(),
+          getEpisodesList(),
+        ])
+        setAvailableSources(sources)
+        setEpisodes(eps)
       } catch (err) {
-        console.error('Error fetching stations:', err)
+        console.error('Error fetching sources:', err)
       }
     }
-    fetchStations()
+    fetchSources()
   }, [])
 
-  const fetchData = async () => {
+  // Fetch data
+  const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      if (viewMode === 'combined') {
-        const result = await getTimelineData(
-          startDate.toISOString(),
-          endDate.toISOString(),
-          resolution
-        )
-        setData(result)
-      } else {
-        // Multi-station mode
-        const result = await getMultiStationTimeline(
-          startDate.toISOString(),
-          endDate.toISOString(),
-          selectedStations.length > 0 ? selectedStations : undefined
-        )
-        setMultiStationData(result)
-      }
+      const result = await getUnifiedTimeline(
+        startDate.toISOString(),
+        endDate.toISOString(),
+        selectedRiverStations.length > 0 ? selectedRiverStations : undefined,
+        selectedRainfallStations.length > 0 ? selectedRainfallStations : undefined,
+        tideEnabled,
+        riskEnabled,
+        resolution,
+        soilEnabled,
+        infoclimatEnabled,
+        windEnabled,
+      )
+      setUnifiedData(result)
     } catch (err) {
       console.error('Error fetching timeline:', err)
     } finally {
       setLoading(false)
     }
-  }
+  }, [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, resolution])
 
   useEffect(() => {
     fetchData()
-  }, [startDate, endDate, resolution, viewMode, selectedStations])
+  }, [fetchData])
 
+  // Period navigation
   const shiftPeriod = (days: number) => {
     setStartDate((prev) => addDays(prev, days))
     setEndDate((prev) => addDays(prev, days))
@@ -105,64 +153,146 @@ export default function Timeline() {
     setStartDate(subDays(now, days))
   }
 
-  const toggleStation = (stationId: string) => {
-    setSelectedStations((prev) =>
+  // Source toggles
+  const toggleRiverStation = (stationId: string) => {
+    setSelectedRiverStations((prev) =>
       prev.includes(stationId)
         ? prev.filter((id) => id !== stationId)
         : [...prev, stationId]
     )
   }
 
-  // Combined chart data
+  const toggleRainfallStation = (stationId: string) => {
+    setSelectedRainfallStations((prev) =>
+      prev.includes(stationId)
+        ? prev.filter((id) => id !== stationId)
+        : [...prev, stationId]
+    )
+  }
+
+  const selectAllRivers = () => {
+    if (availableSources) {
+      setSelectedRiverStations(availableSources.river_stations.map((s) => s.id))
+    }
+  }
+
+  const selectAllRainfall = () => {
+    if (availableSources) {
+      setSelectedRainfallStations(availableSources.rainfall_stations.map((s) => s.id))
+    }
+  }
+
+  const goToEpisode = (ep: FloodEpisode) => {
+    const epStart = new Date(ep.start_time)
+    const epEnd = ep.end_time
+      ? new Date(ep.end_time)
+      : new Date(epStart.getTime() + 5 * 24 * 60 * 60 * 1000)
+    // Add 3-day buffer before/after
+    setStartDate(subDays(epStart, 3))
+    setEndDate(addDays(epEnd, 1))
+  }
+
+  const clearAllSources = () => {
+    setSelectedRiverStations([])
+    setSelectedRainfallStations([])
+    setTideEnabled(false)
+    setRiskEnabled(false)
+    setSoilEnabled(false)
+    setInfoclimatEnabled(false)
+    setWindEnabled(false)
+  }
+
+  // Unified chart data: merge all series into timestamp-indexed rows
   const chartData = useMemo(() => {
-    return data?.points.map((p) => ({
-      time: new Date(p.timestamp).getTime(),
-      displayTime: format(new Date(p.timestamp), 'dd/MM HH:mm', { locale: fr }),
-      river: p.river_level_m,
-      tide: p.tide_height_m,
-      rainfall: p.rainfall_mm_h,
-      risk: p.risk_score,
-    }))
-  }, [data])
+    if (!unifiedData) return []
 
-  // Multi-station chart data
-  const multiStationChartData = useMemo(() => {
-    if (!multiStationData) return []
-
-    // Collect all timestamps and create a merged dataset
     const timestampMap = new Map<string, Record<string, number | null>>()
 
-    for (const [stationId, stationData] of Object.entries(multiStationData.stations)) {
-      for (const point of stationData.data) {
+    for (const [seriesKey, series] of Object.entries(unifiedData.series)) {
+      for (const point of series.data) {
         const ts = point.timestamp
         if (!timestampMap.has(ts)) {
           timestampMap.set(ts, { time: new Date(ts).getTime() })
         }
         const row = timestampMap.get(ts)!
-        row[stationId] = point.height_m
+        row[seriesKey] = point.value
       }
     }
 
-    // Sort by timestamp and format
     return Array.from(timestampMap.entries())
       .sort((a, b) => new Date(a[0]).getTime() - new Date(b[0]).getTime())
       .map(([ts, values]) => ({
         ...values,
         displayTime: format(new Date(ts), 'dd/MM HH:mm', { locale: fr }),
       }))
-  }, [multiStationData])
+  }, [unifiedData])
 
-  // Group stations by river
-  const stationsByRiver = useMemo(() => {
-    const groups: Record<string, StationData[]> = {}
-    for (const station of stations) {
-      if (!groups[station.river]) {
-        groups[station.river] = []
+  // Group series by type for rendering (4 groups for separate charts)
+  type SeriesEntry = { key: string; name: string; color: string; type: string; unit: string }
+  const seriesInfo = useMemo(() => {
+    if (!unifiedData) return { level: [], rain: [], risk: [], soil: [], wind: [] }
+
+    const level: SeriesEntry[] = []
+    const rain: SeriesEntry[] = []
+    const risk: SeriesEntry[] = []
+    const soil: SeriesEntry[] = []
+    const wind: SeriesEntry[] = []
+
+    for (const [key, series] of Object.entries(unifiedData.series)) {
+      const info: SeriesEntry = {
+        key, name: series.name, color: series.color,
+        type: series.type, unit: series.unit,
       }
-      groups[station.river].push(station)
+      if (series.type === 'river_level' || series.type === 'tide') {
+        level.push(info)
+      } else if (series.type === 'risk_score') {
+        risk.push(info)
+      } else if (
+        series.type === 'soil_moisture' ||
+        series.type === 'soil_temperature' ||
+        series.type === 'evapotranspiration'
+      ) {
+        soil.push(info)
+      } else if (series.type === 'wind_speed' || series.type === 'wind_westerly') {
+        wind.push(info)
+      } else {
+        rain.push(info)
+      }
     }
-    return groups
-  }, [stations])
+
+    return { level, rain, risk, soil, wind }
+  }, [unifiedData])
+
+  // Tooltip config per panel
+  const panelTooltips: Record<string, typeof TOOLTIPS[keyof typeof TOOLTIPS]> = {
+    level: TOOLTIPS.timelineLevels,
+    rain: TOOLTIPS.timelineRainfall,
+    risk: TOOLTIPS.timelineRisk,
+    soil: TOOLTIPS.timelineSoilMoisture,
+  }
+
+  // Ordered list of visible chart panels (for knowing which is last = gets Brush)
+  const visiblePanels = useMemo(() => {
+    const panels: { id: string; label: string; series: SeriesEntry[]; height: number; yLabel: string }[] = []
+    if (seriesInfo.level.length > 0) {
+      panels.push({ id: 'level', label: 'Niveaux d\'eau', series: seriesInfo.level, height: 220, yLabel: 'Niveau (m)' })
+    }
+    if (seriesInfo.rain.length > 0) {
+      // Derive unit label from first non-cumul series
+      const rateUnit = seriesInfo.rain.find((s) => s.type === 'rainfall')?.unit || 'mm/h'
+      panels.push({ id: 'rain', label: 'Pluviometrie', series: seriesInfo.rain, height: 180, yLabel: `Pluie (${rateUnit})` })
+    }
+    if (seriesInfo.risk.length > 0) {
+      panels.push({ id: 'risk', label: 'Score de risque', series: seriesInfo.risk, height: 130, yLabel: 'Score (/100)' })
+    }
+    if (seriesInfo.soil.length > 0) {
+      panels.push({ id: 'soil', label: 'Conditions sol', series: seriesInfo.soil, height: 180, yLabel: '' })
+    }
+    if (seriesInfo.wind.length > 0) {
+      panels.push({ id: 'wind', label: 'Vent', series: seriesInfo.wind, height: 150, yLabel: 'Vitesse (km/h)' })
+    }
+    return panels
+  }, [seriesInfo])
 
   return (
     <div className="space-y-6">
@@ -179,12 +309,25 @@ export default function Timeline() {
               <ChevronLeft className="w-5 h-5" />
             </button>
 
-            <div className="flex items-center gap-2 px-3 py-1 bg-gray-100 rounded">
+            <div className="flex items-center gap-1">
               <Calendar className="w-4 h-4 text-gray-500" />
-              <span>
-                {format(startDate, 'dd/MM/yyyy', { locale: fr })} -{' '}
-                {format(endDate, 'dd/MM/yyyy', { locale: fr })}
-              </span>
+              <input
+                type="datetime-local"
+                value={format(startDate, "yyyy-MM-dd'T'HH:mm")}
+                onChange={(e) => {
+                  if (e.target.value) setStartDate(new Date(e.target.value))
+                }}
+                className="border rounded px-2 py-1 text-sm w-[170px]"
+              />
+              <span className="text-gray-400">—</span>
+              <input
+                type="datetime-local"
+                value={format(endDate, "yyyy-MM-dd'T'HH:mm")}
+                onChange={(e) => {
+                  if (e.target.value) setEndDate(new Date(e.target.value))
+                }}
+                className="border rounded px-2 py-1 text-sm w-[170px]"
+              />
             </div>
 
             <button
@@ -226,354 +369,357 @@ export default function Timeline() {
               <option value="15m">15 min</option>
               <option value="1h">1 heure</option>
               <option value="6h">6 heures</option>
+              <option value="12h">12 heures</option>
               <option value="1d">1 jour</option>
             </select>
           </div>
         </div>
 
-        {/* View Mode Toggle */}
-        <div className="flex gap-4 mt-4 pt-4 border-t">
-          <div className="flex gap-2">
-            <button
-              onClick={() => setViewMode('combined')}
-              className={`px-3 py-1 text-sm rounded ${
-                viewMode === 'combined'
-                  ? 'bg-cyan-100 text-cyan-700 border border-cyan-300'
-                  : 'bg-gray-100 hover:bg-gray-200'
-              }`}
-            >
-              Vue combinee
-            </button>
-            <button
-              onClick={() => setViewMode('multi-station')}
-              className={`px-3 py-1 text-sm rounded ${
-                viewMode === 'multi-station'
-                  ? 'bg-cyan-100 text-cyan-700 border border-cyan-300'
-                  : 'bg-gray-100 hover:bg-gray-200'
-              }`}
-            >
-              Multi-stations
-            </button>
-          </div>
-
-          {viewMode === 'combined' && (
-            <div className="flex gap-4 ml-4">
-              {[
-                { key: 'river', label: 'Niveau Dordogne', color: '#0891b2' },
-                { key: 'tide', label: 'Maree', color: '#3b82f6' },
-                { key: 'rainfall', label: 'Pluie', color: '#6366f1' },
-                { key: 'risk', label: 'Score risque', color: '#f59e0b' },
-              ].map(({ key, label, color }) => (
-                <label key={key} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={visibleSeries[key as keyof typeof visibleSeries]}
-                    onChange={(e) =>
-                      setVisibleSeries((prev) => ({
-                        ...prev,
-                        [key]: e.target.checked,
-                      }))
-                    }
-                    className="rounded"
-                  />
-                  <span
-                    className="w-3 h-3 rounded-full"
-                    style={{ backgroundColor: color }}
-                  />
-                  <span className="text-sm">{label}</span>
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Station Selector for Multi-Station Mode */}
-        {viewMode === 'multi-station' && (
+        {/* Source Selector */}
+        {availableSources && (
           <div className="mt-4 pt-4 border-t">
-            <div className="text-sm font-medium text-gray-700 mb-2">
-              Stations a afficher:
-            </div>
-            <div className="space-y-2">
-              {Object.entries(stationsByRiver).map(([river, riverStations]) => (
-                <div key={river} className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-medium text-gray-500 w-20">{river}:</span>
-                  {riverStations.map((station) => {
-                    const isSelected = selectedStations.includes(station.station_id)
-                    const color = STATION_COLORS[station.station_id] || '#6b7280'
-                    return (
-                      <button
-                        key={station.station_id}
-                        onClick={() => toggleStation(station.station_id)}
-                        className={`flex items-center gap-1 px-2 py-1 text-xs rounded-full border transition-all ${
-                          isSelected
-                            ? 'border-2'
-                            : 'border-gray-200 bg-gray-50 hover:bg-gray-100'
-                        }`}
-                        style={
-                          isSelected
-                            ? {
-                                backgroundColor: `${color}20`,
-                                borderColor: color,
-                                color: color,
-                              }
-                            : undefined
-                        }
-                      >
-                        {isSelected && <Check className="w-3 h-3" />}
-                        <MapPin className="w-3 h-3" />
-                        {station.station_name}
-                        <span className="opacity-60">({station.distance_km}km)</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              ))}
-            </div>
+            <TimelineSourceSelector
+              riverStations={availableSources.river_stations}
+              rainfallStations={availableSources.rainfall_stations}
+              selectedRiverStations={selectedRiverStations}
+              selectedRainfallStations={selectedRainfallStations}
+              onRiverStationToggle={toggleRiverStation}
+              onRainfallStationToggle={toggleRainfallStation}
+              onSelectAllRivers={selectAllRivers}
+              onSelectAllRainfall={selectAllRainfall}
+              onClearAll={clearAllSources}
+              tideEnabled={tideEnabled}
+              riskEnabled={riskEnabled}
+              onTideToggle={() => setTideEnabled((v) => !v)}
+              onRiskToggle={() => setRiskEnabled((v) => !v)}
+              soilEnabled={soilEnabled}
+              onSoilToggle={() => setSoilEnabled((v) => !v)}
+              infoclimatEnabled={infoclimatEnabled}
+              onInfoclimatToggle={() => setInfoclimatEnabled((v) => !v)}
+              windEnabled={windEnabled}
+              onWindToggle={() => setWindEnabled((v) => !v)}
+            />
           </div>
         )}
       </div>
 
-      {/* Chart */}
+      {/* Episode Quick Navigation */}
+      {episodes.length > 0 && (
+        <div className="bg-white rounded-lg shadow p-3">
+          <div className="flex items-center gap-3 overflow-x-auto">
+            <span className="flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              Episodes
+            </span>
+            {episodes.map((ep) => {
+              const epDate = new Date(ep.peak_time || ep.start_time)
+              const isActive =
+                epDate >= startDate && epDate <= endDate
+              return (
+                <button
+                  key={ep.id}
+                  onClick={() => goToEpisode(ep)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
+                    isActive
+                      ? 'bg-orange-100 text-orange-800 ring-1 ring-orange-300'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                  title={ep.description || undefined}
+                >
+                  <span className={`w-2 h-2 rounded-full ${
+                    ep.severity >= 4 ? 'bg-red-500'
+                    : ep.severity >= 3 ? 'bg-orange-500'
+                    : 'bg-yellow-500'
+                  }`} />
+                  {format(epDate, 'dd MMM yyyy', { locale: fr })}
+                  <span className="text-gray-400">({ep.severity}/5)</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Charts — stacked, synchronized via syncId */}
       <div className="bg-white rounded-lg shadow p-4">
         {loading ? (
-          <div className="h-96 flex items-center justify-center">
+          <div className="h-[450px] flex items-center justify-center">
             <div className="animate-pulse text-gray-400">Chargement...</div>
           </div>
-        ) : viewMode === 'combined' ? (
-          /* Combined View Chart */
-          <ResponsiveContainer width="100%" height={400}>
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis
-                dataKey="displayTime"
-                tick={{ fontSize: 12 }}
-                interval="preserveStartEnd"
-              />
-              <YAxis
-                yAxisId="level"
-                orientation="left"
-                domain={[0, 'auto']}
-                label={{
-                  value: 'Niveau (m)',
-                  angle: -90,
-                  position: 'insideLeft',
-                }}
-              />
-              <YAxis
-                yAxisId="rain"
-                orientation="right"
-                domain={[0, 'auto']}
-                label={{
-                  value: 'Pluie (mm/h)',
-                  angle: 90,
-                  position: 'insideRight',
-                }}
-              />
-              <Tooltip
-                labelFormatter={(label) => label}
-                formatter={(value: number, name: string) => [
-                  value?.toFixed(2),
-                  name,
-                ]}
-              />
-              <Legend />
-
-              {visibleSeries.river && (
-                <Line
-                  yAxisId="level"
-                  type="monotone"
-                  dataKey="river"
-                  name="Dordogne (m)"
-                  stroke="#0891b2"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              )}
-              {visibleSeries.tide && (
-                <Line
-                  yAxisId="level"
-                  type="monotone"
-                  dataKey="tide"
-                  name="Maree (m)"
-                  stroke="#3b82f6"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              )}
-              {visibleSeries.rainfall && (
-                <Line
-                  yAxisId="rain"
-                  type="monotone"
-                  dataKey="rainfall"
-                  name="Pluie (mm/h)"
-                  stroke="#6366f1"
-                  strokeWidth={1}
-                  dot={false}
-                />
-              )}
-              {visibleSeries.risk && (
-                <Line
-                  yAxisId="rain"
-                  type="monotone"
-                  dataKey="risk"
-                  name="Score risque"
-                  stroke="#f59e0b"
-                  strokeWidth={2}
-                  strokeDasharray="5 5"
-                  dot={false}
-                />
-              )}
-
-              {/* Episode markers */}
-              {data?.episodes.map((ep) => (
-                <ReferenceLine
-                  key={ep.id}
-                  x={format(new Date(ep.start_time), 'dd/MM HH:mm', {
-                    locale: fr,
-                  })}
-                  yAxisId="level"
-                  stroke="#ef4444"
-                  strokeDasharray="3 3"
-                  label={{
-                    value: `Episode ${ep.severity}/5`,
-                    position: 'top',
-                    fontSize: 10,
-                  }}
-                />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
+        ) : chartData.length === 0 ? (
+          <div className="h-[450px] flex items-center justify-center text-gray-400">
+            Aucune donnee pour la periode et les sources selectionnees
+          </div>
         ) : (
-          /* Multi-Station View Chart */
-          <ResponsiveContainer width="100%" height={400}>
-            <LineChart data={multiStationChartData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis
-                dataKey="displayTime"
-                tick={{ fontSize: 12 }}
-                interval="preserveStartEnd"
-              />
-              <YAxis
-                domain={[0, 'auto']}
-                label={{
-                  value: 'Niveau (m)',
-                  angle: -90,
-                  position: 'insideLeft',
-                }}
-              />
-              <Tooltip
-                labelFormatter={(label) => label}
-                formatter={(value: number, name: string) => {
-                  const stationInfo = multiStationData?.stations[name]
-                  const displayName = stationInfo
-                    ? `${stationInfo.name} (${stationInfo.river})`
-                    : name
-                  return [value?.toFixed(2) + ' m', displayName]
-                }}
-              />
-              <Legend
-                formatter={(value) => {
-                  const stationInfo = multiStationData?.stations[value]
-                  return stationInfo
-                    ? `${stationInfo.name} (${stationInfo.river})`
-                    : value
-                }}
-              />
+          <div className="space-y-0">
+            {visiblePanels.map((panel, idx) => {
+              const isLast = idx === visiblePanels.length - 1
+              const isSoil = panel.id === 'soil'
+              const isRain = panel.id === 'rain'
 
-              {multiStationData &&
-                Object.keys(multiStationData.stations).map((stationId) => (
-                  <Line
-                    key={stationId}
-                    type="monotone"
-                    dataKey={stationId}
-                    name={stationId}
-                    stroke={STATION_COLORS[stationId] || '#6b7280'}
-                    strokeWidth={2}
-                    dot={false}
-                    connectNulls
-                  />
-                ))}
+              // For soil: split into moisture (left Y) and temp+ET0 (right Y)
+              const soilMoisture = isSoil
+                ? panel.series.filter((s) => s.type === 'soil_moisture')
+                : []
+              const soilOther = isSoil
+                ? panel.series.filter((s) => s.type !== 'soil_moisture')
+                : []
+              const hasSoilRightAxis = soilOther.length > 0
 
-              {/* Threshold reference lines for primary station */}
-              {multiStationData?.stations['P577001001']?.thresholds && (
-                <>
-                  <ReferenceLine
-                    y={multiStationData.stations['P577001001'].thresholds.yellow || 3}
-                    stroke="#eab308"
-                    strokeDasharray="3 3"
-                    label={{ value: 'Jaune', position: 'right', fontSize: 10 }}
-                  />
-                  <ReferenceLine
-                    y={multiStationData.stations['P577001001'].thresholds.orange || 4}
-                    stroke="#f97316"
-                    strokeDasharray="3 3"
-                    label={{ value: 'Orange', position: 'right', fontSize: 10 }}
-                  />
-                  <ReferenceLine
-                    y={multiStationData.stations['P577001001'].thresholds.red || 5}
-                    stroke="#ef4444"
-                    strokeDasharray="3 3"
-                    label={{ value: 'Rouge', position: 'right', fontSize: 10 }}
-                  />
-                </>
-              )}
-            </LineChart>
-          </ResponsiveContainer>
+              // For rain: split rate series (left Y) and cumul (right Y)
+              const rainRate = isRain
+                ? panel.series.filter((s) => s.type === 'rainfall')
+                : []
+              const rainCumul = isRain
+                ? panel.series.filter((s) => s.type === 'rainfall_cumul')
+                : []
+              const hasRainRightAxis = rainCumul.length > 0
+
+              return (
+                <div key={panel.id}>
+                  {/* Panel header */}
+                  <div className="flex items-center gap-3 mb-1 mt-3 first:mt-0">
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide flex items-center gap-1">
+                      {panel.label}
+                      {panelTooltips[panel.id] && (
+                        <InfoTooltip {...panelTooltips[panel.id]} />
+                      )}
+                    </span>
+                    <div className="flex-1 border-t border-gray-200" />
+                    {/* Inline legend chips */}
+                    <div className="flex gap-2 flex-wrap">
+                      {panel.series.map((s) => {
+                        // Per-series tooltip for soil panel
+                        const seriesTooltip =
+                          s.type === 'soil_temperature' ? TOOLTIPS.timelineSoilTemp
+                          : s.type === 'evapotranspiration' ? TOOLTIPS.timelineET0
+                          : s.type === 'tide' ? TOOLTIPS.timelineTide
+                          : null
+                        return (
+                          <span key={s.key} className="flex items-center gap-1 text-xs text-gray-600">
+                            <span
+                              className="inline-block w-2.5 h-2.5 rounded-full"
+                              style={{ backgroundColor: s.color }}
+                            />
+                            {s.name}
+                            {seriesTooltip && <InfoTooltip {...seriesTooltip} />}
+                          </span>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  <ResponsiveContainer width="100%" height={panel.height + (isLast ? 40 : 0)}>
+                    <LineChart
+                      data={chartData}
+                      syncId="timeline"
+                      margin={{ top: 5, right: 10, bottom: isLast ? 5 : 0, left: 10 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" opacity={0.5} />
+
+                      {/* X axis: only show ticks on the last chart */}
+                      <XAxis
+                        dataKey="displayTime"
+                        tick={isLast ? { fontSize: 11 } : false}
+                        tickLine={isLast}
+                        axisLine={{ stroke: '#e5e7eb' }}
+                        interval="preserveStartEnd"
+                        height={isLast ? 25 : 5}
+                      />
+
+                      {/* Y axis — soil and rain panels have dual axes */}
+                      {isSoil ? (
+                        <>
+                          <YAxis
+                            yAxisId="left"
+                            orientation="left"
+                            domain={[0, 'auto']}
+                            tick={{ fontSize: 11 }}
+                            width={55}
+                            label={{
+                              value: 'm\u00b3/m\u00b3',
+                              angle: -90,
+                              position: 'insideLeft',
+                              style: { fontSize: 11, fill: '#7c3aed' },
+                            }}
+                          />
+                          {hasSoilRightAxis && (
+                            <YAxis
+                              yAxisId="right"
+                              orientation="right"
+                              domain={['auto', 'auto']}
+                              tick={{ fontSize: 11 }}
+                              width={45}
+                              label={{
+                                value: '\u00b0C / mm',
+                                angle: 90,
+                                position: 'insideRight',
+                                style: { fontSize: 11, fill: '#f97316' },
+                              }}
+                            />
+                          )}
+                        </>
+                      ) : isRain ? (
+                        <>
+                          <YAxis
+                            yAxisId="left"
+                            orientation="left"
+                            domain={[0, 'auto']}
+                            tick={{ fontSize: 11 }}
+                            width={55}
+                            label={{
+                              value: panel.yLabel,
+                              angle: -90,
+                              position: 'insideLeft',
+                              style: { fontSize: 11, fill: '#6b7280' },
+                            }}
+                          />
+                          {hasRainRightAxis && (
+                            <YAxis
+                              yAxisId="right"
+                              orientation="right"
+                              domain={[0, 'auto']}
+                              tick={{ fontSize: 11 }}
+                              width={50}
+                              label={{
+                                value: 'Cumul (mm)',
+                                angle: 90,
+                                position: 'insideRight',
+                                style: { fontSize: 11, fill: '#1e40af' },
+                              }}
+                            />
+                          )}
+                        </>
+                      ) : (
+                        <YAxis
+                          yAxisId="left"
+                          orientation="left"
+                          domain={panel.id === 'risk' ? [0, 100] : [0, 'auto']}
+                          tick={{ fontSize: 11 }}
+                          width={55}
+                          label={{
+                            value: panel.yLabel,
+                            angle: -90,
+                            position: 'insideLeft',
+                            style: { fontSize: 11, fill: '#6b7280' },
+                          }}
+                        />
+                      )}
+
+                      <Tooltip
+                        labelFormatter={(label) => label}
+                        formatter={(value: number, name: string) => {
+                          const series = unifiedData?.series[name]
+                          if (series) {
+                            return [
+                              `${value?.toFixed(2)} ${series.unit}`,
+                              series.name,
+                            ]
+                          }
+                          return [value?.toFixed(2), name]
+                        }}
+                      />
+
+                      {/* Lines */}
+                      {isSoil ? (
+                        <>
+                          {soilMoisture.map((info) => (
+                            <Line
+                              key={info.key}
+                              yAxisId="left"
+                              type="monotone"
+                              dataKey={info.key}
+                              name={info.key}
+                              stroke={info.color}
+                              strokeWidth={1.5}
+                              dot={false}
+                              connectNulls
+                            />
+                          ))}
+                          {soilOther.map((info) => (
+                            <Line
+                              key={info.key}
+                              yAxisId={hasSoilRightAxis ? 'right' : 'left'}
+                              type="monotone"
+                              dataKey={info.key}
+                              name={info.key}
+                              stroke={info.color}
+                              strokeWidth={1.5}
+                              strokeDasharray={info.type === 'soil_temperature' ? '4 2' : undefined}
+                              dot={false}
+                              connectNulls
+                            />
+                          ))}
+                        </>
+                      ) : isRain ? (
+                        <>
+                          {rainRate.map((info) => (
+                            <Line
+                              key={info.key}
+                              yAxisId="left"
+                              type="monotone"
+                              dataKey={info.key}
+                              name={info.key}
+                              stroke={info.color}
+                              strokeWidth={1.5}
+                              dot={false}
+                              connectNulls
+                            />
+                          ))}
+                          {rainCumul.map((info) => (
+                            <Line
+                              key={info.key}
+                              yAxisId={hasRainRightAxis ? 'right' : 'left'}
+                              type="monotone"
+                              dataKey={info.key}
+                              name={info.key}
+                              stroke={info.color}
+                              strokeWidth={2}
+                              strokeDasharray="6 3"
+                              dot={false}
+                              connectNulls
+                            />
+                          ))}
+                        </>
+                      ) : (
+                        panel.series.map((info) => (
+                          <Line
+                            key={info.key}
+                            yAxisId="left"
+                            type="monotone"
+                            dataKey={info.key}
+                            name={info.key}
+                            stroke={info.color}
+                            strokeWidth={info.type === 'tide' || info.type === 'risk_score' ? 2 : 1.5}
+                            strokeDasharray={
+                              info.type === 'tide' ? '8 4'
+                              : info.type === 'risk_score' ? '5 5'
+                              : undefined
+                            }
+                            dot={false}
+                            connectNulls
+                          />
+                        ))
+                      )}
+
+                      {/* Brush on last chart only */}
+                      {isLast && (
+                        <Brush
+                          dataKey="displayTime"
+                          height={25}
+                          stroke="#0891b2"
+                          fill="#f0fdfa"
+                          tickFormatter={(value) => value}
+                        />
+                      )}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )
+            })}
+          </div>
         )}
       </div>
-
-      {/* Station Legend (Multi-station mode) */}
-      {viewMode === 'multi-station' && multiStationData && (
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="font-medium mb-3">Stations affichees</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {Object.entries(multiStationData.stations).map(([stationId, info]) => (
-              <div
-                key={stationId}
-                className="flex items-center gap-2 p-2 rounded bg-gray-50"
-              >
-                <div
-                  className="w-3 h-3 rounded-full"
-                  style={{ backgroundColor: STATION_COLORS[stationId] || '#6b7280' }}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm truncate">{info.name}</div>
-                  <div className="text-xs text-gray-500">{info.river} - {info.distance_km}km</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Episodes in range (Combined mode only) */}
-      {viewMode === 'combined' && data?.episodes && data.episodes.length > 0 && (
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="font-medium mb-3">Episodes dans la periode</h3>
-          <div className="space-y-2">
-            {data.episodes.map((ep) => (
-              <div
-                key={ep.id}
-                className="flex items-center justify-between p-3 bg-red-50 rounded border border-red-200"
-              >
-                <div>
-                  <span className="font-medium">
-                    {format(new Date(ep.start_time), 'dd/MM/yyyy HH:mm', {
-                      locale: fr,
-                    })}
-                  </span>
-                  {ep.description && (
-                    <span className="text-gray-600 ml-2">{ep.description}</span>
-                  )}
-                </div>
-                <span className="px-2 py-1 bg-red-100 rounded text-sm">
-                  Severite {ep.severity}/5
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

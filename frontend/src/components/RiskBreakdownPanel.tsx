@@ -13,9 +13,12 @@ const FACTOR_LABELS: Record<string, string> = {
   river: 'Niveaux rivieres',
   rain_24h: 'Pluie 24h',
   rain_72h: 'Pluie 72h',
+  rain_7d: 'Pluie 7j',
   tide: 'Coef. maree',
   tide_phase: 'Phase maree',
   tendency: 'Tendance',
+  wind_west: "Vent d'ouest",
+  soil_sat: 'Saturation sol',
   video: 'Video',
 }
 
@@ -23,9 +26,12 @@ const FACTOR_TOOLTIPS: Record<string, keyof typeof TOOLTIPS> = {
   river: 'factorRiver',
   rain_24h: 'factorRain24h',
   rain_72h: 'factorRain72h',
+  rain_7d: 'factorRain7d',
   tide: 'factorTide',
   tide_phase: 'factorTidePhase',
   tendency: 'factorTendency',
+  wind_west: 'factorWindWest',
+  soil_sat: 'factorSoilSat',
   video: 'factorVideo',
 }
 
@@ -82,6 +88,14 @@ function formatRawValue(
       return factors.tendency_rate_cm_h != null
         ? `${factors.tendency_rate_cm_h > 0 ? '+' : ''}${factors.tendency_rate_cm_h.toFixed(1)} cm/h`
         : '-'
+    case 'rain_7d':
+      return '-'  // No raw value stored yet
+    case 'wind_west':
+      return '-'  // No raw value stored yet
+    case 'soil_sat':
+      return factors.soil_saturation_factor != null
+        ? `x${factors.soil_saturation_factor.toFixed(2)}`
+        : '-'
     case 'video':
       return factors.video_level_score != null ? `${Math.round(factors.video_level_score * 100)}%` : 'N/A'
     default:
@@ -97,12 +111,20 @@ function getFactorScore(factorKey: string, factors: RiskScore['factors']): numbe
       return factors.rain_24h_score
     case 'rain_72h':
       return factors.rain_72h_score
+    case 'rain_7d':
+      return factors.rain_7d_score ?? 0
     case 'tide':
       return factors.tide_score
     case 'tide_phase':
       return factors.tide_phase_score
     case 'tendency':
       return factors.tendency_score ?? 0
+    case 'wind_west':
+      return factors.wind_west_score ?? 0
+    case 'soil_sat':
+      return factors.soil_saturation_factor != null
+        ? Math.min(1, Math.max(0, (factors.soil_saturation_factor - 1.0) / 0.5))
+        : 0
     case 'video':
       return factors.video_level_score
     default:
@@ -117,12 +139,15 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
 
   const { factors } = risk
   const weights = factors.weights || {
-    river: 0.5,
-    rain_24h: 0.12,
-    rain_72h: 0.08,
-    tide: 0.12,
+    river: 0.45,
+    rain_24h: 0.10,
+    rain_72h: 0.07,
+    rain_7d: 0.03,
+    tide: 0.10,
     tide_phase: 0.08,
     tendency: 0.05,
+    wind_west: 0.03,
+    soil_sat: 0.04,
     video: 0.05,
   }
 
@@ -309,7 +334,8 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
                 <p>Le score de risque (0-100) est calcule en plusieurs etapes :</p>
                 <ol className="list-decimal list-inside space-y-1 pl-2">
                   <li>Chaque facteur est normalise de 0 a 1 selon des seuils predefinnis</li>
-                  <li>Chaque score est multiplie par son poids (total = 100%)</li>
+                  <li>Chaque score est multiplie par son poids (10 facteurs, total = 100%)</li>
+                  <li>La saturation du sol amplifie aussi les scores de pluie (multiplicateur)</li>
                   <li>La somme des contributions donne le score de base</li>
                   <li>
                     Si maree haute + niveau eleve + hausse : multiplicateur de conjonction (1.0 a 1.5x)

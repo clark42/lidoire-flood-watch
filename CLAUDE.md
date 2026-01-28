@@ -89,32 +89,40 @@ src/
     └── DataSourcesStatus.tsx # Statut des sources de données
 ```
 
-## Modèle de risque v2 (multi-stations)
+## Modèle de risque v2.3 (multi-stations, calibré fév. 2024)
 
 Le score de risque (0-100) est calculé dans `backend/app/services/risk_v2.py` avec :
 
 | Facteur | Poids |
 |---------|-------|
-| Niveaux rivières (multi-stations) | 50% |
-| Pluie 24h | 12% |
-| Pluie 72h | 8% |
-| Coefficient marée | 12% |
+| Niveaux rivières (multi-stations, Libourne exclue) | 42% |
+| Pluie 24h | 8% |
+| Pluie 72h | 10% |
+| Pluie 7j | 5% |
+| Coefficient marée | 8% |
 | Phase marée | 8% |
 | Tendance (vitesse montée) | 5% |
+| Saturation sol | 5% |
+| Vent d'ouest (surcote) | 3% |
 | Niveau vidéo | 5% |
 
-**Multiplicateur de conjonction** (1.0 à 1.5x) : appliqué quand marée haute + niveau élevé + tendance hausse.
+**Multiplicateur de conjonction** (1.0 à 1.6x) : appliqué quand marée haute + niveau élevé + tendance hausse + élévation multi-stations simultanée.
+
+v2.3 (jan 2026) : calibré sur l'épisode de février 2024 (sévérité 5, moulin inondé).
+- Poids rain_72h/7d augmentés : la pluie soutenue multi-jours (62mm/5j) a causé l'inondation malgré une pluie 24h modérée (34mm).
+- Facteur multi-station ajouté à la conjonction : toutes les stations simultanément au-dessus du seuil jaune est un signal critique.
+- Saturation sol renforcée : les sols d'hiver gorgés amplifient massivement le ruissellement.
 
 ### Stations surveillées
 
 | Station | Code Hub'Eau | Rivière | Distance | Délai | Poids |
 |---------|--------------|---------|----------|-------|-------|
-| Libourne | P577001001 | Dordogne | 5km | 0h | 35% |
-| Pessac-sur-Dordogne | P555001001 | Dordogne | 30km | 4h | 15% |
-| Bergerac | P514001001 | Dordogne | 60km | 8h | 10% |
-| Abzac | P726151001 | Isle | 15km | 2h | 15% |
-| Périgueux | P704151001 | Isle | 80km | 12h | 5% |
-| Coutras | P846251001 | Dronne | 25km | 3h | 10% |
+| Libourne | P577001001 | Dordogne | 5km | 0h | 0% (exclu: marée) |
+| Pessac-sur-Dordogne | P555001001 | Dordogne | 30km | 4h | 30% |
+| Bergerac | P514001001 | Dordogne | 60km | 8h | 15% |
+| Abzac | P726151001 | Isle | 15km | 2h | 25% |
+| Périgueux | P704151001 | Isle | 80km | 12h | 10% |
+| Coutras | P846251001 | Dronne | 25km | 3h | 15% |
 | Ribérac | P816251001 | Dronne | 70km | 10h | 5% |
 
 ## Sources de données

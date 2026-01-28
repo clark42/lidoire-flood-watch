@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { format } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import {
@@ -44,6 +45,8 @@ import HydroMap from '../components/HydroMap'
 import BasinRainfallGauge from '../components/BasinRainfallGauge'
 import MetricSparkline from '../components/MetricSparkline'
 import TimeMachineBanner from '../components/TimeMachineBanner'
+import SoilConditionsPanel from '../components/SoilConditionsPanel'
+import NowcastRainChart from '../components/NowcastRainChart'
 import InfoTooltip from '../components/InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 
@@ -61,6 +64,7 @@ function TendencyIcon({ tendency }: { tendency: string | null }) {
 }
 
 export default function Dashboard() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [data, setData] = useState<RealtimeData | null>(null)
   const [netatmo, setNetatmo] = useState<NetatmoData | null>(null)
   const [infoclimat, setInfoclimat] = useState<InfoclimatData | null>(null)
@@ -74,9 +78,12 @@ export default function Dashboard() {
   const [basinRainfall, setBasinRainfall] = useState<BasinRainfallData | null>(null)
   const [episodes, setEpisodes] = useState<FloodEpisode[]>([])
 
-  // TimeMachine state
-  const [timeMachineActive, setTimeMachineActive] = useState(false)
-  const [timeMachineDate, setTimeMachineDate] = useState<Date | null>(null)
+  // TimeMachine state — initialized from URL ?tm= param
+  const tmParam = searchParams.get('tm')
+  const [timeMachineActive, setTimeMachineActive] = useState(!!tmParam)
+  const [timeMachineDate, setTimeMachineDate] = useState<Date | null>(
+    tmParam ? new Date(tmParam) : null
+  )
   const [timeMachineLoading, setTimeMachineLoading] = useState(false)
 
   // Sparkline accumulation
@@ -123,7 +130,7 @@ export default function Dashboard() {
         setSparklineData(prev => ({
           river: [...prev.river, { t: now, v: d.river.current.height_m }].slice(-60),
           tide: [...prev.tide, { t: now, v: d.tide.current_coefficient || 0 }].slice(-60),
-          rain: [...prev.rain, { t: now, v: d.rainfall.last_hour_mm }].slice(-60),
+          rain: [...prev.rain, { t: now, v: d.rainfall.last_24h_mm }].slice(-60),
           risk: [...prev.risk, { t: now, v: d.risk.score }].slice(-60),
         }))
       }
@@ -143,19 +150,25 @@ export default function Dashboard() {
     }
   }
 
-  const handleTimeMachineToggle = () => {
+  const handleTimeMachineToggle = useCallback(() => {
     if (timeMachineActive) {
-      // Return to live
+      // Return to live — remove ?tm from URL
       setTimeMachineActive(false)
       setTimeMachineDate(null)
+      setSearchParams((prev) => {
+        prev.delete('tm')
+        return prev
+      }, { replace: true })
       fetchData() // Refresh live data
     } else {
       setTimeMachineActive(true)
     }
-  }
+  }, [timeMachineActive])
 
-  const handleTimeMachineDateChange = async (date: Date) => {
+  const handleTimeMachineDateChange = useCallback(async (date: Date) => {
     setTimeMachineDate(date)
+    // Sync URL with ?tm= param
+    setSearchParams({ tm: date.toISOString() }, { replace: true })
     setTimeMachineLoading(true)
     try {
       const result = await getRealtimeDataAt(date.toISOString())
@@ -168,7 +181,15 @@ export default function Dashboard() {
     } finally {
       setTimeMachineLoading(false)
     }
-  }
+  }, [selectedStation, setSearchParams])
+
+  // On mount: if ?tm= is present, load TimeMachine data
+  useEffect(() => {
+    if (tmParam && timeMachineDate) {
+      handleTimeMachineDateChange(timeMachineDate)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (!timeMachineActive) {
@@ -300,7 +321,7 @@ export default function Dashboard() {
         <MetricSparkline
           title="Pluie bassin"
           value={`${basinRainfall?.weighted_average_24h_mm?.toFixed(1) || data.rainfall.last_24h_mm.toFixed(1)} mm`}
-          subtitle="24h cumul"
+          subtitle={basinRainfall ? "24h Netatmo Lidoire" : "24h Open-Meteo"}
           data={sparklineData.rain}
           color="#6366f1"
           icon={<CloudRain className="w-4 h-4" />}
@@ -333,9 +354,16 @@ export default function Dashboard() {
           loading={loading}
         />
 
-        {/* Right Column - Basin Rainfall + Weather & Forecasts */}
+        {/* Right Column - Basin Rainfall + Soil + Weather & Forecasts */}
         <div className="space-y-6">
+          <NowcastRainChart data={data.nowcast_rain} />
+
           <BasinRainfallGauge data={basinRainfall} loading={loading} />
+
+          <SoilConditionsPanel
+            soil={data.soil}
+            loading={loading}
+          />
 
           <RainfallPanel
             netatmo={netatmo}
@@ -453,9 +481,9 @@ export default function Dashboard() {
           })()}
         </DataCard>
 
-        {/* Rainfall */}
+        {/* Rainfall - aggregated max across sources (used by risk model) */}
         <DataCard
-          title="Pluie observee"
+          title="Pluie (modele)"
           icon={<Droplets className="w-5 h-5" />}
           color="indigo"
         >
@@ -475,6 +503,13 @@ export default function Dashboard() {
             <div className="flex justify-between text-sm">
               <span className="text-gray-500">72h</span>
               <span>{data.rainfall.last_72h_mm.toFixed(1)} mm</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">7j</span>
+              <span>{data.rainfall.last_7d_mm?.toFixed(1) || '0.0'} mm</span>
+            </div>
+            <div className="text-xs text-gray-400 pt-1 border-t">
+              Max(Open-Meteo, Netatmo, Infoclimat)
             </div>
           </div>
         </DataCard>

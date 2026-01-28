@@ -28,9 +28,9 @@ async def fetch_open_meteo_marine() -> list[TideData]:
     """
     settings = get_settings()
 
-    # Coordinates for Bordeaux/Gironde estuary
-    lat = 45.0  # Bordeaux area
-    lon = -0.9  # Gironde estuary
+    # Coordinates for Gironde estuary mouth (must be oceanic for sea_level_height_msl)
+    lat = 45.6  # Gironde estuary mouth
+    lon = -1.2  # Atlantic coast
 
     url = "https://marine-api.open-meteo.com/v1/marine"
 
@@ -42,8 +42,9 @@ async def fetch_open_meteo_marine() -> list[TideData]:
                     "latitude": lat,
                     "longitude": lon,
                     "hourly": "sea_level_height_msl",
+                    "past_days": 2,
                     "forecast_days": 7,
-                    "timezone": "Europe/Paris",
+                    "timezone": "UTC",
                 },
                 timeout=30.0,
             )
@@ -221,6 +222,9 @@ async def get_current_tide_data() -> TideForecast:
             tides = _generate_mock_tides()
             print("Using calculated tide data (no API source available)")
 
+        # Store to InfluxDB
+        await store_tides_to_influx(tides)
+
         # Update cache (6 hours)
         _tide_cache = {"tides": tides}
         _cache_expiry = now + timedelta(hours=6)
@@ -243,17 +247,112 @@ async def get_current_tide_data() -> TideForecast:
     )
 
 
+async def store_tides_to_influx(tides: list[TideData]) -> int:
+    """Store tide data to InfluxDB."""
+    from app.services import influx_client
+
+    stored = 0
+    for tide in tides:
+        success = await influx_client.write_tide(
+            port=tide.port,
+            height_m=tide.height_m,
+            timestamp=tide.timestamp,
+            tide_type=tide.tide_type.value if tide.tide_type else None,
+            coefficient=tide.coefficient,
+        )
+        if success:
+            stored += 1
+
+    return stored
+
+
 async def collect_and_store_tides():
-    """Collect tide data and store in database."""
-    # This would be called by the scheduler
+    """Collect tide data and store in InfluxDB."""
     tides = await fetch_shom_api()
 
     if not tides:
-        tides = await fetch_maree_info("bordeaux")
+        tides = await fetch_open_meteo_marine()
+
+    if not tides:
+        tides = _generate_mock_tides()
+        print("Using calculated tide data for storage")
 
     if tides:
-        # Store in InfluxDB
-        # TODO: Implement storage
-        pass
+        stored = await store_tides_to_influx(tides)
+        print(f"Stored {stored} tide data points to InfluxDB")
+        return stored
 
-    return len(tides)
+    return 0
+
+
+async def fetch_and_store_tides_range(start: datetime, end: datetime) -> int:
+    """Fetch hourly tide heights for a specific date range and store in InfluxDB.
+
+    Uses Open-Meteo Marine API with start_date/end_date parameters to get
+    historical and forecast sea level data. Stores all hourly points for
+    continuous timeline display.
+    """
+    from app.services import influx_client
+
+    lat = 45.6  # Gironde estuary mouth (oceanic point)
+    lon = -1.2
+
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
+
+    url = "https://marine-api.open-meteo.com/v1/marine"
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            response = await client.get(
+                url,
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "hourly": "sea_level_height_msl",
+                    "start_date": start_str,
+                    "end_date": end_str,
+                    "timezone": "UTC",
+                },
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            hourly = data.get("hourly", {})
+            times = hourly.get("time", [])
+            levels = hourly.get("sea_level_height_msl", [])
+
+            if not times or not levels:
+                print(f"No tide data from Open-Meteo Marine for {start_str} -> {end_str}")
+                return 0
+
+            # Store all hourly height points for continuous timeline
+            stored = 0
+            for t, h in zip(times, levels):
+                if h is not None:
+                    success = await influx_client.write_tide(
+                        port="BORDEAUX",
+                        height_m=h,
+                        timestamp=datetime.fromisoformat(t),
+                    )
+                    if success:
+                        stored += 1
+
+            # Also extract and store PM/BM events with coefficients
+            tides = _extract_tides_from_levels(times, levels)
+            for tide in tides:
+                await influx_client.write_tide(
+                    port=tide.port,
+                    height_m=tide.height_m,
+                    timestamp=tide.timestamp,
+                    tide_type=tide.tide_type.value if tide.tide_type else None,
+                    coefficient=tide.coefficient,
+                )
+
+            print(f"Stored {stored} hourly tide points for {start_str} -> {end_str}")
+            return stored
+
+    except Exception as e:
+        print(f"Error fetching tide range from Open-Meteo Marine: {e}")
+        return 0

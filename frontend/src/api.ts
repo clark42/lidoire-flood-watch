@@ -2,7 +2,6 @@
 
 import type {
   RealtimeData,
-  TimelineData,
   FloodEpisode,
   EpisodeAnalysis,
   RiskScore,
@@ -11,6 +10,10 @@ import type {
   InfoclimatData,
   DataSource,
   ForecastData,
+  AvailableSources,
+  UnifiedTimelineData,
+  RainfallTimelineData,
+  BasinRainfallData,
 } from './types'
 
 const API_BASE = '/api'
@@ -34,56 +37,6 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 // Realtime data
 export async function getRealtimeData(): Promise<RealtimeData> {
   return fetchJson<RealtimeData>(`${API_BASE}/realtime`)
-}
-
-// Timeline data
-export async function getTimelineData(
-  start?: string,
-  end?: string,
-  resolution: string = '1h'
-): Promise<TimelineData> {
-  const params = new URLSearchParams({ resolution })
-  if (start) params.set('start', start)
-  if (end) params.set('end', end)
-
-  return fetchJson<TimelineData>(`${API_BASE}/timeline?${params}`)
-}
-
-// Multi-station timeline data
-export interface StationTimelineData {
-  name: string
-  river: string
-  distance_km: number
-  thresholds: {
-    yellow?: number
-    orange?: number
-    red?: number
-  }
-  data: {
-    timestamp: string
-    height_m: number
-  }[]
-}
-
-export interface MultiStationTimelineData {
-  start: string
-  end: string
-  stations: Record<string, StationTimelineData>
-}
-
-export async function getMultiStationTimeline(
-  start?: string,
-  end?: string,
-  stationIds?: string[]
-): Promise<MultiStationTimelineData> {
-  const params = new URLSearchParams()
-  if (start) params.set('start', start)
-  if (end) params.set('end', end)
-  if (stationIds && stationIds.length > 0) {
-    params.set('station_ids', stationIds.join(','))
-  }
-
-  return fetchJson<MultiStationTimelineData>(`${API_BASE}/timeline/stations?${params}`)
 }
 
 // Episodes
@@ -160,6 +113,11 @@ export async function getStatus(): Promise<any> {
   return fetchJson<any>(`${API_BASE}/status`)
 }
 
+// Sources detail (exhaustive config)
+export async function getSourcesDetail(): Promise<any> {
+  return fetchJson<any>(`${API_BASE}/sources-detail`)
+}
+
 // Stations
 export async function getStations(): Promise<MultiStationData> {
   return fetchJson<MultiStationData>(`${API_BASE}/realtime/stations`)
@@ -183,4 +141,74 @@ export async function getDataSourcesStatus(): Promise<{ sources: DataSource[] }>
 // Forecast
 export async function getForecast(hours: number = 48): Promise<ForecastData> {
   return fetchJson<ForecastData>(`${API_BASE}/risk/forecast?hours=${hours}`)
+}
+
+// Timeline Sources
+export async function getAvailableSources(): Promise<AvailableSources> {
+  return fetchJson<AvailableSources>(`${API_BASE}/timeline/sources`)
+}
+
+// Rainfall Timeline
+export async function getRainfallTimeline(
+  start?: string,
+  end?: string,
+  cities?: string[],
+  sources?: string[],
+  resolution: string = '1h'
+): Promise<RainfallTimelineData> {
+  const params = new URLSearchParams({ resolution })
+  if (start) params.set('start', start)
+  if (end) params.set('end', end)
+  if (cities && cities.length > 0) params.set('cities', cities.join(','))
+  if (sources && sources.length > 0) params.set('sources', sources.join(','))
+
+  return fetchJson<RainfallTimelineData>(`${API_BASE}/timeline/rainfall?${params}`)
+}
+
+// Unified Timeline (River + Rainfall + Tide + Risk)
+export async function getUnifiedTimeline(
+  start?: string,
+  end?: string,
+  riverStations?: string[],
+  rainfallSources?: string[],
+  includeTide?: boolean,
+  includeRisk?: boolean,
+  resolution: string = '1h',
+  includeSoil?: boolean,
+  includeInfoclimat?: boolean,
+  includeWind?: boolean,
+): Promise<UnifiedTimelineData> {
+  const params = new URLSearchParams({ resolution })
+  if (start) params.set('start', start)
+  if (end) params.set('end', end)
+  if (riverStations && riverStations.length > 0) {
+    params.set('river_stations', riverStations.join(','))
+  }
+  if (rainfallSources && rainfallSources.length > 0) {
+    params.set('rainfall_sources', rainfallSources.join(','))
+  }
+  if (includeTide) params.set('include_tide', 'true')
+  if (includeRisk) params.set('include_risk', 'true')
+  if (includeSoil) params.set('include_soil', 'true')
+  // Infoclimat: default true on backend, send false to disable
+  if (includeInfoclimat === false) params.set('include_infoclimat', 'false')
+  if (includeWind) params.set('include_wind', 'true')
+
+  return fetchJson<UnifiedTimelineData>(`${API_BASE}/timeline/unified?${params}`)
+}
+
+// Basin Rainfall
+export async function getBasinRainfall(): Promise<BasinRainfallData> {
+  return fetchJson<BasinRainfallData>(`${API_BASE}/realtime/basin-rainfall`)
+}
+
+// TimeMachine - get realtime data at a historical timestamp
+export async function getRealtimeDataAt(timestamp: string): Promise<RealtimeData> {
+  const params = new URLSearchParams({ timestamp })
+  return fetchJson<RealtimeData>(`${API_BASE}/realtime/at?${params}`)
+}
+
+// Episodes list (for TimeMachine quick navigation)
+export async function getEpisodesList(): Promise<FloodEpisode[]> {
+  return fetchJson<FloodEpisode[]>(`${API_BASE}/episodes?limit=20`)
 }

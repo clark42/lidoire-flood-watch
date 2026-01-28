@@ -256,33 +256,78 @@ async def get_basin_rainfall_infoclimat() -> dict:
         }
 
     # Parse rainfall from observations
-    # Infoclimat returns data in format: {"station_id": {"timestamp": {...data...}, ...}, ...}
+    # Infoclimat API v2 returns data in format:
+    #   {"metadata": {...}, "hourly": {"STATION_ID": {"timestamp": {...}, ...}, ...}}
+    # OR (legacy/alternative):
+    #   {"STATION_ID": {"timestamp": {...}, ...}, ...}
+    # We need to handle both formats.
+    station_ids_set = set(station_ids)
     rainfall_data = []
     total_rain_24h = 0.0
 
-    for station_id, station_obs in observations.items():
-        if not isinstance(station_obs, dict):
+    # Determine where station data lives
+    station_data_source = observations
+    if "hourly" in observations and isinstance(observations["hourly"], dict):
+        station_data_source = observations["hourly"]
+    elif "daily" in observations and isinstance(observations["daily"], dict):
+        station_data_source = observations["daily"]
+
+
+    for station_id, station_obs in station_data_source.items():
+        # Skip non-station keys
+        if station_id not in station_ids_set:
+            continue
+
+        # Station data can be a list of observations or a dict keyed by timestamp
+        observations_list: list[dict] = []
+        if isinstance(station_obs, list):
+            observations_list = [o for o in station_obs if isinstance(o, dict)]
+        elif isinstance(station_obs, dict):
+            observations_list = [o for o in station_obs.values() if isinstance(o, dict)]
+        else:
             continue
 
         station_info = next((s for s in stations if s["id"] == station_id), {})
         station_rain = 0.0
 
-        for timestamp_str, obs in station_obs.items():
-            if not isinstance(obs, dict):
-                continue
+        def _to_float(val) -> float:
+            """Convert API value to float (handles str, int, float, None)."""
+            if val is None:
+                return 0.0
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return 0.0
 
-            # Look for precipitation field (RR1 = rain in last hour, RR24 = rain 24h)
-            rain_1h = obs.get("RR1") or obs.get("rr1") or obs.get("precipitation", 0)
-            if rain_1h and isinstance(rain_1h, (int, float)):
-                station_rain += float(rain_1h)
+        # Use pluie_24h from the most recent observation (rolling 24h counter)
+        # This avoids double-counting from summing overlapping pluie_1h values.
+        # Infoclimat API v2 uses French field names; values may be strings.
+        last_pluie_24h = None
+        if observations_list:
+            for obs in reversed(observations_list):
+                val = obs.get("pluie_24h")
+                if val is not None:
+                    parsed = _to_float(val)
+                    if parsed >= 0:
+                        last_pluie_24h = parsed
+                        break
+
+        # Fallback: sum pluie_1h if pluie_24h unavailable
+        if last_pluie_24h is None:
+            for obs in observations_list:
+                rain_1h = _to_float(obs.get("pluie_1h") or obs.get("RR1") or 0)
+                if rain_1h > 0:
+                    station_rain += rain_1h
+
+        rain_24h_value = last_pluie_24h if last_pluie_24h is not None else station_rain
 
         rainfall_data.append({
             "station_id": station_id,
             "station_name": station_info.get("name", "Unknown"),
             "distance_km": station_info.get("distance_km"),
-            "rain_24h_mm": round(station_rain, 1),
+            "rain_24h_mm": round(rain_24h_value, 1),
         })
-        total_rain_24h += station_rain
+        total_rain_24h += rain_24h_value
 
     # Calculate weighted average
     if rainfall_data:
@@ -313,6 +358,39 @@ async def get_basin_rainfall_infoclimat() -> dict:
     return result
 
 
+async def store_rainfall_to_influx(data: dict) -> int:
+    """Store Infoclimat rainfall data to InfluxDB."""
+    from app.services import influx_client
+
+    stored = 0
+    timestamp = datetime.utcnow()
+
+    # Store basin average
+    success = await influx_client.write_rainfall(
+        source="infoclimat",
+        precipitation_mm_h=0,
+        timestamp=timestamp,
+        precipitation_mm_24h=data.get("rain_24h_avg_mm", 0),
+        station_city="basin_average",
+    )
+    if success:
+        stored += 1
+
+    # Store per-station data
+    for station in data.get("stations", []):
+        success = await influx_client.write_rainfall(
+            source="infoclimat",
+            precipitation_mm_h=0,
+            timestamp=timestamp,
+            precipitation_mm_24h=station.get("rain_24h_mm", 0),
+            station_city=station.get("station_name"),
+        )
+        if success:
+            stored += 1
+
+    return stored
+
+
 async def get_rainfall_observations_infoclimat() -> list[RainfallObservation]:
     """
     Get rainfall observations from Infoclimat as RainfallObservation objects.
@@ -321,6 +399,9 @@ async def get_rainfall_observations_infoclimat() -> list[RainfallObservation]:
 
     if not data.get("available"):
         return []
+
+    # Store to InfluxDB
+    await store_rainfall_to_influx(data)
 
     observations = []
 
@@ -348,3 +429,114 @@ async def get_rainfall_observations_infoclimat() -> list[RainfallObservation]:
         )
 
     return observations
+
+
+async def fetch_and_store_infoclimat_historical_range(
+    start: datetime,
+    end: datetime,
+) -> int:
+    """Fetch historical hourly rainfall from Infoclimat and store in InfluxDB.
+
+    Chunks requests into 7-day windows (API limit).
+    Discovers nearby stations automatically.
+
+    Args:
+        start: Start datetime
+        end: End datetime
+
+    Returns:
+        Number of data points stored
+    """
+    from app.services import influx_client
+
+    settings = get_settings()
+    if not settings.infoclimat_api_key:
+        print("Infoclimat: API key not configured, skipping historical backfill")
+        return 0
+
+    # Find nearby stations
+    stations = await find_stations_near(
+        lat=settings.moulin_lat,
+        lon=settings.moulin_lon,
+        radius_km=40,
+    )
+    if not stations:
+        print("Infoclimat: no stations found nearby")
+        return 0
+
+    station_ids = [s["id"] for s in stations[:5] if s.get("id")]
+    if not station_ids:
+        return 0
+
+    station_lookup = {s["id"]: s for s in stations}
+    total_stored = 0
+
+    # Chunk into 7-day windows
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(chunk_start + timedelta(days=7), end)
+
+        print(f"Infoclimat: fetching {chunk_start.date()} -> {chunk_end.date()} "
+              f"for {len(station_ids)} stations...")
+
+        data = await fetch_station_observations(station_ids, chunk_start, chunk_end)
+
+        if not data:
+            print(f"  No data returned (API may be IP-restricted)")
+            break  # Don't retry other chunks if IP-restricted
+
+        # Parse hourly observations from each station
+        station_data_source = data
+        if "hourly" in data and isinstance(data["hourly"], dict):
+            station_data_source = data["hourly"]
+
+        for station_id, station_obs in station_data_source.items():
+            if station_id not in set(station_ids):
+                continue
+
+            info = station_lookup.get(station_id, {})
+            station_name = info.get("name", station_id)
+
+            observations_list: list[dict] = []
+            if isinstance(station_obs, dict):
+                observations_list = [
+                    {"timestamp_str": ts, **obs}
+                    for ts, obs in station_obs.items()
+                    if isinstance(obs, dict)
+                ]
+            elif isinstance(station_obs, list):
+                observations_list = [o for o in station_obs if isinstance(o, dict)]
+
+            stored = 0
+            for obs in observations_list:
+                try:
+                    # Parse timestamp
+                    ts_str = obs.get("timestamp_str") or obs.get("dh_utc") or ""
+                    if not ts_str:
+                        continue
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")) if "T" in ts_str else datetime.strptime(ts_str[:19], "%Y-%m-%d %H:%M:%S")
+
+                    # Parse rain (pluie_1h = hourly rainfall in mm)
+                    rain_1h = obs.get("pluie_1h")
+                    if rain_1h is None:
+                        continue
+                    rain_val = float(rain_1h) if rain_1h else 0.0
+
+                    success = await influx_client.write_rainfall(
+                        source="infoclimat",
+                        precipitation_mm_h=rain_val,
+                        timestamp=ts,
+                        station_city=station_name,
+                    )
+                    if success:
+                        stored += 1
+                except (ValueError, TypeError, KeyError) as e:
+                    continue
+
+            if stored:
+                print(f"  {station_name}: {stored} hourly points")
+            total_stored += stored
+
+        chunk_start = chunk_end
+
+    return total_stored
