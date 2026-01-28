@@ -72,7 +72,7 @@ export default function NowcastRainChart({ data }: NowcastRainChartProps) {
 
       {hasRain && data.max_intensity_mm > 0 && (
         <div className="mt-2 text-xs text-gray-500">
-          Intensite max : {data.max_intensity_mm.toFixed(2)} mm/min
+          Intensite max : {(data.max_intensity_mm * 60).toFixed(1)} mm/h
         </div>
       )}
     </div>

@@ -305,13 +305,16 @@ async def fetch_nowcast_rain() -> Optional[NowcastRainData]:
         data_values = data_values[:min_len]
 
         # Build minute_data
+        # Chart.js data is rain intensity in mm/h at each minute.
+        # Per-minute precipitation = intensity_mm_h / 60.
         minute_data = [
-            {"minute": labels[i], "mm": data_values[i]}
+            {"minute": labels[i], "mm": round(data_values[i] / 60, 4)}
             for i in range(min_len)
         ]
 
-        total_60min_mm = round(sum(data_values), 2)
-        max_intensity_mm = round(max(data_values), 2) if data_values else 0.0
+        # Total = integral of intensity over time: sum(mm_h) / 60
+        total_60min_mm = round(sum(data_values) / 60, 2)
+        max_intensity_mm = round(max(data_values) / 60, 4) if data_values else 0.0
         rain_minutes = sum(1 for v in data_values if v > 0)
 
         return NowcastRainData(
