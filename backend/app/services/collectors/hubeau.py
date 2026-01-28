@@ -401,20 +401,26 @@ async def fetch_episode_context(
 
     # First try real-time data (if within last 30 days)
     thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    # Normalize to naive for comparison
+    start_date_naive = start_date.replace(tzinfo=None) if start_date.tzinfo else start_date
 
     for station in settings.hubeau_stations:
         station_id = station["id"]
 
-        if start_date > thirty_days_ago:
+        if start_date_naive > thirty_days_ago:
             # Use real-time API
             levels = await fetch_realtime_observations(
                 station_id,
-                hours_back=int((datetime.utcnow() - start_date).total_seconds() / 3600),
+                hours_back=int((datetime.utcnow() - start_date_naive).total_seconds() / 3600),
             )
-            # Filter to our date range
+            # Filter to our date range (handle timezone-aware vs naive)
+            def to_naive(dt):
+                return dt.replace(tzinfo=None) if dt.tzinfo else dt
+            start_naive = to_naive(start_date)
+            end_naive = to_naive(end_date)
             levels = [
                 lv for lv in levels
-                if start_date <= lv.timestamp <= end_date
+                if start_naive <= to_naive(lv.timestamp) <= end_naive
             ]
         else:
             # Use Hydroportail for sub-hourly historical data

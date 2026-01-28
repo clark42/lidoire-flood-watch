@@ -5,7 +5,8 @@ from typing import Optional
 from fastapi import APIRouter, Query
 
 from app.models.schemas import RiskScore, RiskLevel
-from app.services.risk import calculate_risk_score, get_risk_forecast
+from app.services.risk import calculate_risk_score
+from app.services.forecast import get_risk_forecast_v2
 from app.services.collectors.tide import get_current_tide_data
 from app.services.collectors.vigicrues import get_current_river_level
 from app.services.collectors.weather import get_rainfall_summary, get_current_wind
@@ -40,24 +41,18 @@ async def get_risk_forecast_endpoint(
     """
     Get risk forecast for the next hours.
 
-    Combines:
-    - Predicted tides
-    - Weather forecast (rainfall)
-    - River level trends
+    v2.0: Full risk forecast combining:
+    - Hourly rainfall forecast (Open-Meteo AROME/ARPEGE)
+    - Tide predictions with coefficients
+    - Projected river levels from upstream stations with propagation delays
+    - Current soil saturation factor
 
-    Returns hourly risk predictions.
+    Returns hourly risk predictions with cumulative rain, tide info,
+    and projected river levels for each hour.
+
+    Cached in Redis for 30 minutes.
     """
-    forecasts = await get_risk_forecast(hours=hours)
-
-    return {
-        "generated_at": datetime.utcnow(),
-        "hours_ahead": hours,
-        "forecasts": forecasts,
-        "max_risk": max(f["score"] for f in forecasts) if forecasts else 0,
-        "critical_periods": [
-            f for f in forecasts if f["level"] in [RiskLevel.ORANGE.value, RiskLevel.RED.value]
-        ],
-    }
+    return await get_risk_forecast_v2(hours=hours)
 
 
 @router.get("/thresholds")

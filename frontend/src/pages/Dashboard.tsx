@@ -19,7 +19,6 @@ import {
   getNetatmoData,
   getInfoclimatData,
   getDataSourcesStatus,
-  getForecast,
   getBasinRainfall,
   getRealtimeDataAt,
   getEpisodesList,
@@ -30,7 +29,6 @@ import type {
   NetatmoData,
   InfoclimatData,
   DataSource,
-  ForecastData,
   BasinRainfallData,
   FloodEpisode,
 } from '../types'
@@ -69,7 +67,6 @@ export default function Dashboard() {
   const [netatmo, setNetatmo] = useState<NetatmoData | null>(null)
   const [infoclimat, setInfoclimat] = useState<InfoclimatData | null>(null)
   const [sources, setSources] = useState<DataSource[]>([])
-  const [forecast, setForecast] = useState<ForecastData | null>(null)
   const [selectedStation, setSelectedStation] = useState<string | null>(null)
   const [breakdownExpanded, setBreakdownExpanded] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -104,7 +101,6 @@ export default function Dashboard() {
         netatmoResult,
         infoclimatResult,
         sourcesResult,
-        forecastResult,
         basinResult,
         episodesResult,
       ] = await Promise.allSettled([
@@ -112,7 +108,6 @@ export default function Dashboard() {
         getNetatmoData(),
         getInfoclimatData(),
         getDataSourcesStatus(),
-        getForecast(48),
         getBasinRainfall(),
         getEpisodesList(),
       ])
@@ -137,7 +132,6 @@ export default function Dashboard() {
       if (netatmoResult.status === 'fulfilled') setNetatmo(netatmoResult.value)
       if (infoclimatResult.status === 'fulfilled') setInfoclimat(infoclimatResult.value)
       if (sourcesResult.status === 'fulfilled') setSources(sourcesResult.value.sources)
-      if (forecastResult.status === 'fulfilled') setForecast(forecastResult.value)
       if (basinResult.status === 'fulfilled') setBasinRainfall(basinResult.value)
       if (episodesResult.status === 'fulfilled') setEpisodes(episodesResult.value)
 
@@ -380,7 +374,8 @@ export default function Dashboard() {
             loading={loading}
           />
 
-          <ForecastPanel forecast={forecast} loading={loading} />
+          {/* ForecastPanel v2 - autonomous, fetches its own data */}
+          {!timeMachineActive && <ForecastPanel hours={168} autoRefresh={true} />}
         </div>
       </div>
 

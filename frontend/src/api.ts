@@ -139,7 +139,7 @@ export async function getDataSourcesStatus(): Promise<{ sources: DataSource[] }>
 }
 
 // Forecast
-export async function getForecast(hours: number = 48): Promise<ForecastData> {
+export async function getForecast(hours: number = 168): Promise<ForecastData> {
   return fetchJson<ForecastData>(`${API_BASE}/risk/forecast?hours=${hours}`)
 }
 
@@ -177,6 +177,7 @@ export async function getUnifiedTimeline(
   includeSoil?: boolean,
   includeInfoclimat?: boolean,
   includeWind?: boolean,
+  includeForecast?: boolean,
 ): Promise<UnifiedTimelineData> {
   const params = new URLSearchParams({ resolution })
   if (start) params.set('start', start)
@@ -193,6 +194,7 @@ export async function getUnifiedTimeline(
   // Infoclimat: default true on backend, send false to disable
   if (includeInfoclimat === false) params.set('include_infoclimat', 'false')
   if (includeWind) params.set('include_wind', 'true')
+  if (includeForecast) params.set('include_forecast', 'true')
 
   return fetchJson<UnifiedTimelineData>(`${API_BASE}/timeline/unified?${params}`)
 }
@@ -211,4 +213,35 @@ export async function getRealtimeDataAt(timestamp: string): Promise<RealtimeData
 // Episodes list (for TimeMachine quick navigation)
 export async function getEpisodesList(): Promise<FloodEpisode[]> {
   return fetchJson<FloodEpisode[]>(`${API_BASE}/episodes?limit=20`)
+}
+
+// Update episode
+export async function updateEpisode(
+  id: number,
+  episode: Partial<FloodEpisode>
+): Promise<FloodEpisode> {
+  return fetchJson<FloodEpisode>(`${API_BASE}/episodes/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(episode),
+  })
+}
+
+// Delete episode
+export async function deleteEpisode(id: number): Promise<void> {
+  await fetch(`${API_BASE}/episodes/${id}`, { method: 'DELETE' })
+}
+
+// Confirm or reject episode (for model calibration)
+export async function confirmEpisode(
+  id: number,
+  wasFlooded: boolean,
+  actualSeverity?: number,
+  notes?: string
+): Promise<{ status: string; episode: FloodEpisode }> {
+  const params = new URLSearchParams({ was_flooded: wasFlooded.toString() })
+  if (actualSeverity) params.set('actual_severity', actualSeverity.toString())
+  if (notes) params.set('notes', notes)
+  return fetchJson(`${API_BASE}/episodes/confirm/${id}?${params}`, {
+    method: 'POST',
+  })
 }

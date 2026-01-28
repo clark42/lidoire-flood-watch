@@ -3,31 +3,40 @@
 Calculates flood risk based on:
 - Multiple river stations (Dordogne, Isle, Dronne)
 - Rate of water level change (tendency)
+- Multi-station momentum (stations rising simultaneously)
 - Tide coefficient and phase
-- Conjunction factor (tide + high river = multiplier)
+- Conjunction factor (active flood combinations = multiplier)
 - Rainfall (24h, 72h, 7d cumulative)
 - Westerly wind (surge amplification on Gironde estuary)
 - Soil saturation (runoff factor from Open-Meteo + Meteo Agricole)
 - Video analysis (water level index)
 
-Risk model weights (v2.3 - 10 factors):
-- Multi-station river levels: 42% (Libourne excluded — tidal)
-- Rainfall (24h + 72h + 7d): 23% (72h/7d increased per Feb 2024 analysis)
-- Tide (coefficient + phase): 16%
-- Tendency: 5%
-- Soil saturation: 5% (increased per Feb 2024 analysis)
+Risk model weights (v3.0 - 11 factors):
+- Multi-station river levels: 28% (reduced: level alone doesn't predict moulin flooding)
+- Rainfall (24h + 72h + 7d): 27%
+- Tendency: 12% (increased: rising is the strongest signal)
+- Momentum (multi-station rising): 8% (NEW: simultaneous rise across basin)
+- Tide (coefficient + phase): 10%
+- Soil saturation: 5%
 - Westerly wind: 3%
 - Video analysis: 5%
-- Conjunction multiplier: up to 1.6x (multi-station factor added)
+- Conjunction multiplier: up to 2.5x (redesigned for active flood detection)
 
-v2.3 changes (Jan 2026):
-- Based on analysis of episode fevrier 2024 (id=2, severity 5, moulin inonde).
-- Increased rain_72h weight (7%->10%) and rain_7d (3%->5%): sustained
-  multi-day rain (62mm/5d) caused flooding despite moderate 24h rain (34mm).
-- Added multi-station simultaneous elevation to conjunction multiplier:
-  all 7 stations above yellow simultaneously is a critical signal.
-- Increased soil_sat weight (4%->5%): winter saturated soil amplifies risk.
-- Conjunction multiplier max raised to 1.6x.
+v3.0 changes (Jan 2026):
+- Calibrated from 14 annotated episodes (5 confirmed floods, 9 false positives).
+- Key insight: moulin is on the Lidoire (tributary), NOT on the Dordogne.
+  High Dordogne level alone does NOT mean flood at the moulin.
+  Pessac at 4.92m RED in May 2024 = no flood (0 rising, 0mm rain).
+  Pessac at 4.11m in Dec 2023 = 25cm inside (5 rising, 18mm rain).
+- NEW momentum factor: counts stations actively rising simultaneously.
+  4+ stations rising = strongest flood signal across all episodes.
+- NEW stability dampener: high but stable/falling river → reduced score.
+  Catches false positives like EP5 (Pessac RED, 0 rising = no flood).
+- Conjunction multiplier redesigned: triggers on "active flood" pattern
+  (multiple rising + rain) rather than just "high values".
+- Unified weights between calculate_risk_score_v2 and backfill function.
+- River weight reduced 40%→28%: raw level is poor predictor alone.
+- Tendency weight increased 10%→12%: rising = danger signal.
 
 v2.2 changes (Jan 2026):
 - Libourne (P577001001) excluded from river factor (weight=0):
@@ -236,61 +245,167 @@ def _calculate_tide_phase_score(
         return 0.1
 
 
+def _calculate_momentum_score(
+    station_scores: list[StationRiskScore] | None = None,
+    n_rising: int = 0,
+    n_total: int = 6,
+    river_score: float = 0.5,
+) -> float:
+    """
+    Calculate multi-station momentum score (v3.0).
+
+    Measures how many stations are rising simultaneously — the strongest
+    predictor of actual flooding at the moulin across all 14 annotated episodes.
+
+    Flooded episodes had 4.4 rising stations on average vs 2.1 for non-flooded.
+
+    IMPORTANT: Gated by river level. Rising from a LOW level (EP4: 5 rising
+    but river=0.514, EP6: 6 rising but river=0.353) is an early warning,
+    not an emergency. Full momentum only counts when rivers are ALSO elevated.
+
+    Args:
+        station_scores: Per-station scores (from realtime)
+        n_rising: Number of rising stations (from backfill)
+        n_total: Total active stations
+        river_score: Current weighted river score (0-1)
+
+    Returns:
+        Score 0-1 representing multi-station momentum.
+    """
+    if station_scores:
+        active = [s for s in station_scores if s.weight > 0]
+        n_total = len(active) if active else 6
+        n_rising = sum(1 for s in active if s.rate_cm_per_hour > 1.0)
+
+    if n_total == 0:
+        return 0.0
+
+    # Base momentum score from rising count
+    if n_rising == 0:
+        base = 0.0
+    elif n_rising <= 2:
+        base = 0.2
+    elif n_rising == 3:
+        base = 0.5
+    elif n_rising == 4:
+        base = 0.8
+    else:
+        base = 1.0
+
+    # River level gate: rising from LOW level = early warning only
+    # EP4: 5 rising but river=0.514 → no flood (rivers rising but not yet high)
+    # EP6: 6 rising but river=0.353 → no flood (early rise from low)
+    # EP14: 5 rising + river=0.602 → 25cm flood (rivers already elevated)
+    if river_score >= 0.55:
+        gate = 1.0   # Rivers elevated → full momentum signal
+    elif river_score >= 0.40:
+        gate = 0.7   # Rivers moderate → partial momentum
+    elif river_score >= 0.30:
+        gate = 0.4   # Rivers still low → early warning
+    else:
+        gate = 0.2   # Rivers low → minimal signal
+
+    return base * gate
+
+
+def _calculate_stability_dampener(
+    river_score: float,
+    tendency: Tendency,
+    station_scores: list[StationRiskScore] | None = None,
+    n_rising: int = 0,
+) -> float:
+    """
+    Dampener for high-but-stable river conditions (v3.0).
+
+    When the river is elevated but NOT rising, the flood risk at the moulin
+    is much lower than the raw score suggests. This catches false positives
+    like EP5 (Pessac 4.92m RED, 0 rising, 0 rain = no flood).
+
+    Returns a multiplier 0.6-1.0 to apply to the final score.
+    """
+    if station_scores:
+        active = [s for s in station_scores if s.weight > 0]
+        n_rising = sum(1 for s in active if s.rate_cm_per_hour > 1.0)
+
+    # Only dampens when river is elevated
+    if river_score < 0.4:
+        return 1.0
+
+    # High river + stable/falling + few stations rising = dampened
+    if tendency in (Tendency.STABLE, Tendency.FALLING):
+        if n_rising == 0:
+            return 0.65  # Strong dampening (EP5: Pessac RED, 0 rising = score×0.65)
+        elif n_rising <= 1:
+            return 0.80  # Moderate dampening (EP9: 1 rising)
+    elif tendency == Tendency.RISING and n_rising <= 1:
+        # Rising at primary but only 1 station = moderate dampening
+        return 0.85
+
+    return 1.0
+
+
 def _calculate_conjunction_multiplier(
     river_score: float,
     tide_phase_score: float,
     tendency: Tendency,
     station_scores: list[StationRiskScore] | None = None,
     rain_72h_score: float = 0.0,
+    rain_24h_score: float = 0.0,
+    n_rising: int = 0,
 ) -> float:
     """
-    Calculate conjunction multiplier for dangerous combinations.
+    Calculate conjunction multiplier for dangerous combinations (v3.0).
 
-    When multiple risk factors align, danger increases exponentially.
-    v2.4: More aggressive multiplier based on Feb 2024 analysis.
+    Redesigned based on 14 annotated episodes. The key trigger is
+    "active flood" pattern: multiple stations rising + recent rain,
+    not just high raw values.
 
     Triggers:
-    - High river levels (>0.4 score)
-    - Rising tendency
-    - Multiple stations above yellow simultaneously
-    - Sustained rain (72h cumul > 0.4)
-    - High tide phase (when available)
+    - Multiple stations rising simultaneously (strongest signal)
+    - Rising + recent rain (active water arrival)
+    - Rising + elevated river
+    - High tide + elevated river
+    - Sustained rain + elevated river
+    - Multi-station above thresholds
 
-    Returns multiplier between 1.0 and 2.0.
+    Returns multiplier between 1.0 and 2.5.
     """
     multiplier = 1.0
 
-    # Rising river = increased risk
-    if tendency == Tendency.RISING:
-        if river_score > 0.5:
-            multiplier += 0.25  # Rising with elevated river
-        elif river_score > 0.3:
-            multiplier += 0.15  # Rising with moderate river
+    # Count rising stations
+    if station_scores:
+        active = [s for s in station_scores if s.weight > 0]
+        n_rising_local = sum(1 for s in active if s.rate_cm_per_hour > 1.0)
+    else:
+        n_rising_local = n_rising
 
-    # High tide + elevated river (when tide data available)
-    if tide_phase_score > 0.5 and river_score > 0.4:
-        multiplier += 0.2
+    # === PRIMARY TRIGGER: active basin-wide flood ===
+    # Multiple stations rising with rivers already elevated.
+    # This is the single most discriminating pattern.
+    # EP14: 5 rising + river 0.602 → 25cm flood (river above 0.55)
+    # EP4: 5 rising + river 0.514 → NO flood (river below 0.55)
+    # The 0.55 threshold corresponds to ~Pessac 3.5m (between yellow and orange).
+    if n_rising_local >= 4 and river_score > 0.55:
+        multiplier += 0.45  # Strong basin-wide flood signal
+    elif n_rising_local >= 4 and river_score > 0.45:
+        multiplier += 0.12  # Rivers rising but not yet critical
+    elif n_rising_local >= 3 and river_score > 0.55:
+        multiplier += 0.25
 
-    # Sustained rain + elevated river = soil saturated, more runoff coming
-    if rain_72h_score > 0.4 and river_score > 0.4:
+    # === SECONDARY: rising + rain + elevated river ===
+    # Only significant when rivers are clearly elevated (>0.55)
+    if tendency == Tendency.RISING and rain_24h_score > 0.3 and river_score > 0.55:
+        multiplier += 0.20
+
+    # === TERTIARY: sustained rain + elevated river ===
+    if rain_72h_score > 0.5 and river_score > 0.55:
         multiplier += 0.15
 
-    # Multi-station simultaneous elevation (basin-wide flood signal)
-    if station_scores:
-        active_stations = [s for s in station_scores if s.weight > 0]
-        if active_stations:
-            above_yellow = sum(1 for s in active_stations if s.score > 0.33)
-            above_orange = sum(1 for s in active_stations if s.score > 0.5)
-            ratio = above_yellow / len(active_stations)
+    # === TIDE: high tide + elevated river ===
+    if tide_phase_score > 0.5 and river_score > 0.5:
+        multiplier += 0.15
 
-            if ratio >= 0.7:  # 70%+ stations above yellow
-                multiplier += 0.20
-                if above_orange >= 2:  # Plus 2+ stations near orange
-                    multiplier += 0.15
-            elif ratio >= 0.5:  # 50%+ stations above yellow
-                multiplier += 0.10
-
-    return min(multiplier, 2.0)
+    return min(multiplier, 2.5)
 
 
 def _score_to_level(score: float) -> RiskLevel:
@@ -343,6 +458,8 @@ def _generate_description(
         high_factors.append("pleine mer")
     if factors.tendency_score > 0.5:
         high_factors.append("montée rapide")
+    if factors.momentum_score > 0.5:
+        high_factors.append("hausse multi-stations")
     if factors.wind_west_score > 0.5:
         high_factors.append("vent d'ouest")
     if factors.soil_saturation_factor > 1.3:
@@ -518,23 +635,35 @@ async def calculate_risk_score_v2(
     # Get primary station rate for raw value
     primary_rate = primary_station.rate_cm_per_hour if primary_station else 0.0
 
-    # Conjunction multiplier (v2.4: includes rain_72h and more aggressive triggers)
+    # Multi-station momentum score (v3.0 — gated by river level)
+    momentum_score = _calculate_momentum_score(
+        station_scores=station_scores, river_score=river_score,
+    )
+
+    # Conjunction multiplier (v3.0: active flood pattern detection)
     conjunction_multiplier = _calculate_conjunction_multiplier(
-        river_score, tide_phase_score, primary_tendency, station_scores, rain_72h_score
+        river_score, tide_phase_score, primary_tendency, station_scores,
+        rain_72h_score, rain_24h_score,
+    )
+
+    # Stability dampener (v3.0: high-but-stable = less risk)
+    stability_dampener = _calculate_stability_dampener(
+        river_score, primary_tendency, station_scores,
     )
 
     # Video level score (if available)
     video_score = (video_level / 100) if video_level is not None else None
 
-    # Calculate weighted score (v2.5 - tendency weight increased)
+    # Calculate weighted score (v3.0 - momentum added, river reduced)
     weights = {
-        "river": 0.40,
-        "rain_24h": 0.08,
-        "rain_72h": 0.12,  # Sustained rain matters more
+        "river": 0.28,       # Reduced: level alone doesn't predict moulin flooding
+        "rain_24h": 0.10,    # Increased: recent rain = water arriving
+        "rain_72h": 0.12,    # Sustained rain matters
         "rain_7d": 0.05,
-        "tide": 0.06,
-        "tide_phase": 0.06,
-        "tendency": 0.10,  # Doubled: rising = danger (was 0.05)
+        "tide": 0.05,
+        "tide_phase": 0.05,
+        "tendency": 0.12,    # Increased: rising = danger signal
+        "momentum": 0.08,    # NEW: multi-station rising simultaneously
         "wind_west": 0.03,
         "soil_sat": 0.05,
         "video": 0.05,
@@ -552,6 +681,7 @@ async def calculate_risk_score_v2(
         tide_score * weights["tide"] +
         tide_phase_score * weights["tide_phase"] +
         tendency_score * weights["tendency"] +
+        momentum_score * weights["momentum"] +
         wind_west_score * weights["wind_west"] +
         soil_sat_score * weights["soil_sat"]
     )
@@ -559,8 +689,11 @@ async def calculate_risk_score_v2(
     if video_score is not None:
         weighted_score += video_score * weights["video"]
 
-    # Apply conjunction multiplier
+    # Apply conjunction multiplier (amplifies active flood patterns)
     weighted_score *= conjunction_multiplier
+
+    # Apply stability dampener (reduces high-but-stable false positives)
+    weighted_score *= stability_dampener
 
     # Normalize to 0-100
     final_score = min((weighted_score / total_weight) * 100, 100)
@@ -579,6 +712,7 @@ async def calculate_risk_score_v2(
         soil_saturation_factor=soil_saturation_factor,
         video_level_score=video_score,
         tendency_score=tendency_score,
+        momentum_score=momentum_score,
         conjunction_multiplier=conjunction_multiplier,
         stations_detail=station_scores,
         # Weights and raw values for detailed breakdown
@@ -640,8 +774,14 @@ async def calculate_risk_from_values(
     rate_cm_per_hour: float = 0.0,
     video_level: Optional[float] = None,
     override_timestamp: Optional[datetime] = None,
+    n_rising_stations: int = 0,
+    n_total_stations: int = 6,
 ) -> RiskScore:
-    """Calculate risk from explicit values (for simulation/testing/backfill)."""
+    """Calculate risk from explicit values (for simulation/testing/backfill).
+
+    v3.0: Unified weights with calculate_risk_score_v2. Added momentum and
+    stability dampener support via n_rising_stations parameter.
+    """
     settings = get_settings()
     now = override_timestamp or datetime.utcnow()
 
@@ -673,33 +813,57 @@ async def calculate_risk_from_values(
     else:
         tide_phase_score = 0.2
 
-    # Tendency score from rate
+    # Tendency score from rate (v3.0: same as _calculate_tendency_score)
     if rate_cm_per_hour <= 0:
         tendency_score = 0.0
-    elif rate_cm_per_hour < 10:
+    elif rate_cm_per_hour < 2:
         tendency_score = 0.3
+    elif rate_cm_per_hour < 5:
+        tendency_score = 0.5
+    elif rate_cm_per_hour < 10:
+        tendency_score = 0.7
     elif rate_cm_per_hour < 20:
-        tendency_score = 0.6
+        tendency_score = 0.85
     else:
         tendency_score = 1.0
 
-    tendency = Tendency.RISING if rate_cm_per_hour > 5 else Tendency.STABLE
+    tendency = Tendency.RISING if rate_cm_per_hour > 1 else (
+        Tendency.FALLING if rate_cm_per_hour < -1 else Tendency.STABLE
+    )
 
-    # Conjunction multiplier
+    # Momentum score (v3.0 — gated by river level)
+    momentum_score = _calculate_momentum_score(
+        n_rising=n_rising_stations, n_total=n_total_stations,
+        river_score=river_score,
+    )
+
+    # Conjunction multiplier (v3.0)
     conjunction_multiplier = _calculate_conjunction_multiplier(
-        river_score, tide_phase_score, tendency
+        river_score, tide_phase_score, tendency,
+        rain_72h_score=rain_72h_score,
+        rain_24h_score=rain_24h_score,
+        n_rising=n_rising_stations,
+    )
+
+    # Stability dampener (v3.0)
+    stability_dampener = _calculate_stability_dampener(
+        river_score, tendency, n_rising=n_rising_stations,
     )
 
     video_score = (video_level / 100) if video_level is not None else None
 
-    # Weighted calculation
+    # Unified weights (v3.0 - same as calculate_risk_score_v2)
     weights = {
-        "river": 0.50,
-        "rain_24h": 0.12,
-        "rain_72h": 0.08,
-        "tide": 0.12,
-        "tide_phase": 0.08,
-        "tendency": 0.05,
+        "river": 0.28,
+        "rain_24h": 0.10,
+        "rain_72h": 0.12,
+        "rain_7d": 0.0,  # Not available in simple values mode
+        "tide": 0.05,
+        "tide_phase": 0.05,
+        "tendency": 0.12,
+        "momentum": 0.08,
+        "wind_west": 0.0,  # Not available in simple values mode
+        "soil_sat": 0.0,   # Not available in simple values mode
         "video": 0.05,
     }
     total_weight = sum(weights.values()) - (weights["video"] if video_score is None else 0)
@@ -710,12 +874,14 @@ async def calculate_risk_from_values(
         rain_72h_score * weights["rain_72h"] +
         tide_score * weights["tide"] +
         tide_phase_score * weights["tide_phase"] +
-        tendency_score * weights["tendency"]
+        tendency_score * weights["tendency"] +
+        momentum_score * weights["momentum"]
     )
     if video_score is not None:
         weighted_score += video_score * weights["video"]
 
     weighted_score *= conjunction_multiplier
+    weighted_score *= stability_dampener
     final_score = min((weighted_score / total_weight) * 100, 100)
     level = _score_to_level(final_score)
 
@@ -727,6 +893,7 @@ async def calculate_risk_from_values(
         tide_phase_score=tide_phase_score,
         video_level_score=video_score,
         tendency_score=tendency_score,
+        momentum_score=momentum_score,
         conjunction_multiplier=conjunction_multiplier,
         stations_detail=[],
         # Weights and raw values for detailed breakdown
@@ -933,21 +1100,44 @@ async def backfill_risk_scores(start: datetime, end: datetime) -> int:
                 (river_score_01 - 0.66) / 0.34
             ) * (settings.risk_dordogne_level_red - settings.risk_dordogne_level_orange)
 
-        # 2. Rate of change from primary station
+        # 2. Rate of change from primary station + count rising stations
         rate_cm_h = 0.0
-        if primary_points:
-            before = [p for p in primary_points if p["timestamp"] <= current]
-            after = [p for p in primary_points if p["timestamp"] > current]
+        n_rising = 0
+        n_stations_with_data = 0
+
+        def _calc_rate(points_list, t):
+            """Calculate rate of change at time t from a sorted list of points."""
+            before = [p for p in points_list if p["timestamp"] <= t]
+            after = [p for p in points_list if p["timestamp"] > t]
             if before and after:
                 p0, p1 = before[-1], after[0]
                 dt_h = (p1["timestamp"] - p0["timestamp"]).total_seconds() / 3600
                 if 0.1 < dt_h < 48:
-                    rate_cm_h = (p1["height_m"] - p0["height_m"]) * 100 / dt_h
+                    return (p1["height_m"] - p0["height_m"]) * 100 / dt_h
             elif len(before) >= 2:
                 p0, p1 = before[-2], before[-1]
                 dt_h = (p1["timestamp"] - p0["timestamp"]).total_seconds() / 3600
                 if 0.1 < dt_h < 48:
-                    rate_cm_h = (p1["height_m"] - p0["height_m"]) * 100 / dt_h
+                    return (p1["height_m"] - p0["height_m"]) * 100 / dt_h
+            return 0.0
+
+        # Count rising stations across ALL stations (v3.0: momentum)
+        for sid, points in station_river_data.items():
+            w = station_weights.get(sid, 0)
+            if w <= 0:
+                continue
+            closest = min(points, key=lambda p: abs((p["timestamp"] - current).total_seconds()))
+            dist_h = abs((closest["timestamp"] - current).total_seconds()) / 3600
+            if dist_h > 48:
+                continue
+            n_stations_with_data += 1
+            station_rate = _calc_rate(points, current)
+            if station_rate > 1.0:  # Rising threshold: >1 cm/h
+                n_rising += 1
+
+        # Primary station rate
+        if primary_points:
+            rate_cm_h = _calc_rate(primary_points, current)
 
         # 3. Cumulative rainfall (24h and 72h)
         rain_24h = 0.0
@@ -978,7 +1168,7 @@ async def backfill_risk_scores(start: datetime, end: datetime) -> int:
             )
             hours_to_high = (closest_ht - current).total_seconds() / 3600
 
-        # 6. Calculate risk score
+        # 6. Calculate risk score (v3.0: pass momentum data)
         risk = await calculate_risk_from_values(
             rain_24h_mm=rain_24h,
             rain_72h_mm=rain_72h,
@@ -987,6 +1177,8 @@ async def backfill_risk_scores(start: datetime, end: datetime) -> int:
             hours_to_high_tide=hours_to_high,
             rate_cm_per_hour=rate_cm_h,
             override_timestamp=current,
+            n_rising_stations=n_rising,
+            n_total_stations=max(n_stations_with_data, 1),
         )
 
         # 7. Store to InfluxDB

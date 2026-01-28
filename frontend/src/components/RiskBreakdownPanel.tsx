@@ -17,6 +17,7 @@ const FACTOR_LABELS: Record<string, string> = {
   tide: 'Coef. maree',
   tide_phase: 'Phase maree',
   tendency: 'Tendance',
+  momentum: 'Momentum multi-stations',
   wind_west: "Vent d'ouest",
   soil_sat: 'Saturation sol',
   video: 'Video',
@@ -30,6 +31,7 @@ const FACTOR_TOOLTIPS: Record<string, keyof typeof TOOLTIPS> = {
   tide: 'factorTide',
   tide_phase: 'factorTidePhase',
   tendency: 'factorTendency',
+  momentum: 'factorMomentum',
   wind_west: 'factorWindWest',
   soil_sat: 'factorSoilSat',
   video: 'factorVideo',
@@ -88,6 +90,11 @@ function formatRawValue(
       return factors.tendency_rate_cm_h != null
         ? `${factors.tendency_rate_cm_h > 0 ? '+' : ''}${factors.tendency_rate_cm_h.toFixed(1)} cm/h`
         : '-'
+    case 'momentum': {
+      const active = factors.stations_detail?.filter(s => s.weight > 0) || []
+      const rising = active.filter(s => s.rate_cm_per_hour > 1).length
+      return `${rising}/${active.length} stations`
+    }
     case 'rain_7d':
       return '-'  // No raw value stored yet
     case 'wind_west':
@@ -119,6 +126,8 @@ function getFactorScore(factorKey: string, factors: RiskScore['factors']): numbe
       return factors.tide_phase_score
     case 'tendency':
       return factors.tendency_score ?? 0
+    case 'momentum':
+      return factors.momentum_score ?? 0
     case 'wind_west':
       return factors.wind_west_score ?? 0
     case 'soil_sat':

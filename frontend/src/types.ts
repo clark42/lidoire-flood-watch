@@ -47,13 +47,14 @@ export interface RainfallSummary {
 }
 
 export interface RiskWeights {
-  river: number   // 42% (v2.3)
-  rain_24h: number // 8%
-  rain_72h: number // 10%
-  rain_7d: number  // 5%
-  tide: number     // 8%
-  tide_phase: number // 8%
-  tendency: number   // 5%
+  river: number     // 28% (v3.0 — reduced: level alone doesn't predict moulin flooding)
+  rain_24h: number  // 10%
+  rain_72h: number  // 12%
+  rain_7d: number   // 5%
+  tide: number      // 5%
+  tide_phase: number // 5%
+  tendency: number   // 12%
+  momentum: number   // 8% (NEW: multi-station rising simultaneously)
   wind_west: number  // 3%
   soil_sat: number   // 5%
   video: number      // 5%
@@ -82,6 +83,7 @@ export interface RiskFactors {
   soil_saturation_factor?: number
   video_level_score: number | null
   tendency_score?: number
+  momentum_score?: number
   conjunction_multiplier?: number
   stations_detail?: StationRiskScore[]
   weights?: RiskWeights
@@ -202,14 +204,28 @@ export interface ForecastPoint {
   hours_ahead: number
   score: number
   level: RiskLevel
+  rain_1h_mm: number
+  rain_24h_mm: number
+  rain_72h_mm: number
   tide_coefficient: number
-  rain_forecast_mm: number
+  hours_to_high_tide: number
+  projected_level_m: number
 }
 
 export interface ForecastData {
   generated_at: string
   hours_ahead: number
   forecasts: ForecastPoint[]
+  max_risk: number
+  max_level: RiskLevel
+  critical_periods: ForecastPoint[]
+  summary: string
+  data_sources: {
+    rain: string
+    tide: string
+    river: string
+    soil_saturation: number
+  }
 }
 
 export interface SoilConditions {
@@ -326,7 +342,7 @@ export interface TimelineDataPoint {
 }
 
 export interface TimelineSeries {
-  type: 'river_level' | 'rainfall' | 'rainfall_cumul' | 'tide' | 'risk_score' | 'soil_moisture' | 'soil_temperature' | 'evapotranspiration' | 'wind_speed' | 'wind_westerly'
+  type: 'river_level' | 'rainfall' | 'rainfall_cumul' | 'tide' | 'risk_score' | 'soil_moisture' | 'soil_temperature' | 'evapotranspiration' | 'wind_speed' | 'wind_westerly' | 'forecast_risk_score' | 'forecast_rainfall' | 'forecast_level'
   name: string
   unit: string
   color: string

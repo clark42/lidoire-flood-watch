@@ -1,299 +1,284 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
-  Clock,
-  ChevronDown,
-  ChevronUp,
-  CloudRain,
-  Waves,
-} from 'lucide-react'
-import { format } from 'date-fns'
-import { fr } from 'date-fns/locale'
-import type { RiskLevel } from '../types'
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  ReferenceLine,
+} from 'recharts'
+import { Clock, CloudRain, Waves, TrendingUp, AlertTriangle, RefreshCw } from 'lucide-react'
+import { getForecast } from '../api'
+import type { ForecastData, ForecastPoint, RiskLevel } from '../types'
 import InfoTooltip from './InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 
-interface ForecastPoint {
-  timestamp: string
-  hours_ahead: number
-  score: number
-  level: RiskLevel
-  tide_coefficient: number
-  rain_forecast_mm: number
+const LEVEL_COLORS: Record<RiskLevel, string> = {
+  green: '#22c55e',
+  yellow: '#eab308',
+  orange: '#f97316',
+  red: '#ef4444',
 }
 
-interface ForecastData {
-  generated_at: string
-  hours_ahead: number
-  forecasts: ForecastPoint[]
+const LEVEL_BG_COLORS: Record<RiskLevel, string> = {
+  green: 'bg-green-100 text-green-800 border-green-300',
+  yellow: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+  orange: 'bg-orange-100 text-orange-800 border-orange-300',
+  red: 'bg-red-100 text-red-800 border-red-300',
 }
 
 interface ForecastPanelProps {
-  forecast: ForecastData | null
-  loading?: boolean
+  hours?: number
+  autoRefresh?: boolean
+  refreshInterval?: number // ms
 }
 
-const LEVEL_COLORS: Record<RiskLevel, string> = {
-  green: 'bg-green-100 text-green-700 border-green-300',
-  yellow: 'bg-yellow-100 text-yellow-700 border-yellow-300',
-  orange: 'bg-orange-100 text-orange-700 border-orange-300',
-  red: 'bg-red-100 text-red-700 border-red-300',
+function formatHour(timestamp: string): string {
+  const d = new Date(timestamp)
+  const day = d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric' })
+  const hour = d.getHours().toString().padStart(2, '0') + 'h'
+  return `${day} ${hour}`
 }
 
-const LEVEL_BG: Record<RiskLevel, string> = {
-  green: 'bg-green-500',
-  yellow: 'bg-yellow-500',
-  orange: 'bg-orange-500',
-  red: 'bg-red-500',
-}
+function CustomTooltip({ active, payload }: { active?: boolean; payload?: { payload: ForecastPoint }[] }) {
+  if (!active || !payload || !payload.length) return null
 
-export default function ForecastPanel({ forecast, loading }: ForecastPanelProps) {
-  const [expanded, setExpanded] = useState(true)
-  const [viewMode, setViewMode] = useState<'timeline' | 'table'>('timeline')
-
-  if (loading) {
-    return (
-      <div className="bg-white rounded-lg shadow p-4">
-        <div className="animate-pulse space-y-3">
-          <div className="h-4 bg-gray-200 rounded w-1/3"></div>
-          <div className="h-24 bg-gray-200 rounded"></div>
-        </div>
-      </div>
-    )
-  }
-
-  if (!forecast || !forecast.forecasts.length) {
-    return (
-      <div className="bg-white rounded-lg shadow p-4">
-        <div className="text-gray-500 text-center py-4">
-          Previsions non disponibles
-        </div>
-      </div>
-    )
-  }
-
-  // Find max risk in forecast period
-  const maxRisk = forecast.forecasts.reduce(
-    (max, f) => (f.score > max.score ? f : max),
-    forecast.forecasts[0]
-  )
-
-  // Group forecasts by time periods
-  const next6h = forecast.forecasts.filter((f) => f.hours_ahead <= 6)
-  const next12h = forecast.forecasts.filter((f) => f.hours_ahead <= 12)
-  const next24h = forecast.forecasts.filter((f) => f.hours_ahead <= 24)
+  const data = payload[0].payload as ForecastPoint
+  const levelColor = LEVEL_COLORS[data.level]
 
   return (
-    <div className="bg-white rounded-lg shadow overflow-hidden">
-      {/* Header */}
-      <div
-        className="flex items-center justify-between p-4 bg-amber-50 border-b border-amber-100 cursor-pointer"
-        onClick={() => setExpanded(!expanded)}
-      >
+    <div className="bg-white border rounded-lg shadow-lg p-3 text-sm">
+      <div className="font-medium mb-2">{formatHour(data.timestamp)}</div>
+      <div className="space-y-1">
         <div className="flex items-center gap-2">
-          <Clock className="w-5 h-5 text-amber-600" />
-          <h3 className="font-semibold text-amber-800">Previsions</h3>
-          <InfoTooltip {...TOOLTIPS.forecastHeader} />
-          <span className="text-sm text-amber-600">
-            ({forecast.hours_ahead}h)
+          <div
+            className="w-3 h-3 rounded-full"
+            style={{ backgroundColor: levelColor }}
+          />
+          <span className="font-bold">{data.score.toFixed(0)}/100</span>
+          <span className="text-gray-500 capitalize">({data.level})</span>
+        </div>
+        <div className="flex items-center gap-2 text-gray-600">
+          <CloudRain className="w-4 h-4" />
+          <span>24h: {data.rain_24h_mm.toFixed(1)} mm</span>
+        </div>
+        <div className="flex items-center gap-2 text-gray-600">
+          <Waves className="w-4 h-4" />
+          <span>Coef: {data.tide_coefficient}</span>
+          <span className="text-xs">
+            (PM {data.hours_to_high_tide > 0 ? '+' : ''}{data.hours_to_high_tide.toFixed(1)}h)
           </span>
         </div>
-        <div className="flex items-center gap-3">
-          {maxRisk.level !== 'green' && (
-            <span className={`px-2 py-1 text-xs rounded border ${LEVEL_COLORS[maxRisk.level]}`}>
-              Max: {maxRisk.score.toFixed(0)}% dans {maxRisk.hours_ahead}h
-            </span>
-          )}
-          {expanded ? (
-            <ChevronUp className="w-5 h-5 text-amber-600" />
-          ) : (
-            <ChevronDown className="w-5 h-5 text-amber-600" />
-          )}
+        <div className="flex items-center gap-2 text-gray-600">
+          <TrendingUp className="w-4 h-4" />
+          <span>Niveau proj.: {data.projected_level_m.toFixed(2)} m</span>
         </div>
       </div>
-
-      {expanded && (
-        <div className="p-4 space-y-4">
-          {/* View mode toggle */}
-          <div className="flex gap-2 text-sm">
-            <button
-              onClick={() => setViewMode('timeline')}
-              className={`px-3 py-1 rounded ${
-                viewMode === 'timeline' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100'
-              }`}
-            >
-              Timeline
-            </button>
-            <button
-              onClick={() => setViewMode('table')}
-              className={`px-3 py-1 rounded ${
-                viewMode === 'table' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100'
-              }`}
-            >
-              Tableau
-            </button>
-          </div>
-
-          {viewMode === 'timeline' ? (
-            /* Timeline view */
-            <div className="space-y-4">
-              {/* Visual timeline */}
-              <div className="relative">
-                <div className="flex h-16 gap-px">
-                  {forecast.forecasts.map((point, idx) => (
-                    <div
-                      key={idx}
-                      className={`flex-1 ${LEVEL_BG[point.level]} opacity-80 hover:opacity-100 transition-opacity relative group`}
-                      style={{ minWidth: '8px' }}
-                    >
-                      {/* Tooltip */}
-                      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10">
-                        <div className="bg-gray-900 text-white text-xs rounded p-2 whitespace-nowrap">
-                          <div className="font-medium">
-                            {format(new Date(point.timestamp), 'dd/MM HH:mm', { locale: fr })}
-                          </div>
-                          <div>Risque: {point.score.toFixed(0)}%</div>
-                          <div>Coef: {point.tide_coefficient}</div>
-                          <div>Pluie: {point.rain_forecast_mm.toFixed(1)}mm</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Time labels */}
-                <div className="flex justify-between mt-1 text-xs text-gray-500">
-                  <span>Maintenant</span>
-                  <span>+6h</span>
-                  <span>+12h</span>
-                  <span>+18h</span>
-                  <span>+24h</span>
-                </div>
-              </div>
-
-              {/* Summary cards */}
-              <div className="grid grid-cols-3 gap-3">
-                <SummaryCard
-                  title="6 prochaines heures"
-                  forecasts={next6h}
-                />
-                <SummaryCard
-                  title="12 prochaines heures"
-                  forecasts={next12h}
-                />
-                <SummaryCard
-                  title="24 prochaines heures"
-                  forecasts={next24h}
-                />
-              </div>
-            </div>
-          ) : (
-            /* Table view */
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b">
-                    <th className="text-left p-2">Heure</th>
-                    <th className="text-center p-2">Risque</th>
-                    <th className="text-center p-2">
-                      <span className="inline-flex items-center gap-1">
-                        Coef maree
-                        <InfoTooltip {...TOOLTIPS.tideCoefficient} />
-                      </span>
-                    </th>
-                    <th className="text-center p-2">Pluie prevue</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {forecast.forecasts.map((point, idx) => (
-                    <tr key={idx} className="border-b hover:bg-gray-50">
-                      <td className="p-2">
-                        <div className="font-medium">
-                          {format(new Date(point.timestamp), 'HH:mm', { locale: fr })}
-                        </div>
-                        <div className="text-xs text-gray-500">
-                          +{point.hours_ahead}h
-                        </div>
-                      </td>
-                      <td className="p-2 text-center">
-                        <span
-                          className={`inline-block px-2 py-1 rounded text-xs font-medium ${LEVEL_COLORS[point.level]}`}
-                        >
-                          {point.score.toFixed(0)}%
-                        </span>
-                      </td>
-                      <td className="p-2 text-center">
-                        <span className="flex items-center justify-center gap-1">
-                          <Waves className="w-3 h-3 text-blue-500" />
-                          {point.tide_coefficient}
-                        </span>
-                      </td>
-                      <td className="p-2 text-center">
-                        <span className="flex items-center justify-center gap-1">
-                          <CloudRain className="w-3 h-3 text-indigo-500" />
-                          {point.rain_forecast_mm.toFixed(1)} mm
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Legend */}
-          <div className="flex items-center justify-center gap-4 text-xs text-gray-500 pt-2 border-t">
-            <span className="flex items-center gap-1">
-              <div className="w-3 h-3 rounded bg-green-500" /> Faible
-            </span>
-            <span className="flex items-center gap-1">
-              <div className="w-3 h-3 rounded bg-yellow-500" /> Modere
-            </span>
-            <span className="flex items-center gap-1">
-              <div className="w-3 h-3 rounded bg-orange-500" /> Eleve
-            </span>
-            <span className="flex items-center gap-1">
-              <div className="w-3 h-3 rounded bg-red-500" /> Critique
-            </span>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
 
-function SummaryCard({
-  title,
-  forecasts,
-}: {
-  title: string
-  forecasts: ForecastPoint[]
-}) {
-  if (!forecasts.length) return null
+export default function ForecastPanel({
+  hours = 72,
+  autoRefresh = true,
+  refreshInterval = 5 * 60 * 1000, // 5 min
+}: ForecastPanelProps) {
+  const [data, setData] = useState<ForecastData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
 
-  const maxRisk = Math.max(...forecasts.map((f) => f.score))
-  const maxLevel = forecasts.reduce(
-    (max, f) => (f.score > max.score ? f : max),
-    forecasts[0]
-  ).level
-  const totalRain = forecasts.reduce((sum, f) => sum + f.rain_forecast_mm, 0)
-  const maxCoef = Math.max(...forecasts.map((f) => f.tide_coefficient))
+  const fetchData = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const result = await getForecast(hours)
+      setData(result)
+      setLastUpdated(new Date())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Erreur de chargement')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchData()
+
+    if (autoRefresh) {
+      const interval = setInterval(fetchData, refreshInterval)
+      return () => clearInterval(interval)
+    }
+  }, [hours, autoRefresh, refreshInterval])
+
+  if (loading && !data) {
+    return (
+      <div className="bg-white rounded-lg shadow p-4">
+        <div className="animate-pulse flex items-center gap-2">
+          <div className="w-5 h-5 bg-gray-200 rounded" />
+          <div className="h-4 bg-gray-200 rounded w-32" />
+        </div>
+        <div className="h-48 bg-gray-100 rounded mt-4" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="bg-white rounded-lg shadow p-4">
+        <div className="flex items-center gap-2 text-red-600">
+          <AlertTriangle className="w-5 h-5" />
+          <span>{error}</span>
+        </div>
+        <button
+          onClick={fetchData}
+          className="mt-2 text-sm text-blue-600 hover:underline flex items-center gap-1"
+        >
+          <RefreshCw className="w-4 h-4" /> Reessayer
+        </button>
+      </div>
+    )
+  }
+
+  if (!data) return null
+
+  // Prepare chart data with color gradient based on level
+  const chartData = data.forecasts.map((f) => ({
+    ...f,
+    fill: LEVEL_COLORS[f.level],
+  }))
+
+  // Find critical periods summary
+  const criticalCount = data.critical_periods.length
+  const redCount = data.critical_periods.filter((p) => p.level === 'red').length
+  const orangeCount = data.critical_periods.filter((p) => p.level === 'orange').length
 
   return (
-    <div className={`p-3 rounded-lg border ${LEVEL_COLORS[maxLevel]}`}>
-      <div className="text-xs opacity-75 mb-2">{title}</div>
-      <div className="space-y-1">
-        <div className="flex justify-between">
-          <span className="text-xs">Risque max</span>
-          <span className="font-bold">{maxRisk.toFixed(0)}%</span>
+    <div className="bg-white rounded-lg shadow">
+      {/* Header */}
+      <div className="p-4 border-b">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Clock className="w-5 h-5 text-blue-500" />
+            <h3 className="font-medium text-gray-700">
+              Previsions {hours >= 168 ? '7 jours' : `${hours}h`}
+            </h3>
+            {TOOLTIPS.forecast && <InfoTooltip {...TOOLTIPS.forecast} />}
+          </div>
+          <div className="flex items-center gap-3">
+            {lastUpdated && (
+              <span className="text-xs text-gray-400">
+                MAJ {lastUpdated.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
+            <button
+              onClick={fetchData}
+              disabled={loading}
+              className="p-1 rounded hover:bg-gray-100 disabled:opacity-50"
+              title="Rafraichir"
+            >
+              <RefreshCw className={`w-4 h-4 text-gray-500 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
         </div>
-        <div className="flex justify-between">
-          <span className="text-xs">Pluie cumulee</span>
-          <span className="font-medium">{totalRain.toFixed(1)}mm</span>
+
+        {/* Summary banner */}
+        <div
+          className={`mt-3 p-3 rounded-lg border ${LEVEL_BG_COLORS[data.max_level]}`}
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {data.max_level === 'red' && <AlertTriangle className="w-5 h-5" />}
+              <span className="font-medium">{data.summary}</span>
+            </div>
+            <span className="text-lg font-bold">{data.max_risk}/100</span>
+          </div>
+          {criticalCount > 0 && (
+            <div className="mt-1 text-sm opacity-80">
+              {redCount > 0 && <span className="mr-3">{redCount}h en rouge</span>}
+              {orangeCount > 0 && <span>{orangeCount}h en orange</span>}
+            </div>
+          )}
         </div>
-        <div className="flex justify-between">
-          <span className="text-xs">Coef max</span>
-          <span className="font-medium">{maxCoef}</span>
+      </div>
+
+      {/* Chart */}
+      <div className="p-4">
+        <ResponsiveContainer width="100%" height={200}>
+          <AreaChart data={chartData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
+            <defs>
+              <linearGradient id="riskGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+            <XAxis
+              dataKey="timestamp"
+              tickFormatter={(ts) => {
+                const d = new Date(ts)
+                return d.getHours() === 0
+                  ? d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })
+                  : d.getHours() + 'h'
+              }}
+              tick={{ fontSize: 10 }}
+              interval="preserveStartEnd"
+              minTickGap={40}
+            />
+            <YAxis
+              domain={[0, 100]}
+              tick={{ fontSize: 10 }}
+              tickFormatter={(v) => v.toString()}
+              width={30}
+            />
+            {/* Threshold reference lines */}
+            <ReferenceLine y={15} stroke="#22c55e" strokeDasharray="3 3" />
+            <ReferenceLine y={35} stroke="#eab308" strokeDasharray="3 3" />
+            <ReferenceLine y={55} stroke="#f97316" strokeDasharray="3 3" />
+            <Tooltip content={<CustomTooltip />} />
+            <Area
+              type="monotone"
+              dataKey="score"
+              stroke="#3b82f6"
+              strokeWidth={2}
+              fill="url(#riskGradient)"
+              dot={false}
+              activeDot={{ r: 4, fill: '#3b82f6' }}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+
+        {/* Legend */}
+        <div className="flex items-center justify-center gap-4 mt-2 text-xs text-gray-500">
+          <div className="flex items-center gap-1">
+            <div className="w-3 h-1 bg-green-500 rounded" />
+            <span>&lt;15</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-3 h-1 bg-yellow-500 rounded" />
+            <span>15-35</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-3 h-1 bg-orange-500 rounded" />
+            <span>35-55</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-3 h-1 bg-red-500 rounded" />
+            <span>&ge;55</span>
+          </div>
         </div>
+      </div>
+
+      {/* Data sources footer */}
+      <div className="px-4 pb-3 text-xs text-gray-400">
+        Sources: {data.data_sources.rain} | {data.data_sources.tide} | {data.data_sources.river}
+        {data.data_sources.soil_saturation > 1.1 && (
+          <span className="ml-2 text-amber-500">
+            Sol sature ({data.data_sources.soil_saturation.toFixed(2)}x)
+          </span>
+        )}
       </div>
     </div>
   )

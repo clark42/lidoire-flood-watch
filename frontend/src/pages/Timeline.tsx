@@ -51,6 +51,7 @@ export default function Timeline() {
   const [soilEnabled, setSoilEnabled] = useState(() => searchParams.get('soil') === '1')
   const [infoclimatEnabled, setInfoclimatEnabled] = useState(() => searchParams.get('infoclimat') !== '0')
   const [windEnabled, setWindEnabled] = useState(() => searchParams.get('wind') === '1')
+  const [forecastEnabled, setForecastEnabled] = useState(() => searchParams.get('forecast') === '1')
 
   // Data
   const [unifiedData, setUnifiedData] = useState<UnifiedTimelineData | null>(null)
@@ -93,8 +94,9 @@ export default function Timeline() {
     if (soilEnabled) params.soil = '1'
     if (!infoclimatEnabled) params.infoclimat = '0'
     if (windEnabled) params.wind = '1'
+    if (forecastEnabled) params.forecast = '1'
     setSearchParams(params, { replace: true })
-  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, setSearchParams])
+  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, setSearchParams])
 
   // Fetch available sources and episodes on mount
   useEffect(() => {
@@ -128,6 +130,7 @@ export default function Timeline() {
         soilEnabled,
         infoclimatEnabled,
         windEnabled,
+        forecastEnabled,
       )
       setUnifiedData(result)
     } catch (err) {
@@ -135,7 +138,7 @@ export default function Timeline() {
     } finally {
       setLoading(false)
     }
-  }, [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, resolution])
+  }, [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, resolution])
 
   useEffect(() => {
     fetchData()
@@ -200,6 +203,7 @@ export default function Timeline() {
     setSoilEnabled(false)
     setInfoclimatEnabled(false)
     setWindEnabled(false)
+    setForecastEnabled(false)
   }
 
   // Unified chart data: merge all series into timestamp-indexed rows
@@ -243,10 +247,12 @@ export default function Timeline() {
         key, name: series.name, color: series.color,
         type: series.type, unit: series.unit,
       }
-      if (series.type === 'river_level' || series.type === 'tide') {
+      if (series.type === 'river_level' || series.type === 'tide' || series.type === 'forecast_level') {
         level.push(info)
-      } else if (series.type === 'risk_score') {
+      } else if (series.type === 'risk_score' || series.type === 'forecast_risk_score') {
         risk.push(info)
+      } else if (series.type === 'forecast_rainfall') {
+        rain.push(info)
       } else if (
         series.type === 'soil_moisture' ||
         series.type === 'soil_temperature' ||
@@ -398,6 +404,8 @@ export default function Timeline() {
               onInfoclimatToggle={() => setInfoclimatEnabled((v) => !v)}
               windEnabled={windEnabled}
               onWindToggle={() => setWindEnabled((v) => !v)}
+              forecastEnabled={forecastEnabled}
+              onForecastToggle={() => setForecastEnabled((v) => !v)}
             />
           </div>
         )}
@@ -468,7 +476,7 @@ export default function Timeline() {
 
               // For rain: split rate series (left Y) and cumul (right Y)
               const rainRate = isRain
-                ? panel.series.filter((s) => s.type === 'rainfall')
+                ? panel.series.filter((s) => s.type === 'rainfall' || s.type === 'forecast_rainfall')
                 : []
               const rainCumul = isRain
                 ? panel.series.filter((s) => s.type === 'rainfall_cumul')
@@ -661,7 +669,8 @@ export default function Timeline() {
                               dataKey={info.key}
                               name={info.key}
                               stroke={info.color}
-                              strokeWidth={1.5}
+                              strokeWidth={info.type === 'forecast_rainfall' ? 2 : 1.5}
+                              strokeDasharray={info.type === 'forecast_rainfall' ? '6 3' : undefined}
                               dot={false}
                               connectNulls
                             />
@@ -690,10 +699,15 @@ export default function Timeline() {
                             dataKey={info.key}
                             name={info.key}
                             stroke={info.color}
-                            strokeWidth={info.type === 'tide' || info.type === 'risk_score' ? 2 : 1.5}
+                            strokeWidth={
+                              info.type === 'tide' || info.type === 'risk_score' ? 2
+                              : info.type.startsWith('forecast_') ? 2
+                              : 1.5
+                            }
                             strokeDasharray={
                               info.type === 'tide' ? '8 4'
                               : info.type === 'risk_score' ? '5 5'
+                              : info.type.startsWith('forecast_') ? '6 3'
                               : undefined
                             }
                             dot={false}

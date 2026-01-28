@@ -1,8 +1,10 @@
 """Flood episodes management endpoints."""
 
+import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from app.models.schemas import (
     FloodEpisode,
@@ -23,6 +25,19 @@ from app.services.episode_analyzer_v2 import (
     compare_episodes,
     get_station_max_levels,
 )
+from app.services.backfill import run_full_backfill
+from app.services.episode_detector import run_episode_detection
+
+
+# In-memory backfill job tracker
+_backfill_status: dict = {
+    "running": False,
+    "progress": None,
+    "result": None,
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
 
 router = APIRouter()
 
@@ -348,4 +363,179 @@ async def get_station_extremes(
             "end": end_date.isoformat(),
         },
         "stations": max_levels,
+    }
+
+
+# ============================================================================
+# Backfill & Detection Endpoints
+# ============================================================================
+
+
+async def _run_backfill_task(
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+    skip_rivers: bool,
+    skip_rainfall: bool,
+    skip_tides: bool,
+    skip_soil: bool,
+    skip_risk: bool,
+):
+    """Background task for backfill."""
+    global _backfill_status
+    try:
+        results = await run_full_backfill(
+            start_date=start_date,
+            end_date=end_date,
+            skip_rivers=skip_rivers,
+            skip_rainfall=skip_rainfall,
+            skip_tides=skip_tides,
+            skip_soil=skip_soil,
+            skip_risk=skip_risk,
+        )
+        _backfill_status["result"] = results
+        _backfill_status["finished_at"] = datetime.utcnow().isoformat()
+    except Exception as e:
+        _backfill_status["error"] = str(e)
+        _backfill_status["finished_at"] = datetime.utcnow().isoformat()
+        print(f"Backfill error: {e}")
+    finally:
+        _backfill_status["running"] = False
+
+
+@router.post("/backfill")
+async def trigger_backfill(
+    start_date: Optional[datetime] = Query(None, description="Start date (default: 2022-11-01)"),
+    end_date: Optional[datetime] = Query(None, description="End date (default: now)"),
+    skip_rivers: bool = Query(False, description="Skip river level backfill"),
+    skip_rainfall: bool = Query(False, description="Skip rainfall backfill"),
+    skip_tides: bool = Query(False, description="Skip tide backfill"),
+    skip_soil: bool = Query(False, description="Skip soil data backfill"),
+    skip_risk: bool = Query(False, description="Skip risk score recalculation"),
+):
+    """
+    Trigger comprehensive data backfill as a background task.
+
+    Returns immediately with status. Poll GET /api/episodes/backfill/status
+    to track progress.
+
+    This endpoint fetches ALL historical data from:
+    - Hydroportail: River levels for 7 stations (sub-hourly, since 2022)
+    - Open-Meteo Archive: Hourly rainfall
+    - Open-Meteo Marine: Hourly tide heights
+    - Open-Meteo: Soil moisture and temperature
+
+    Then recalculates risk scores using the v2.5 model.
+
+    Example: POST /api/episodes/backfill?start_date=2022-11-01T00:00:00
+    """
+    global _backfill_status
+
+    if _backfill_status["running"]:
+        return {
+            "status": "already_running",
+            "started_at": _backfill_status["started_at"],
+            "message": "Un backfill est deja en cours. GET /api/episodes/backfill/status pour le suivi.",
+        }
+
+    _backfill_status = {
+        "running": True,
+        "progress": "starting",
+        "result": None,
+        "error": None,
+        "started_at": datetime.utcnow().isoformat(),
+        "finished_at": None,
+    }
+
+    # Fire-and-forget background task
+    asyncio.create_task(_run_backfill_task(
+        start_date=start_date,
+        end_date=end_date,
+        skip_rivers=skip_rivers,
+        skip_rainfall=skip_rainfall,
+        skip_tides=skip_tides,
+        skip_soil=skip_soil,
+        skip_risk=skip_risk,
+    ))
+
+    return {
+        "status": "started",
+        "started_at": _backfill_status["started_at"],
+        "message": "Backfill lance en arriere-plan. GET /api/episodes/backfill/status pour le suivi.",
+    }
+
+
+@router.get("/backfill/status")
+async def backfill_status():
+    """
+    Get current backfill job status.
+
+    Returns running state, progress, result or error.
+    """
+    return _backfill_status
+
+
+@router.post("/detect")
+async def detect_episodes_endpoint(
+    start_date: Optional[datetime] = Query(None, description="Start date (default: 2022-11-01)"),
+    end_date: Optional[datetime] = Query(None, description="End date (default: now)"),
+):
+    """
+    Detect potential flood episodes from backfilled data.
+
+    Analyzes stored risk scores and river levels to find periods that
+    match flood criteria:
+    - Risk score >= 55 (RED) for at least 2 hours
+    - Risk score >= 35 (ORANGE) for at least 6 hours
+    - River level exceeds station red threshold
+
+    Returns a list of detected episodes for user validation.
+    You can then confirm/reject each episode to refine the risk model.
+
+    Example: POST /api/episodes/detect?start_date=2022-11-01
+    """
+    results = await run_episode_detection(
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    return results
+
+
+@router.post("/confirm/{episode_id}")
+async def confirm_detected_episode(
+    episode_id: int,
+    was_flooded: bool = Query(..., description="Did actual flooding occur?"),
+    actual_severity: int = Query(None, ge=1, le=5, description="Actual flood severity"),
+    notes: str = Query(None, description="Additional notes"),
+):
+    """
+    Confirm or reject a detected/existing episode.
+
+    Use this to provide feedback on detected episodes:
+    - was_flooded=true: Confirms the flood occurred
+    - was_flooded=false: Marks as false positive (no actual flood)
+
+    This feedback can be used to calibrate the risk model.
+    """
+    episode = await get_episode_by_id(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    # Update episode with confirmation
+    from app.models.schemas import FloodEpisodeCreate
+
+    update_data = FloodEpisodeCreate(
+        start_time=episode.start_time,
+        peak_time=episode.peak_time,
+        end_time=episode.end_time,
+        severity=actual_severity if actual_severity else episode.severity,
+        description=episode.description,
+        notes=f"[CONFIRMED: {'FLOODED' if was_flooded else 'FALSE POSITIVE'}] {notes or ''}\n{episode.notes or ''}".strip(),
+    )
+
+    updated = await update_episode(episode_id, update_data)
+
+    return {
+        "status": "confirmed" if was_flooded else "rejected",
+        "episode": updated,
     }

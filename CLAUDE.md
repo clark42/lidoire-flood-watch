@@ -43,22 +43,29 @@ app/
 ├── config.py            # Settings Pydantic (env vars, seuils de risque)
 ├── api/                 # Routes FastAPI
 │   ├── status.py        # /api/status - healthcheck
-│   ├── realtime.py      # /api/realtime - données temps réel
-│   ├── timeline.py      # /api/timeline - données historiques
-│   ├── episodes.py      # /api/episodes - gestion épisodes d'inondation
-│   └── risk.py          # /api/risk - score de risque
+│   ├── realtime.py      # /api/realtime - donnees temps reel + TimeMachine /at
+│   ├── timeline.py      # /api/timeline - donnees historiques + forecast overlay
+│   ├── episodes.py      # /api/episodes - gestion episodes + backfill + detection
+│   └── risk.py          # /api/risk - score de risque + previsions
 ├── models/
-│   └── schemas.py       # Tous les modèles Pydantic (TideData, RiskScore, etc.)
+│   └── schemas.py       # Tous les modeles Pydantic (TideData, RiskScore, etc.)
 └── services/
-    ├── risk.py          # Calcul du score de risque pondéré
-    ├── data_store.py    # Accès InfluxDB/PostgreSQL
-    ├── scheduler.py     # APScheduler pour collecte périodique
-    ├── episode_analyzer.py  # Analyse contexte hydro-météo des épisodes
-    ├── video_analyzer.py    # Détection niveau d'eau via caméra
-    └── collectors/          # Collecteurs de données externes
-        ├── tide.py          # SHOM / maree.info (marées)
-        ├── vigicrues.py     # Vigicrues (niveaux Dordogne)
-        └── weather.py       # Open-Meteo (pluie prévue/observée)
+    ├── risk.py          # Calcul du score de risque v1 (legacy)
+    ├── risk_v2.py       # Modele de risque v3.0 (multi-stations, momentum, dampener)
+    ├── forecast.py      # Previsions 7 jours (pluie + maree + niveaux projetes)
+    ├── backfill.py      # Backfill historique (rivers, rain, tides, soil, risk)
+    ├── episode_detector.py  # Detection automatique d'episodes par seuil
+    ├── data_store.py    # Acces InfluxDB/PostgreSQL
+    ├── scheduler.py     # APScheduler pour collecte periodique
+    ├── episode_analyzer.py  # Analyse contexte hydro-meteo des episodes
+    ├── video_analyzer.py    # Detection niveau d'eau via camera
+    └── collectors/          # Collecteurs de donnees externes
+        ├── tide.py          # SHOM / maree.info (marees)
+        ├── hubeau.py        # Hub'Eau API (niveaux rivieres)
+        ├── weather.py       # Open-Meteo (pluie prevue/observee)
+        ├── netatmo.py       # Netatmo (stations citoyennes)
+        ├── infoclimat.py    # Infoclimat StatIC
+        └── meteo_agricole.py # Meteo Agricole (bilan hydrique)
 ```
 
 ### Frontend (`frontend/src/`)
@@ -66,107 +73,128 @@ app/
 ```
 src/
 ├── App.tsx              # Router principal, navigation
-├── api.ts               # Client API backend
+├── api.ts               # Client API backend (toutes les fonctions fetch)
 ├── types.ts             # Types TypeScript (miroir des schemas backend)
 ├── pages/
-│   ├── Dashboard.tsx    # Vue temps réel avec score de risque
-│   ├── Timeline.tsx     # Graphiques historiques (Recharts)
-│   ├── Episodes.tsx     # Liste/création épisodes
+│   ├── Dashboard.tsx    # Vue temps reel avec score de risque + TimeMachine
+│   ├── Timeline.tsx     # Graphiques historiques multi-sources + forecast overlay
+│   ├── Episodes.tsx     # Liste/creation/analyse episodes
 │   └── Configuration.tsx
-├── tooltipContent.ts    # Dictionnaire centralisé des textes de tooltips
+├── tooltipContent.ts    # Dictionnaire centralise des textes de tooltips (~26 entrees)
 └── components/
-    ├── RiskGauge.tsx        # Jauge de risque visuelle
-    ├── RiskBreakdownPanel.tsx  # Détail du calcul de risque (facteurs, poids, stations)
-    ├── StationsPanel.tsx    # Panneau stations hydrométriques (par rivière/distance)
-    ├── RainfallPanel.tsx    # Pluviométrie multi-sources (Netatmo, Infoclimat, prévisions)
-    ├── ForecastPanel.tsx    # Prévisions de risque (timeline + tableau)
-    ├── BasinRainfallGauge.tsx  # Jauge pluie bassin Lidoire (Amont/Milieu/Aval)
-    ├── HydroMap.tsx         # Carte interactive des stations
-    ├── MetricSparkline.tsx  # Mini-graphiques temps réel
-    ├── TimeMachineBanner.tsx # Navigation temporelle (replay épisodes)
-    ├── InfoTooltip.tsx      # Tooltip pédagogique réutilisable (hover/tap)
-    ├── DataCard.tsx         # Carte de données générique
-    └── DataSourcesStatus.tsx # Statut des sources de données
+    ├── RiskGauge.tsx            # Jauge de risque visuelle
+    ├── RiskBreakdownPanel.tsx   # Detail du calcul (facteurs, poids, momentum, stations)
+    ├── StationsPanel.tsx        # Panneau stations hydrometriques
+    ├── RainfallPanel.tsx        # Pluviometrie multi-sources
+    ├── ForecastPanel.tsx        # Previsions 7 jours (graphique + tableau)
+    ├── BasinRainfallGauge.tsx   # Jauge pluie bassin Lidoire (Amont/Milieu/Aval)
+    ├── SoilConditionsPanel.tsx  # Conditions du sol (humidite, bilan hydrique)
+    ├── NowcastRainChart.tsx     # Pluie nowcast (60 min)
+    ├── HydroMap.tsx             # Carte interactive des stations
+    ├── MetricSparkline.tsx      # Mini-graphiques temps reel
+    ├── TimeMachineBanner.tsx    # Navigation temporelle (replay episodes)
+    ├── TimelineSourceSelector.tsx # Selecteur de sources timeline (+ forecast toggle)
+    ├── InfoTooltip.tsx          # Tooltip pedagogique reutilisable (hover/tap)
+    ├── DataCard.tsx             # Carte de donnees generique
+    └── DataSourcesStatus.tsx    # Statut des sources de donnees
 ```
 
-## Modèle de risque v2.3 (multi-stations, calibré fév. 2024)
+## Modele de risque v3.0 (calibre sur 14 episodes annotes)
 
-Le score de risque (0-100) est calculé dans `backend/app/services/risk_v2.py` avec :
+Le score de risque (0-100) est calcule dans `backend/app/services/risk_v2.py`.
 
-| Facteur | Poids |
-|---------|-------|
-| Niveaux rivières (multi-stations, Libourne exclue) | 42% |
-| Pluie 24h | 8% |
-| Pluie 72h | 10% |
-| Pluie 7j | 5% |
-| Coefficient marée | 8% |
-| Phase marée | 8% |
-| Tendance (vitesse montée) | 5% |
-| Saturation sol | 5% |
-| Vent d'ouest (surcote) | 3% |
-| Niveau vidéo | 5% |
+Constat cle : le moulin est sur la Lidoire (affluent), PAS sur la Dordogne.
+Un niveau Dordogne eleve seul ne signifie pas inondation au moulin.
+Le signal le plus fort est la montee simultanee de plusieurs stations + pluie.
 
-**Multiplicateur de conjonction** (1.0 à 1.6x) : appliqué quand marée haute + niveau élevé + tendance hausse + élévation multi-stations simultanée.
+| Facteur | Poids | Description |
+|---------|-------|-------------|
+| Niveaux rivieres (multi-stations) | 28% | Moyenne ponderee, Libourne exclue |
+| Pluie 24h | 10% | Cumul precipitations |
+| Pluie 72h | 12% | Saturation 3 jours |
+| Pluie 7j | 5% | Saturation longue duree |
+| Tendance | 12% | Vitesse de montee cm/h |
+| Momentum | 8% | Stations en hausse simultanee |
+| Coefficient maree | 5% | Coefficient maree |
+| Phase maree | 5% | Proximite pleine mer |
+| Saturation sol | 5% | Facteur ruissellement |
+| Vent d'ouest | 3% | Surcote Gironde |
+| Analyse video | 5% | Index niveau camera |
 
-v2.3 (jan 2026) : calibré sur l'épisode de février 2024 (sévérité 5, moulin inondé).
-- Poids rain_72h/7d augmentés : la pluie soutenue multi-jours (62mm/5j) a causé l'inondation malgré une pluie 24h modérée (34mm).
-- Facteur multi-station ajouté à la conjonction : toutes les stations simultanément au-dessus du seuil jaune est un signal critique.
-- Saturation sol renforcée : les sols d'hiver gorgés amplifient massivement le ruissellement.
+**Multiplicateur de conjonction** (1.0 a 2.5x) : "crue active" = plusieurs stations montent + pluie.
+**Amortisseur de stabilite** (0.65 a 1.0x) : riviere haute mais stable/baisse → score reduit.
+**Gate momentum** : niveau riviere < 0.30m → momentum × 0.2.
 
-### Stations surveillées
+### Previsions 7 jours
 
-| Station | Code Hub'Eau | Rivière | Distance | Délai | Poids |
-|---------|--------------|---------|----------|-------|-------|
-| Libourne | P577001001 | Dordogne | 5km | 0h | 0% (exclu: marée) |
-| Pessac-sur-Dordogne | P555001001 | Dordogne | 30km | 4h | 30% |
-| Bergerac | P514001001 | Dordogne | 60km | 8h | 15% |
-| Abzac | P726151001 | Isle | 15km | 2h | 25% |
-| Périgueux | P704151001 | Isle | 80km | 12h | 10% |
-| Coutras | P846251001 | Dronne | 25km | 3h | 15% |
-| Ribérac | P816251001 | Dronne | 70km | 10h | 5% |
+Service dans `backend/app/services/forecast.py` :
+- Previsions horaires sur 168h (7 jours)
+- Sources : pluie Open-Meteo (AROME/ARPEGE), marees predites, projection niveaux amont
+- Momentum decay lineaire sur 48h (pas de prediction du nombre de stations en hausse)
+- Cache Redis 30 min TTL
+- Integrable dans la Timeline via `include_forecast=true`
 
-## Sources de données
+### Stations surveillees
 
-- **Marées** : SHOM / maree.info (Bordeaux, Libourne)
-- **Niveaux rivières** : Hub'Eau API (7 stations Dordogne/Isle/Dronne)
-- **Météo prévue** : Open-Meteo (modèles AROME/ARPEGE)
-- **Météo locale** : Netatmo (stations citoyennes dans un rayon de 25km)
-- **Météo locale** : Infoclimat StatIC (stations amateur complémentaires)
-- **Caméra** : Flux RTSP configurable via `CAMERA_RTSP_URL`
+| Station | Code Hub'Eau | Riviere | Distance | Delai | Poids |
+|---------|-------------|---------|----------|-------|-------|
+| Libourne | P577001001 | Dordogne | 19km | 0h | 0% (exclue: maree) |
+| Pessac-sur-Dordogne | P555001001 | Dordogne | 25km | 4h | 35% (primaire) |
+| Bergerac | P514001001 | Dordogne | 60km | 8h | 10% |
+| Abzac | P726151001 | Isle | 10km | 2h | 15% |
+| Perigueux | P704151001 | Isle | 65km | 12h | 5% |
+| Coutras | P846251001 | Dronne | 21km | 3h | 10% |
+| Riberac | P816251001 | Dronne | 50km | 10h | 5% |
+
+## Sources de donnees
+
+- **Marees** : SHOM / maree.info (Bordeaux, Libourne) + Open-Meteo Marine
+- **Niveaux rivieres** : Hub'Eau API (7 stations Dordogne/Isle/Dronne)
+- **Meteo prevue** : Open-Meteo (modeles AROME/ARPEGE)
+- **Meteo locale** : Netatmo (stations citoyennes, rayon 25km, bassin Lidoire)
+- **Meteo locale** : Infoclimat StatIC (stations amateur complementaires)
+- **Sol** : Open-Meteo (humidite, temperature, ET0) + Meteo Agricole (bilan hydrique)
+- **Camera** : Flux RTSP configurable via `CAMERA_RTSP_URL`
 
 ### API Hub'Eau
 
 ```python
-# Temps réel (30 derniers jours)
+# Temps reel (30 derniers jours)
 https://hubeau.eaufrance.fr/api/v2/hydrometrie/observations_tr?code_entite=P577001001&grandeur_hydro=H
 
 # Historique (depuis 1900)
 https://hubeau.eaufrance.fr/api/v2/hydrometrie/obs_elab?code_entite=P577001001&grandeur_hydro_elab=HXI
 ```
 
-## Analyse d'épisodes historiques
+## Episodes d'inondation
 
-Endpoints pour analyser les inondations passées :
+14 episodes annotes (nov 2022 - jan 2026), dont 5 inondations confirmees.
 
 ```bash
 # Analyser une date d'inondation
-POST /api/episodes/analyze-v2?date=2024-01-15T14:00:00&severity=4
+POST /api/episodes/analyze-v2?date=2024-02-15T14:00:00&severity=5
 
-# Comparer plusieurs épisodes
-POST /api/episodes/compare?dates=2024-01-15T14:00&dates=2023-12-10T08:00
+# Comparer plusieurs episodes
+POST /api/episodes/compare?dates=2024-02-15T14:00&dates=2023-12-10T08:00
 
-# Niveaux max par station sur une période
+# Niveaux max par station sur une periode
 GET /api/episodes/station-extremes?start_date=2020-01-01&end_date=2024-12-31
+
+# Backfill historique (tache asynchrone)
+POST /api/episodes/backfill?start_date=2022-11-01&end_date=2026-01-28
+
+# Detection automatique d'episodes
+POST /api/episodes/detect?start_date=2022-11-01&end_date=2025-12-31&threshold=45
 ```
 
-## Tooltips pédagogiques
+## Tooltips pedagogiques
 
-Système de tooltips interactifs sur toutes les métriques du dashboard :
+Systeme de tooltips interactifs sur toutes les metriques du dashboard :
 - **Composant** : `InfoTooltip.tsx` (hover desktop, tap mobile, portal pour z-index)
-- **Dictionnaire** : `tooltipContent.ts` (~25 entrées centralisées avec liens externes)
-- **Couverture** : cm/h, coefficient marée, BM/PM, seuils J/O/R, poids stations, délai propagation, pluie 24h/72h, score de risque, multiplicateur conjonction, sources Netatmo/Infoclimat
+- **Dictionnaire** : `tooltipContent.ts` (~26 entrees centralisees avec liens externes)
+- **Couverture** : cm/h, coefficient maree, BM/PM, seuils J/O/R, poids stations, delai propagation, pluie 24h/72h, score de risque, momentum, multiplicateur conjonction, sources Netatmo/Infoclimat
 
-Pour ajouter un tooltip : ajouter une entrée dans `TOOLTIPS` (tooltipContent.ts) puis `<InfoTooltip {...TOOLTIPS.maClé} />` dans le composant.
+Pour ajouter un tooltip : ajouter une entree dans `TOOLTIPS` (tooltipContent.ts) puis `<InfoTooltip {...TOOLTIPS.maCle} />` dans le composant.
 
 ## Services Docker (ports offset +100)
 

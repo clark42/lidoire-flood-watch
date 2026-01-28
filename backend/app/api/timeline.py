@@ -570,6 +570,7 @@ async def get_unified_timeline(
     include_soil: bool = Query(False, description="Include soil conditions data (moisture, temperature, ET0)"),
     include_infoclimat: bool = Query(True, description="Include Infoclimat rainfall data"),
     include_wind: bool = Query(False, description="Include wind speed/direction data"),
+    include_forecast: bool = Query(False, description="Include 7-day risk forecast overlay"),
     resolution: str = Query("1h", description="Data resolution: 15m, 1h, 6h, 12h, 1d"),
 ):
     """
@@ -924,6 +925,53 @@ async def get_unified_timeline(
                     for p in risk_data
                 ],
             )
+
+    # Include 7-day risk forecast overlay
+    if include_forecast:
+        try:
+            from app.services.forecast import get_risk_forecast_v2
+            forecast_data = await get_risk_forecast_v2(hours=168)
+
+            forecast_points = []
+            forecast_rain_points = []
+            forecast_level_points = []
+
+            for fp in forecast_data.get("forecasts", []):
+                ts = fp["timestamp"]
+                forecast_points.append(
+                    TimelineDataPoint(timestamp=ts, value=fp["score"])
+                )
+                forecast_rain_points.append(
+                    TimelineDataPoint(timestamp=ts, value=fp["rain_1h_mm"])
+                )
+                forecast_level_points.append(
+                    TimelineDataPoint(timestamp=ts, value=fp["projected_level_m"])
+                )
+
+            if forecast_points:
+                series["forecast:risk_score"] = TimelineSeries(
+                    type="forecast_risk_score",
+                    name="Prevision risque (7j)",
+                    unit="/100",
+                    color="#8b5cf6",
+                    data=forecast_points,
+                )
+                series["forecast:rain_1h"] = TimelineSeries(
+                    type="forecast_rainfall",
+                    name="Prevision pluie (1h)",
+                    unit="mm/h",
+                    color="#a78bfa",
+                    data=forecast_rain_points,
+                )
+                series["forecast:projected_level"] = TimelineSeries(
+                    type="forecast_level",
+                    name="Niveau projete",
+                    unit="m",
+                    color="#c4b5fd",
+                    data=forecast_level_points,
+                )
+        except Exception as e_fc:
+            print(f"Forecast overlay failed: {e_fc}")
 
     return UnifiedTimelineData(
         start=start,

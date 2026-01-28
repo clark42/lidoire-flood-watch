@@ -63,14 +63,21 @@ async def get_episode_by_id(episode_id: int) -> Optional[FloodEpisode]:
         return _row_to_episode(row) if row else None
 
 
+def _strip_tz(dt: Optional[datetime]) -> Optional[datetime]:
+    """Strip timezone info for PostgreSQL naive datetime columns."""
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
 async def create_episode(episode: FloodEpisodeCreate) -> FloodEpisode:
     """Create a new flood episode in PostgreSQL."""
     factory = get_session_factory()
     async with factory() as session:
         row = FloodEpisodeRow(
-            start_time=episode.start_time,
-            peak_time=episode.peak_time,
-            end_time=episode.end_time,
+            start_time=_strip_tz(episode.start_time),
+            peak_time=_strip_tz(episode.peak_time),
+            end_time=_strip_tz(episode.end_time),
             severity=episode.severity,
             description=episode.description,
             notes=episode.notes,
@@ -89,9 +96,9 @@ async def update_episode(episode_id: int, episode: FloodEpisodeCreate) -> FloodE
         row = await session.get(FloodEpisodeRow, episode_id)
         if not row:
             raise ValueError(f"Episode {episode_id} not found")
-        row.start_time = episode.start_time
-        row.peak_time = episode.peak_time
-        row.end_time = episode.end_time
+        row.start_time = _strip_tz(episode.start_time)
+        row.peak_time = _strip_tz(episode.peak_time)
+        row.end_time = _strip_tz(episode.end_time)
         row.severity = episode.severity
         row.description = episode.description
         row.notes = episode.notes

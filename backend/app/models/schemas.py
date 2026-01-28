@@ -150,14 +150,21 @@ class VideoAnalysis(BaseModel):
 
 # Risk scoring
 class RiskWeights(BaseModel):
-    """Weights used for each risk factor in the calculation (v2.3)."""
-    river: float = 0.42
-    rain_24h: float = 0.08
-    rain_72h: float = 0.10
+    """Weights used for each risk factor in the calculation (v3.0).
+
+    Calibrated from 14 episodes (5 confirmed floods, 9 false positives).
+    Key insight: the moulin is on the Lidoire (tributary), not on the Dordogne.
+    High Dordogne level alone does NOT predict flooding — the signal is
+    multi-station rising momentum + recent rainfall.
+    """
+    river: float = 0.28
+    rain_24h: float = 0.10
+    rain_72h: float = 0.12
     rain_7d: float = 0.05
-    tide: float = 0.08
-    tide_phase: float = 0.08
-    tendency: float = 0.05
+    tide: float = 0.05
+    tide_phase: float = 0.05
+    tendency: float = 0.12
+    momentum: float = 0.08  # Multi-station rising simultaneously
     wind_west: float = 0.03
     soil_sat: float = 0.05
     video: float = 0.05
@@ -187,9 +194,10 @@ class RiskFactors(BaseModel):
     wind_west_score: float = Field(0.0, ge=0, le=1)  # Westerly wind causing surge
     soil_saturation_factor: float = Field(1.0, ge=1.0, le=1.5)  # Multiplier on rain
     video_level_score: Optional[float] = Field(None, ge=0, le=1)
-    # New multi-station factors
+    # Multi-station factors (v3.0)
     tendency_score: float = Field(0.0, ge=0, le=1)  # Rate of rise
-    conjunction_multiplier: float = Field(1.0, ge=1.0, le=2.0)  # Tide + high level
+    momentum_score: float = Field(0.0, ge=0, le=1)  # Multi-station rising simultaneously
+    conjunction_multiplier: float = Field(1.0, ge=1.0, le=2.5)  # Active flood combo
     stations_detail: list[StationRiskScore] = []  # Per-station breakdown
     # Weights and raw values for detailed breakdown
     weights: Optional[RiskWeights] = None

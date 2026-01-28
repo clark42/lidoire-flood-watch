@@ -22,6 +22,8 @@ interface TimelineSourceSelectorProps {
   onInfoclimatToggle?: () => void
   windEnabled?: boolean
   onWindToggle?: () => void
+  forecastEnabled?: boolean
+  onForecastToggle?: () => void
 }
 
 export default function TimelineSourceSelector({
@@ -44,6 +46,8 @@ export default function TimelineSourceSelector({
   onInfoclimatToggle,
   windEnabled,
   onWindToggle,
+  forecastEnabled,
+  onForecastToggle,
 }: TimelineSourceSelectorProps) {
   // Group river stations by river
   const stationsByRiver = useMemo(() => {
@@ -278,6 +282,21 @@ export default function TimelineSourceSelector({
             Vent
           </button>
         )}
+
+        {onForecastToggle && (
+          <button
+            onClick={onForecastToggle}
+            className={`flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-all ${
+              forecastEnabled
+                ? 'bg-purple-50 border-purple-300 text-purple-700 border-2'
+                : 'border-gray-200 bg-white hover:bg-gray-50 text-gray-600'
+            }`}
+          >
+            <AlertTriangle className="w-4 h-4" />
+            {forecastEnabled && <Check className="w-3 h-3" />}
+            Previsions 7j
+          </button>
+        )}
       </div>
 
       {/* Selection summary */}
@@ -308,6 +327,9 @@ export default function TimelineSourceSelector({
         )}
         {windEnabled && (
           <span className="font-medium text-slate-600">+ vent</span>
+        )}
+        {forecastEnabled && (
+          <span className="font-medium text-purple-600">+ previsions</span>
         )}
       </div>
     </div>

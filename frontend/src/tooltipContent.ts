@@ -76,6 +76,9 @@ export const TOOLTIPS = {
   factorTendency: {
     text: "Vitesse de montee des eaux. Une hausse rapide amplifie le risque meme si le niveau absolu est modere.",
   },
+  factorMomentum: {
+    text: "Nombre de stations en hausse simultanee. C'est le signal le plus fort d'inondation au moulin : les 5 episodes confirmes avaient en moyenne 4.4 stations en hausse vs 2.1 pour les faux positifs. Un niveau eleve mais stable (0 station en hausse) signifie que l'eau se retire, pas qu'elle arrive.",
+  },
   factorRain7d: {
     text: 'Pluie cumulee sur 7 jours. Indique la saturation profonde du bassin versant de la Lidoire.',
   },
@@ -157,6 +160,10 @@ export const TOOLTIPS = {
   // Previsions
   forecastHeader: {
     text: "Projection du score de risque sur les prochaines heures, basee sur les previsions de maree et de pluie. Les niveaux de riviere sont maintenus constants (pas de modele hydrologique).",
+  },
+  forecast: {
+    text: "Prevision de risque sur 72h combinant : pluie horaire (Open-Meteo AROME), marees avec coefficients, et projection des niveaux de riviere basee sur les stations amont avec leurs delais de propagation. Cache 30 min, actualisation automatique.",
+    link: { url: 'https://open-meteo.com/', label: 'Open-Meteo' },
   },
 } as const
 
