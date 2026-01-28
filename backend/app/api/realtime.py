@@ -602,20 +602,49 @@ async def get_realtime_data_at(timestamp: str):
                 height_m=height,
             )
 
-            # Compute tendency from available data
+            # Compute tendency using the 3h window BEFORE target time
+            # (not first-to-last across full ±6h window which masks rising/falling phases)
             tendency = Tendency.STABLE
             rate = 0.0
             if len(levels) >= 2:
-                sorted_levels = sorted(levels, key=lambda x: x["timestamp"])
-                recent = sorted_levels[-1]["height_m"]
-                previous = sorted_levels[0]["height_m"]
-                time_diff_h = (_to_naive(isoparse(sorted_levels[-1]["timestamp"])) - _to_naive(isoparse(sorted_levels[0]["timestamp"]))).total_seconds() / 3600
-                if time_diff_h > 0:
-                    rate = (recent - previous) / time_diff_h * 100  # cm/h
-                    if rate > 1:
-                        tendency = Tendency.RISING
-                    elif rate < -1:
-                        tendency = Tendency.FALLING
+                # Parse all levels with timestamps
+                parsed = []
+                for lv in levels:
+                    try:
+                        t = _to_naive(isoparse(lv["timestamp"]))
+                        parsed.append((t, lv["height_m"]))
+                    except (ValueError, TypeError):
+                        continue
+                parsed.sort(key=lambda x: x[0])
+
+                # Find the point closest to target_time (the "current" value)
+                best_t = _to_naive(isoparse(best["timestamp"]))
+
+                # Find a reference point 2-4h before target_time
+                ref_point = None
+                for t, h in parsed:
+                    hours_before = (target_time - t).total_seconds() / 3600
+                    if 1.5 <= hours_before <= 4.0:
+                        # Prefer the one closest to 3h before
+                        if ref_point is None or abs(hours_before - 3.0) < abs(ref_point[2] - 3.0):
+                            ref_point = (t, h, hours_before)
+
+                if ref_point is not None:
+                    time_diff_h = (best_t - ref_point[0]).total_seconds() / 3600
+                    if time_diff_h > 0.5:
+                        rate = (height - ref_point[1]) / time_diff_h * 100  # cm/h
+                else:
+                    # Fallback: use only points AT or BEFORE target time
+                    before_points = [(t, h) for t, h in parsed if t <= target_time]
+                    if len(before_points) >= 2:
+                        time_diff_h = (before_points[-1][0] - before_points[0][0]).total_seconds() / 3600
+                        if time_diff_h > 0.5:
+                            rate = (before_points[-1][1] - before_points[0][1]) / time_diff_h * 100
+
+                if rate > 1:
+                    tendency = Tendency.RISING
+                elif rate < -1:
+                    tendency = Tendency.FALLING
 
             sl = StationLevel(
                 station_id=station_id,
@@ -707,29 +736,36 @@ async def get_realtime_data_at(timestamp: str):
 
     tide_forecast.current_coefficient = coef
 
-    # Reconstruct rainfall: cumulative 24h from both snapshots
+    # Reconstruct rainfall: cumulative from all snapshots
+    # Average across multiple sources per timestamp to avoid undercount
     rain_1h = 0.0
     rain_24h_sum = 0.0
     rain_72h_sum = 0.0
+    rain_7d_sum = 0.0
 
-    # Collect all rainfall records from all windows (deduplicated by timestamp)
-    all_rain = {}
+    # Collect all rainfall records, group by timestamp (average across sources)
+    rain_by_ts: dict[str, list[float]] = {}
     for r in snapshot_72h["rainfall"] + snapshot_24h["rainfall"] + snapshot["rainfall"]:
         if r.get("field") == "precipitation_mm_h" and r.get("value") is not None:
             ts = r.get("timestamp", "")
-            all_rain[ts] = r["value"]
+            if ts not in rain_by_ts:
+                rain_by_ts[ts] = []
+            rain_by_ts[ts].append(r["value"])
 
-    # Sum hourly precipitation for 24h cumul
-    for ts_str, value in all_rain.items():
+    # Sum averaged hourly precipitation for each time window
+    for ts_str, values in rain_by_ts.items():
         try:
             ts = _to_naive(isoparse(ts_str))
             hours_before = (target_time - ts).total_seconds() / 3600
+            avg_value = sum(values) / len(values)
             if 0 <= hours_before <= 1:
-                rain_1h = max(rain_1h, value)
+                rain_1h = max(rain_1h, avg_value)
             if 0 <= hours_before <= 24:
-                rain_24h_sum += value
+                rain_24h_sum += avg_value
             if 0 <= hours_before <= 72:
-                rain_72h_sum += value
+                rain_72h_sum += avg_value
+            if 0 <= hours_before <= 168:
+                rain_7d_sum += avg_value
         except (ValueError, TypeError):
             continue
 
@@ -742,6 +778,7 @@ async def get_realtime_data_at(timestamp: str):
         last_hour_mm=round(rain_1h, 1),
         last_24h_mm=round(rain_24h_sum, 1),
         last_72h_mm=round(rain_72h_sum, 1),
+        last_7d_mm=round(rain_7d_sum, 1),
     )
 
     # Recalculate risk score using v2 model instead of reading stored score

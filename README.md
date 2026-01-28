@@ -73,11 +73,11 @@ lidoire-flood-watch/
 - Backfill selectif (rivers, rainfall, tides, soil, risk)
 - Tache asynchrone en arriere-plan avec suivi de progression
 
-## Modele de risque v3.0
+## Modele de risque v3.2
 
 Calibre a partir de 14 episodes annotes (5 inondations confirmees, 9 faux positifs).
 
-**Constat cle** : le moulin est sur la Lidoire (affluent), PAS sur la Dordogne. Un niveau Dordogne eleve seul ne signifie pas inondation au moulin. Le signal le plus fort est la montee simultanee de plusieurs stations + pluie.
+**Constat cle** : le moulin est sur la Lidoire (affluent), PAS sur la Dordogne. Un niveau Dordogne eleve seul ne signifie pas inondation au moulin. Le signal le plus fort est la montee simultanee de plusieurs stations + pluie, OU plusieurs stations au-dessus du seuil orange (indicateur de pluie en amont).
 
 ### Facteurs et poids
 
@@ -97,8 +97,11 @@ Calibre a partir de 14 episodes annotes (5 inondations confirmees, 9 faux positi
 
 ### Mecanismes avances
 
-- **Multiplicateur de conjonction** (1.0 a 2.5x) : se declenche quand plusieurs stations montent ET qu'il pleut (pattern "crue active")
-- **Amortisseur de stabilite** (0.65 a 1.0x) : reduit le score quand la riviere est haute mais stable/en baisse (piege les faux positifs)
+- **Multiplicateur de conjonction** (1.0 a 2.5x) :
+  - Se declenche quand plusieurs stations montent ET qu'il pleut (pattern "crue active")
+  - **Multi-stations au-dessus du seuil** (v3.2) : si ≥3 stations actives ont un score > 0.6 (au-dessus du seuil orange), le multiplicateur augmente (+0.45 si ≥1 en hausse, +0.30 sinon). Les niveaux eleves SONT le signal de pluie en amont.
+  - **Drainage impairment** (v3.1) : quand la Dordogne est haute + pluie cumulative, la Lidoire ne peut pas s'ecouler → inondation par refoulement
+- **Amortisseur de stabilite** (0.65 a 1.0x) : reduit le score quand la riviere est haute mais stable/en baisse (piege les faux positifs). Desactive si ≥3 stations au-dessus du seuil orange ou si pluie 72h significative.
 - **Seuillage du momentum** : gate par le niveau riviere (niveau < 0.30m → momentum × 0.2)
 
 ### Seuils d'alerte

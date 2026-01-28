@@ -22,6 +22,17 @@ Risk model weights (v3.0 - 11 factors):
 - Video analysis: 5%
 - Conjunction multiplier: up to 2.5x (redesigned for active flood detection)
 
+v3.2 changes (Jan 2026):
+- Multi-station above threshold trigger: when ≥3 active stations have score > 0.6
+  (above orange), this indicates ongoing flood conditions regardless of local rain.
+  High river levels ARE the signal of upstream rainfall feeding the basin.
+  Catches "post-peak still flooding" state (EP14 April 23).
+- Stability dampener bypass: no dampening when ≥3 stations above orange threshold.
+- Drainage impairment: added low-rain trigger when river_score > 0.60
+  (very high river + any rain > 0.2 = upstream signal).
+- Backfill fallback: when no station scores available, river_score > 0.60
+  triggers conjunction multiplier (proxy for multi-station above threshold).
+
 v3.0 changes (Jan 2026):
 - Calibrated from 14 annotated episodes (5 confirmed floods, 9 false positives).
 - Key insight: moulin is on the Lidoire (tributary), NOT on the Dordogne.
@@ -313,13 +324,17 @@ def _calculate_stability_dampener(
     tendency: Tendency,
     station_scores: list[StationRiskScore] | None = None,
     n_rising: int = 0,
+    rain_72h_score: float = 0.0,
 ) -> float:
     """
-    Dampener for high-but-stable river conditions (v3.0).
+    Dampener for high-but-stable river conditions (v3.1).
 
     When the river is elevated but NOT rising, the flood risk at the moulin
     is much lower than the raw score suggests. This catches false positives
     like EP5 (Pessac 4.92m RED, 0 rising, 0 rain = no flood).
+
+    v3.1: No dampening when cumulative rain is significant, because the
+    Lidoire is likely still being fed even if the Dordogne is receding.
 
     Returns a multiplier 0.6-1.0 to apply to the final score.
     """
@@ -331,10 +346,27 @@ def _calculate_stability_dampener(
     if river_score < 0.4:
         return 1.0
 
-    # High river + stable/falling + few stations rising = dampened
+    # No dampening when cumulative rain is significant:
+    # The Lidoire (tributary) is still being fed by rainfall even if
+    # the Dordogne (main river) is receding. This is the key
+    # backwater flooding mechanism at the moulin.
+    if rain_72h_score > 0.4:
+        return 1.0
+
+    # No dampening when multiple stations are above orange threshold:
+    # High river levels across the basin ARE the signal of upstream rainfall.
+    # Even if local rain stopped and primary is falling, the flood is ongoing.
+    # (Catches EP14 April 23: Pessac=0.62, Abzac=0.93, Coutras=0.87)
+    if station_scores:
+        active = [s for s in station_scores if s.weight > 0]
+        n_above_orange = sum(1 for s in active if s.score > 0.6)
+        if n_above_orange >= 3:
+            return 1.0
+
+    # High river + stable/falling + few stations rising + low rain = dampened
     if tendency in (Tendency.STABLE, Tendency.FALLING):
         if n_rising == 0:
-            return 0.65  # Strong dampening (EP5: Pessac RED, 0 rising = score×0.65)
+            return 0.65  # Strong dampening (EP5: Pessac RED, 0 rising, 0 rain)
         elif n_rising <= 1:
             return 0.80  # Moderate dampening (EP9: 1 rising)
     elif tendency == Tendency.RISING and n_rising <= 1:
@@ -352,21 +384,22 @@ def _calculate_conjunction_multiplier(
     rain_72h_score: float = 0.0,
     rain_24h_score: float = 0.0,
     n_rising: int = 0,
+    soil_saturation_factor: float = 1.0,
 ) -> float:
     """
-    Calculate conjunction multiplier for dangerous combinations (v3.0).
+    Calculate conjunction multiplier for dangerous combinations (v3.1).
 
-    Redesigned based on 14 annotated episodes. The key trigger is
-    "active flood" pattern: multiple stations rising + recent rain,
-    not just high raw values.
+    Redesigned for the Lidoire backwater flooding mechanism:
+    The moulin floods when (1) the Dordogne is high (blocking Lidoire drainage)
+    AND (2) rainfall feeds the Lidoire watershed. Even if the Dordogne is
+    receding, sustained high levels + cumulative rain = flood at the moulin.
 
     Triggers:
-    - Multiple stations rising simultaneously (strongest signal)
-    - Rising + recent rain (active water arrival)
-    - Rising + elevated river
-    - High tide + elevated river
-    - Sustained rain + elevated river
-    - Multi-station above thresholds
+    - Multiple stations rising + rain (active basin-wide flood)
+    - Drainage impairment (high Dordogne + sustained rain = Lidoire can't drain)
+    - Rising + recent rain (water arriving)
+    - High tide + elevated river (tidal influence on drainage)
+    - Multi-station above thresholds (sustained flood conditions)
 
     Returns multiplier between 1.0 and 2.5.
     """
@@ -380,28 +413,66 @@ def _calculate_conjunction_multiplier(
         n_rising_local = n_rising
 
     # === PRIMARY TRIGGER: active basin-wide flood ===
-    # Multiple stations rising with rivers already elevated.
-    # This is the single most discriminating pattern.
-    # EP14: 5 rising + river 0.602 → 25cm flood (river above 0.55)
-    # EP4: 5 rising + river 0.514 → NO flood (river below 0.55)
-    # The 0.55 threshold corresponds to ~Pessac 3.5m (between yellow and orange).
-    if n_rising_local >= 4 and river_score > 0.55:
-        multiplier += 0.45  # Strong basin-wide flood signal
-    elif n_rising_local >= 4 and river_score > 0.45:
-        multiplier += 0.12  # Rivers rising but not yet critical
+    # Multiple stations rising with rain = definitive flood signal.
+    # Lowered river threshold from 0.55 to 0.35 but REQUIRES rain (>0.2)
+    # to distinguish from EP4 (5 rising, no rain → no flood).
+    if n_rising_local >= 4 and river_score > 0.35 and rain_24h_score > 0.2:
+        multiplier += 0.45  # Strong: rising + rain + moderate levels
+    elif n_rising_local >= 4 and river_score > 0.35:
+        multiplier += 0.12  # Rising but no rain = early warning only
+    elif n_rising_local >= 5 and rain_24h_score > 0.2:
+        multiplier += 0.25  # Nearly all rising + rain at any level
     elif n_rising_local >= 3 and river_score > 0.55:
+        multiplier += 0.25  # Fewer rising but levels already high
+
+    # === MULTI-STATION ABOVE THRESHOLD (v3.2): Ongoing flood conditions ===
+    # High river levels across the basin ARE the signal of upstream rainfall.
+    # When multiple stations are well above orange threshold, the Dordogne
+    # blocks Lidoire drainage regardless of current LOCAL rain or tendency.
+    # This catches the "post-peak still flooding" state (EP14 April 23:
+    # Pessac 0.62, Abzac 0.93, Coutras 0.87 — 3 above orange, 2 still rising).
+    n_above_orange = 0
+    if station_scores:
+        active = [s for s in station_scores if s.weight > 0]
+        n_above_orange = sum(1 for s in active if s.score > 0.6)
+
+    if n_above_orange >= 3 and n_rising_local >= 1:
+        multiplier += 0.45  # Strong: 3+ above orange + at least 1 still rising
+    elif n_above_orange >= 3:
+        multiplier += 0.30  # Moderate: 3+ above orange (all falling = receding flood)
+    elif n_above_orange >= 2 and river_score > 0.55 and n_rising_local >= 1:
+        multiplier += 0.20  # 2 above orange + elevated average + rising
+    elif not station_scores and river_score > 0.60:
+        # Backfill fallback: high weighted average = likely multiple high stations
         multiplier += 0.25
 
+    # === DRAINAGE IMPAIRMENT (v3.1): Dordogne high + cumulative rain ===
+    # The Lidoire floods by BACKWATER: the Dordogne blocks drainage,
+    # and rain continues to feed the Lidoire. Even if the Dordogne is
+    # FALLING, sustained high levels + cumulative rain = flood continues.
+    if river_score > 0.60 and rain_72h_score > 0.5:
+        multiplier += 0.45  # Strong: Dordogne well above yellow + heavy 72h rain
+    elif river_score > 0.50 and rain_72h_score > 0.4:
+        multiplier += 0.30  # Moderate: river elevated + sustained rain
+    elif river_score > 0.40 and rain_72h_score > 0.5:
+        multiplier += 0.20  # River moderate + heavy sustained rain
+    elif river_score > 0.60 and rain_72h_score > 0.2:
+        multiplier += 0.15  # Very high river + any rain (upstream signal)
+
+    # Soil saturation amplifies drainage impairment
+    if soil_saturation_factor > 1.2 and river_score > 0.45 and rain_72h_score > 0.3:
+        multiplier += 0.15  # Saturated soil + elevated river + rain
+
     # === SECONDARY: rising + rain + elevated river ===
-    # Only significant when rivers are clearly elevated (>0.55)
-    if tendency == Tendency.RISING and rain_24h_score > 0.3 and river_score > 0.55:
+    if tendency == Tendency.RISING and rain_24h_score > 0.3 and river_score > 0.45:
         multiplier += 0.20
 
     # === TERTIARY: sustained rain + elevated river ===
-    if rain_72h_score > 0.5 and river_score > 0.55:
+    if rain_72h_score > 0.5 and river_score > 0.45:
         multiplier += 0.15
 
     # === TIDE: high tide + elevated river ===
+    # Tidal influence further blocks drainage at the Lidoire/Dordogne confluence
     if tide_phase_score > 0.5 and river_score > 0.5:
         multiplier += 0.15
 
@@ -640,15 +711,17 @@ async def calculate_risk_score_v2(
         station_scores=station_scores, river_score=river_score,
     )
 
-    # Conjunction multiplier (v3.0: active flood pattern detection)
+    # Conjunction multiplier (v3.1: drainage impairment + active flood detection)
     conjunction_multiplier = _calculate_conjunction_multiplier(
         river_score, tide_phase_score, primary_tendency, station_scores,
         rain_72h_score, rain_24h_score,
+        soil_saturation_factor=soil_saturation_factor,
     )
 
-    # Stability dampener (v3.0: high-but-stable = less risk)
+    # Stability dampener (v3.1: no dampening during sustained rain)
     stability_dampener = _calculate_stability_dampener(
         river_score, primary_tendency, station_scores,
+        rain_72h_score=rain_72h_score,
     )
 
     # Video level score (if available)
@@ -837,17 +910,19 @@ async def calculate_risk_from_values(
         river_score=river_score,
     )
 
-    # Conjunction multiplier (v3.0)
+    # Conjunction multiplier (v3.1: drainage impairment + active flood detection)
     conjunction_multiplier = _calculate_conjunction_multiplier(
         river_score, tide_phase_score, tendency,
         rain_72h_score=rain_72h_score,
         rain_24h_score=rain_24h_score,
         n_rising=n_rising_stations,
+        soil_saturation_factor=1.0,  # Not available in simple values mode
     )
 
-    # Stability dampener (v3.0)
+    # Stability dampener (v3.1: no dampening during sustained rain)
     stability_dampener = _calculate_stability_dampener(
         river_score, tendency, n_rising=n_rising_stations,
+        rain_72h_score=rain_72h_score,
     )
 
     video_score = (video_level / 100) if video_level is not None else None
