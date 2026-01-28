@@ -89,9 +89,9 @@ def _normalize_score(
 
     if exponential and linear > 0:
         # Apply power curve: steeper increase at higher values
-        # score^0.7 makes high values contribute more
-        # e.g., 0.5 -> 0.62, 0.8 -> 0.86, 0.33 -> 0.48
-        return linear ** 0.7
+        # score^0.6 makes high values contribute even more (was 0.7)
+        # e.g., 0.33 -> 0.52, 0.5 -> 0.66, 0.8 -> 0.87
+        return linear ** 0.6
     return linear
 
 
@@ -153,6 +153,9 @@ def _calculate_tendency_score(stations_data: MultiStationData) -> float:
     Fast rising water is more dangerous than stable high water.
     Uses primary station (Pessac-sur-Dordogne) or falls back to
     the highest-weight station with data.
+
+    v2.5: More aggressive scoring - even slow rise is significant
+    when monitoring for floods.
     """
     primary_id = stations_data.primary_station_id
     primary_station = next(
@@ -173,19 +176,19 @@ def _calculate_tendency_score(stations_data: MultiStationData) -> float:
 
     rate = primary_station.rate_cm_per_hour
 
-    # Score based on rate of rise
+    # Score based on rate of rise (v2.5: more aggressive)
     if rate <= 0:
         return 0.0  # Falling or stable
+    elif rate < 2:
+        return 0.3  # Very slow rise (was 0 for <5)
     elif rate < 5:
-        return 0.2  # Slow rise
+        return 0.5  # Slow rise (was 0.2)
     elif rate < 10:
-        return 0.4  # Moderate rise
+        return 0.7  # Moderate rise (was 0.4)
     elif rate < 20:
-        return 0.6  # Fast rise
-    elif rate < 50:
-        return 0.8  # Very fast rise
+        return 0.85  # Fast rise (was 0.6)
     else:
-        return 1.0  # Extreme rise
+        return 1.0  # Very fast rise
 
 
 def _calculate_tide_phase_score(
@@ -293,17 +296,17 @@ def _calculate_conjunction_multiplier(
 def _score_to_level(score: float) -> RiskLevel:
     """Convert numerical score (0-100) to risk level.
 
-    v2.4: Adjusted thresholds for earlier warnings based on Feb 2024 analysis.
-    - Green: < 20 (was 25)
-    - Yellow: 20-45 (was 25-50)
-    - Orange: 45-70 (was 50-75)
-    - Red: >= 70 (was 75)
+    v2.5: More aggressive thresholds - RED 24h before peak based on Feb 2024.
+    - Green: < 15
+    - Yellow: 15-35
+    - Orange: 35-55
+    - Red: >= 55
     """
-    if score < 20:
+    if score < 15:
         return RiskLevel.GREEN
-    elif score < 45:
+    elif score < 35:
         return RiskLevel.YELLOW
-    elif score < 70:
+    elif score < 55:
         return RiskLevel.ORANGE
     else:
         return RiskLevel.RED
@@ -523,15 +526,15 @@ async def calculate_risk_score_v2(
     # Video level score (if available)
     video_score = (video_level / 100) if video_level is not None else None
 
-    # Calculate weighted score (v2.3 - 10 factors, calibrated Feb 2024)
+    # Calculate weighted score (v2.5 - tendency weight increased)
     weights = {
-        "river": 0.42,
+        "river": 0.40,
         "rain_24h": 0.08,
-        "rain_72h": 0.10,
+        "rain_72h": 0.12,  # Sustained rain matters more
         "rain_7d": 0.05,
-        "tide": 0.08,
-        "tide_phase": 0.08,
-        "tendency": 0.05,
+        "tide": 0.06,
+        "tide_phase": 0.06,
+        "tendency": 0.10,  # Doubled: rising = danger (was 0.05)
         "wind_west": 0.03,
         "soil_sat": 0.05,
         "video": 0.05,
