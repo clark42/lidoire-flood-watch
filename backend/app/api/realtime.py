@@ -28,11 +28,16 @@ from app.services.risk_v2 import calculate_risk_score_v2
 from app.services.collectors.tide import get_current_tide_data
 from app.services.collectors.vigicrues import get_current_river_level
 from app.services.collectors.weather import get_rainfall_summary, get_soil_wind_cached
-from app.services.collectors.hubeau import get_multi_station_data
+from app.services.collectors.hubeau import get_multi_station_data, fetch_episode_context
 from app.services.collectors.netatmo import get_basin_rainfall
 from app.services.collectors.infoclimat import find_stations_near, get_basin_rainfall_infoclimat
 from app.services.collectors.meteo_agricole import get_meteo_agricole_cached, get_nowcast_rain_cached
-from app.services.influx_client import query_basin_rainfall_sparkline, query_historical_snapshot
+from app.services.influx_client import (
+    query_basin_rainfall_sparkline,
+    query_historical_snapshot,
+    write_river_levels_batch,
+    write_rainfall,
+)
 from app.config import get_settings
 
 router = APIRouter()
@@ -423,16 +428,22 @@ async def get_basin_rainfall_summary():
     )
 
 
+def _to_naive(dt: datetime) -> datetime:
+    """Strip timezone info for safe comparison with naive datetimes."""
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
 @router.get("/at")
 async def get_realtime_data_at(timestamp: str):
     """Get reconstructed dashboard data at a specific historical timestamp (TimeMachine).
 
     Reconstructs the dashboard state from InfluxDB stored data with a ±6h window.
-    Recalculates the risk score via calculate_risk_score_v2 using the reconstructed data.
+    If no data exists in InfluxDB, fetches from external APIs (Hub'Eau, Open-Meteo Archive)
+    and stores for future queries (cache-through pattern).
     """
     from datetime import timedelta
 
-    target_time = isoparse(timestamp)
+    target_time = _to_naive(isoparse(timestamp))
     settings = get_settings()
 
     # Fetch both snapshots in parallel (each uses asyncio.to_thread internally)
@@ -440,6 +451,107 @@ async def get_realtime_data_at(timestamp: str):
         query_historical_snapshot(target_time, window_hours=6),
         query_historical_snapshot(target_time - timedelta(hours=12), window_hours=12),
     )
+
+    # === CACHE-THROUGH: Fetch from APIs if InfluxDB has no data ===
+    # Check if we have river level data
+    has_river_data = any(
+        len(levels) > 0 for levels in snapshot["river_levels"].values()
+    )
+
+    if not has_river_data:
+        print(f"TimeMachine: no InfluxDB data for {target_time}, fetching from Hub'Eau...")
+        # Fetch from Hub'Eau (Hydroportail for sub-hourly historical data)
+        river_data = await fetch_episode_context(
+            target_time,
+            hours_before=6,
+            hours_after=6,
+        )
+
+        # Store to InfluxDB for future queries
+        all_levels = []
+        for station_id, levels in river_data.items():
+            for lv in levels:
+                all_levels.append({
+                    "station_id": lv.station_id,
+                    "station_name": lv.station_name,
+                    "river": lv.river,
+                    "height_m": lv.height_m,
+                    "timestamp": lv.timestamp,
+                    "flow_m3s": lv.flow_m3s,
+                })
+            # Update snapshot with fetched data
+            snapshot["river_levels"][station_id] = [
+                {
+                    "timestamp": lv.timestamp.isoformat(),
+                    "height_m": lv.height_m,
+                    "station_name": lv.station_name,
+                    "river": lv.river,
+                }
+                for lv in levels
+            ]
+
+        if all_levels:
+            stored = await write_river_levels_batch(all_levels)
+            print(f"TimeMachine: stored {stored} river level points to InfluxDB")
+
+    # Check if we have rainfall data
+    has_rainfall_data = len(snapshot["rainfall"]) > 0 or len(snapshot_24h["rainfall"]) > 0
+
+    if not has_rainfall_data:
+        print(f"TimeMachine: no InfluxDB rainfall data, fetching from Open-Meteo Archive...")
+        # Fetch from Open-Meteo Archive API
+        start = target_time - timedelta(hours=72)
+        end = target_time + timedelta(hours=6)
+
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    "https://archive-api.open-meteo.com/v1/archive",
+                    params={
+                        "latitude": settings.moulin_lat,
+                        "longitude": settings.moulin_lon,
+                        "start_date": start.strftime("%Y-%m-%d"),
+                        "end_date": end.strftime("%Y-%m-%d"),
+                        "hourly": "precipitation",
+                        "timezone": "UTC",
+                    },
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                hourly = data.get("hourly", {})
+                times = hourly.get("time", [])
+                precip = hourly.get("precipitation", [])
+
+                # Store to InfluxDB and update snapshot
+                stored_count = 0
+                for i, time_str in enumerate(times):
+                    if i < len(precip) and precip[i] is not None:
+                        ts = datetime.fromisoformat(time_str)
+                        await write_rainfall(
+                            source="open-meteo-archive",
+                            precipitation_mm_h=precip[i],
+                            timestamp=ts,
+                            station_city="Moulin",
+                        )
+                        stored_count += 1
+                        # Add to snapshot for rainfall calculation
+                        snapshot_24h["rainfall"].append({
+                            "timestamp": ts.isoformat(),
+                            "value": precip[i],
+                            "field": "precipitation_mm_h",
+                            "source": "open-meteo-archive",
+                            "city": "Moulin",
+                        })
+
+                print(f"TimeMachine: stored {stored_count} rainfall points to InfluxDB")
+
+        except Exception as e:
+            print(f"TimeMachine: error fetching historical rainfall: {e}")
+
+    # === END CACHE-THROUGH ===
 
     # Reconstruct stations data
     stations_list = []
@@ -454,7 +566,7 @@ async def get_realtime_data_at(timestamp: str):
         best = None
         best_diff = float("inf")
         for lv in levels:
-            t = isoparse(lv["timestamp"])
+            t = _to_naive(isoparse(lv["timestamp"]))
             diff = abs((t - target_time).total_seconds())
             if diff < best_diff:
                 best_diff = diff
@@ -477,7 +589,7 @@ async def get_realtime_data_at(timestamp: str):
                 sorted_levels = sorted(levels, key=lambda x: x["timestamp"])
                 recent = sorted_levels[-1]["height_m"]
                 previous = sorted_levels[0]["height_m"]
-                time_diff_h = (isoparse(sorted_levels[-1]["timestamp"]) - isoparse(sorted_levels[0]["timestamp"])).total_seconds() / 3600
+                time_diff_h = (_to_naive(isoparse(sorted_levels[-1]["timestamp"])) - _to_naive(isoparse(sorted_levels[0]["timestamp"]))).total_seconds() / 3600
                 if time_diff_h > 0:
                     rate = (recent - previous) / time_diff_h * 100  # cm/h
                     if rate > 1:
@@ -546,7 +658,7 @@ async def get_realtime_data_at(timestamp: str):
         best_coef_diff = float("inf")
         for t in snapshot["tides"]:
             if t.get("field") == "coefficient" and t.get("value"):
-                ts = isoparse(t["timestamp"])
+                ts = _to_naive(isoparse(t["timestamp"]))
                 diff = abs((ts - target_time).total_seconds())
                 if diff < best_coef_diff:
                     best_coef_diff = diff
@@ -557,7 +669,7 @@ async def get_realtime_data_at(timestamp: str):
             if t.get("field") == "height_m" and t.get("value") is not None:
                 tide_type_str = t.get("tide_type")
                 if tide_type_str in ("PM", "BM"):
-                    ts = isoparse(t["timestamp"])
+                    ts = _to_naive(isoparse(t["timestamp"]))
                     td = TideData(
                         timestamp=ts,
                         port=t.get("port", "LIBOURNE"),
@@ -590,7 +702,7 @@ async def get_realtime_data_at(timestamp: str):
     # Sum hourly precipitation for 24h cumul
     for ts_str, value in all_rain.items():
         try:
-            ts = isoparse(ts_str)
+            ts = _to_naive(isoparse(ts_str))
             hours_before = (target_time - ts).total_seconds() / 3600
             if 0 <= hours_before <= 1:
                 rain_1h = max(rain_1h, value)
