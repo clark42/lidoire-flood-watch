@@ -825,7 +825,11 @@ async def query_basin_rainfall_sparkline(hours: int = 24) -> list[dict]:
 
 
 async def query_historical_snapshot(target_time: datetime, window_hours: int = 1) -> dict:
-    """Query InfluxDB data around a specific historical timestamp for TimeMachine."""
+    """Query InfluxDB data around a specific historical timestamp for TimeMachine.
+
+    Uses a single combined Flux query (1 round-trip instead of 4) and runs the
+    synchronous InfluxDB call in a thread to avoid blocking the event loop.
+    """
     settings = get_settings()
     start = target_time - timedelta(hours=window_hours)
     end = target_time + timedelta(hours=window_hours)
@@ -837,94 +841,62 @@ async def query_historical_snapshot(target_time: datetime, window_hours: int = 1
         "risk_scores": [],
     }
 
-    # River levels - get the closest point to target_time for each station
-    river_query = f'''
+    # Single combined query — 1 round-trip instead of 4
+    query = f'''
     from(bucket: "{settings.influxdb_bucket}")
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-        |> filter(fn: (r) => r._measurement == "river_level")
-        |> filter(fn: (r) => r._field == "height_m")
+        |> filter(fn: (r) =>
+            r._measurement == "river_level" or
+            r._measurement == "rainfall" or
+            r._measurement == "tide" or
+            r._measurement == "risk_score"
+        )
         |> sort(columns: ["_time"])
     '''
 
     try:
-        tables = get_query_api().query(river_query, org=settings.influxdb_org)
+        query_api = get_query_api()
+        tables = await asyncio.to_thread(
+            query_api.query, query, org=settings.influxdb_org
+        )
         for table in tables:
             for record in table.records:
-                station_id = record.values.get("station_id", "unknown")
-                if station_id not in snapshot["river_levels"]:
-                    snapshot["river_levels"][station_id] = []
-                snapshot["river_levels"][station_id].append({
-                    "timestamp": record.get_time().isoformat(),
-                    "height_m": record.get_value(),
-                    "station_name": record.values.get("station_name"),
-                    "river": record.values.get("river"),
-                })
+                measurement = record.values.get("_measurement")
+
+                if measurement == "river_level" and record.get_field() == "height_m":
+                    station_id = record.values.get("station_id", "unknown")
+                    if station_id not in snapshot["river_levels"]:
+                        snapshot["river_levels"][station_id] = []
+                    snapshot["river_levels"][station_id].append({
+                        "timestamp": record.get_time().isoformat(),
+                        "height_m": record.get_value(),
+                        "station_name": record.values.get("station_name"),
+                        "river": record.values.get("river"),
+                    })
+                elif measurement == "rainfall":
+                    snapshot["rainfall"].append({
+                        "timestamp": record.get_time().isoformat(),
+                        "value": record.get_value(),
+                        "field": record.get_field(),
+                        "source": record.values.get("source"),
+                        "city": record.values.get("city"),
+                    })
+                elif measurement == "tide":
+                    snapshot["tides"].append({
+                        "timestamp": record.get_time().isoformat(),
+                        "value": record.get_value(),
+                        "field": record.get_field(),
+                        "port": record.values.get("port"),
+                        "tide_type": record.values.get("tide_type"),
+                    })
+                elif measurement == "risk_score":
+                    snapshot["risk_scores"].append({
+                        "timestamp": record.get_time().isoformat(),
+                        "score": record.get_value() if record.get_field() == "score" else None,
+                        "level": record.values.get("level"),
+                    })
     except Exception as e:
-        print(f"Error querying historical river levels: {e}")
-
-    # Rainfall
-    rain_query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
-        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-        |> filter(fn: (r) => r._measurement == "rainfall")
-        |> sort(columns: ["_time"])
-    '''
-
-    try:
-        tables = get_query_api().query(rain_query, org=settings.influxdb_org)
-        for table in tables:
-            for record in table.records:
-                snapshot["rainfall"].append({
-                    "timestamp": record.get_time().isoformat(),
-                    "value": record.get_value(),
-                    "field": record.get_field(),
-                    "source": record.values.get("source"),
-                    "city": record.values.get("city"),
-                })
-    except Exception as e:
-        print(f"Error querying historical rainfall: {e}")
-
-    # Tides
-    tide_query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
-        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-        |> filter(fn: (r) => r._measurement == "tide")
-        |> sort(columns: ["_time"])
-    '''
-
-    try:
-        tables = get_query_api().query(tide_query, org=settings.influxdb_org)
-        for table in tables:
-            for record in table.records:
-                snapshot["tides"].append({
-                    "timestamp": record.get_time().isoformat(),
-                    "value": record.get_value(),
-                    "field": record.get_field(),
-                    "port": record.values.get("port"),
-                    "tide_type": record.values.get("tide_type"),
-                })
-    except Exception as e:
-        print(f"Error querying historical tides: {e}")
-
-    # Risk scores
-    risk_query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
-        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-        |> filter(fn: (r) => r._measurement == "risk_score")
-        |> sort(columns: ["_time"])
-    '''
-
-    try:
-        tables = get_query_api().query(risk_query, org=settings.influxdb_org)
-        for table in tables:
-            for record in table.records:
-                snapshot["risk_scores"].append({
-                    "timestamp": record.get_time().isoformat(),
-                    "score": record.get_value() if record.get_field() == "score" else None,
-                    "level": record.values.get("level"),
-                })
-    except Exception as e:
-        print(f"Error querying historical risk scores: {e}")
+        print(f"Error querying historical snapshot: {e}")
 
     return snapshot
 

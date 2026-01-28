@@ -1,5 +1,6 @@
 """Real-time data endpoints."""
 
+import asyncio
 from datetime import datetime
 from fastapi import APIRouter
 from dateutil.parser import isoparse
@@ -42,25 +43,37 @@ async def get_realtime_data():
     """Get current real-time data for the dashboard."""
     now = datetime.utcnow()
 
-    # Fetch current data from all sources
-    tide_data = await get_current_tide_data()
-    river_data = await get_current_river_level()
-    rainfall_data = await get_rainfall_summary()
+    # Fetch all independent data sources in parallel
+    async def _safe_infoclimat():
+        try:
+            return await get_basin_rainfall_infoclimat()
+        except Exception as e:
+            print(f"Infoclimat enrichment skipped: {e}")
+            return {}
 
-    # Fetch multi-station data from Hub'Eau
-    stations_data = await get_multi_station_data()
-
-    # Fetch soil/wind data (cache-through InfluxDB)
-    soil_wind_data = await get_soil_wind_cached()
-
-    # Fetch Meteo Agricole data (cache-through InfluxDB, 6h)
-    meteo_agricole_data = await get_meteo_agricole_cached()
-
-    # Fetch nowcast rain data (cache-through InfluxDB, 5 min)
-    nowcast_rain_data = await get_nowcast_rain_cached()
+    (
+        tide_data,
+        river_data,
+        rainfall_data,
+        stations_data,
+        soil_wind_data,
+        meteo_agricole_data,
+        nowcast_rain_data,
+        netatmo_data,
+        infoclimat_rain,
+    ) = await asyncio.gather(
+        get_current_tide_data(),
+        get_current_river_level(),
+        get_rainfall_summary(),
+        get_multi_station_data(),
+        get_soil_wind_cached(),
+        get_meteo_agricole_cached(),
+        get_nowcast_rain_cached(),
+        get_basin_rainfall(),
+        _safe_infoclimat(),
+    )
 
     # Enrich rainfall with Netatmo data if available
-    netatmo_data = await get_basin_rainfall()
     if netatmo_data.get("available"):
         netatmo_1h = netatmo_data.get("rain_1h_avg_mm", 0)
         netatmo_24h = netatmo_data.get("rain_24h_avg_mm", 0)
@@ -73,18 +86,14 @@ async def get_realtime_data():
             })
 
     # Enrich rainfall with Infoclimat data if available
-    try:
-        infoclimat_rain = await get_basin_rainfall_infoclimat()
-        if infoclimat_rain.get("available"):
-            ic_24h = infoclimat_rain.get("rain_24h_avg_mm", 0)
-            ic_1h = infoclimat_rain.get("rain_1h_avg_mm", 0)
-            if ic_24h > 0 or ic_1h > 0:
-                rainfall_data = rainfall_data.model_copy(update={
-                    "last_hour_mm": max(rainfall_data.last_hour_mm, ic_1h or 0),
-                    "last_24h_mm": max(rainfall_data.last_24h_mm, ic_24h or 0),
-                })
-    except Exception as e:
-        print(f"Infoclimat enrichment skipped: {e}")
+    if infoclimat_rain.get("available"):
+        ic_24h = infoclimat_rain.get("rain_24h_avg_mm", 0)
+        ic_1h = infoclimat_rain.get("rain_1h_avg_mm", 0)
+        if ic_24h > 0 or ic_1h > 0:
+            rainfall_data = rainfall_data.model_copy(update={
+                "last_hour_mm": max(rainfall_data.last_hour_mm, ic_1h or 0),
+                "last_24h_mm": max(rainfall_data.last_24h_mm, ic_24h or 0),
+            })
 
     # Determine soil saturation factor using all available sources:
     # 1) Base factor from Open-Meteo shallow soil moisture
@@ -426,12 +435,10 @@ async def get_realtime_data_at(timestamp: str):
     target_time = isoparse(timestamp)
     settings = get_settings()
 
-    # Use a wider window to capture more data around the target time
-    snapshot = await query_historical_snapshot(target_time, window_hours=6)
-
-    # Also fetch a 24h-before snapshot for cumulative rainfall
-    snapshot_24h = await query_historical_snapshot(
-        target_time - timedelta(hours=12), window_hours=12
+    # Fetch both snapshots in parallel (each uses asyncio.to_thread internally)
+    snapshot, snapshot_24h = await asyncio.gather(
+        query_historical_snapshot(target_time, window_hours=6),
+        query_historical_snapshot(target_time - timedelta(hours=12), window_hours=12),
     )
 
     # Reconstruct stations data
