@@ -88,6 +88,7 @@ class Settings(BaseSettings):
             "thresholds": {"yellow": 3.0, "orange": 4.0, "red": 5.0},
         },
         {
+            # v2.4: Thresholds lowered based on Feb 2024 flood (peaked 4.475m = inondation)
             "id": "P555001001",
             "name": "Pessac-sur-Dordogne",
             "river": "Dordogne",
@@ -96,7 +97,7 @@ class Settings(BaseSettings):
             "weight": 0.30,  # Primary non-tidal Dordogne station
             "lat": 44.8131,
             "lon": 0.0381,
-            "thresholds": {"yellow": 3.5, "orange": 4.5, "red": 5.5},
+            "thresholds": {"yellow": 3.0, "orange": 3.8, "red": 4.5},
         },
         {
             "id": "P514001001",
@@ -107,7 +108,7 @@ class Settings(BaseSettings):
             "weight": 0.15,  # Upstream Dordogne, good lead time
             "lat": 44.8531,
             "lon": 0.4836,
-            "thresholds": {"yellow": 3.0, "orange": 4.0, "red": 5.0},
+            "thresholds": {"yellow": 2.5, "orange": 3.5, "red": 4.5},
         },
         # Isle - major tributary (confluence at Libourne)
         {
@@ -119,7 +120,7 @@ class Settings(BaseSettings):
             "weight": 0.25,  # Closest non-tidal station (Isle)
             "lat": 44.8789,
             "lon": -0.1278,
-            "thresholds": {"yellow": 2.5, "orange": 3.5, "red": 4.5},
+            "thresholds": {"yellow": 2.2, "orange": 3.0, "red": 4.0},
         },
         {
             "id": "P704151001",
@@ -130,7 +131,7 @@ class Settings(BaseSettings):
             "weight": 0.10,  # Far upstream Isle
             "lat": 45.1837,
             "lon": 0.7187,
-            "thresholds": {"yellow": 2.0, "orange": 3.0, "red": 4.0},
+            "thresholds": {"yellow": 1.8, "orange": 2.8, "red": 3.8},
         },
         # Dronne - tributary of Isle (confluence at Coutras)
         {
@@ -142,7 +143,7 @@ class Settings(BaseSettings):
             "weight": 0.15,  # Dronne at confluence
             "lat": 45.0411,
             "lon": -0.1233,
-            "thresholds": {"yellow": 2.0, "orange": 3.0, "red": 4.0},
+            "thresholds": {"yellow": 1.8, "orange": 2.5, "red": 3.5},
         },
         {
             "id": "P816251001",
@@ -153,7 +154,7 @@ class Settings(BaseSettings):
             "weight": 0.05,  # Far upstream Dronne, early warning
             "lat": 45.2461,
             "lon": 0.3450,
-            "thresholds": {"yellow": 1.5, "orange": 2.5, "red": 3.5},
+            "thresholds": {"yellow": 1.2, "orange": 2.0, "red": 3.0},
         },
     ]
 
@@ -165,14 +166,14 @@ class Settings(BaseSettings):
     tide_port_bordeaux: str = "BORDEAUX"
     tide_port_libourne: str = "LIBOURNE"
 
-    # Risk thresholds
-    risk_rain_24h_yellow: float = 30.0  # mm
-    risk_rain_24h_orange: float = 50.0
-    risk_rain_24h_red: float = 80.0
+    # Risk thresholds (v2.4: lowered based on Feb 2024 analysis)
+    risk_rain_24h_yellow: float = 25.0  # mm (was 30)
+    risk_rain_24h_orange: float = 40.0  # (was 50)
+    risk_rain_24h_red: float = 60.0     # (was 80)
     risk_dordogne_level_yellow: float = 3.0  # m
-    risk_dordogne_level_orange: float = 4.0
-    risk_dordogne_level_red: float = 5.0
-    risk_tide_coef_high: int = 90
+    risk_dordogne_level_orange: float = 3.8  # (was 4.0)
+    risk_dordogne_level_red: float = 4.5     # (was 5.0)
+    risk_tide_coef_high: int = 85  # (was 90)
 
     # Frontend
     frontend_url: str = "http://localhost:3000"

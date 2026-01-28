@@ -446,10 +446,14 @@ async def get_realtime_data_at(timestamp: str):
     target_time = _to_naive(isoparse(timestamp))
     settings = get_settings()
 
-    # Fetch both snapshots in parallel (each uses asyncio.to_thread internally)
-    snapshot, snapshot_24h = await asyncio.gather(
+    # Fetch snapshots in parallel for different time windows:
+    # - snapshot: ±6h around target (river levels, current state)
+    # - snapshot_24h: 24h before target (rain accumulation)
+    # - snapshot_72h: 72h before target (sustained rain for flood risk)
+    snapshot, snapshot_24h, snapshot_72h = await asyncio.gather(
         query_historical_snapshot(target_time, window_hours=6),
         query_historical_snapshot(target_time - timedelta(hours=12), window_hours=12),
+        query_historical_snapshot(target_time - timedelta(hours=48), window_hours=36),
     )
 
     # === CACHE-THROUGH: Fetch from APIs if InfluxDB has no data ===
@@ -494,13 +498,24 @@ async def get_realtime_data_at(timestamp: str):
             stored = await write_river_levels_batch(all_levels)
             print(f"TimeMachine: stored {stored} river level points to InfluxDB")
 
-    # Check if we have rainfall data
-    has_rainfall_data = len(snapshot["rainfall"]) > 0 or len(snapshot_24h["rainfall"]) > 0
+    # Check if we have rainfall data in the critical 24h window before target_time
+    # Not just "any" data, but specifically for the time period we need
+    rain_in_24h_window = 0
+    for r in snapshot["rainfall"] + snapshot_24h["rainfall"]:
+        if r.get("field") == "precipitation_mm_h" and r.get("value") is not None:
+            try:
+                ts = _to_naive(isoparse(r.get("timestamp", "")))
+                hours_before = (target_time - ts).total_seconds() / 3600
+                if 0 <= hours_before <= 24:
+                    rain_in_24h_window += 1
+            except (ValueError, TypeError):
+                continue
 
-    if not has_rainfall_data:
-        print(f"TimeMachine: no InfluxDB rainfall data, fetching from Open-Meteo Archive...")
-        # Fetch from Open-Meteo Archive API
-        start = target_time - timedelta(hours=72)
+    # If we have less than 12 hours of rain data in the 24h window, fetch more
+    if rain_in_24h_window < 12:
+        print(f"TimeMachine: insufficient rainfall data ({rain_in_24h_window} pts in 24h window), fetching from Open-Meteo Archive...")
+        # Fetch from Open-Meteo Archive API for full 72h
+        start = target_time - timedelta(hours=80)  # Extra buffer
         end = target_time + timedelta(hours=6)
 
         try:
@@ -525,7 +540,7 @@ async def get_realtime_data_at(timestamp: str):
                 times = hourly.get("time", [])
                 precip = hourly.get("precipitation", [])
 
-                # Store to InfluxDB and update snapshot
+                # Store to InfluxDB and update snapshots
                 stored_count = 0
                 for i, time_str in enumerate(times):
                     if i < len(precip) and precip[i] is not None:
@@ -537,14 +552,19 @@ async def get_realtime_data_at(timestamp: str):
                             station_city="Moulin",
                         )
                         stored_count += 1
-                        # Add to snapshot for rainfall calculation
-                        snapshot_24h["rainfall"].append({
+                        # Add to appropriate snapshot for rainfall calculation
+                        hours_before = (target_time - ts).total_seconds() / 3600
+                        rain_record = {
                             "timestamp": ts.isoformat(),
                             "value": precip[i],
                             "field": "precipitation_mm_h",
                             "source": "open-meteo-archive",
                             "city": "Moulin",
-                        })
+                        }
+                        if hours_before <= 24:
+                            snapshot_24h["rainfall"].append(rain_record)
+                        elif hours_before <= 72:
+                            snapshot_72h["rainfall"].append(rain_record)
 
                 print(f"TimeMachine: stored {stored_count} rainfall points to InfluxDB")
 
@@ -692,9 +712,9 @@ async def get_realtime_data_at(timestamp: str):
     rain_24h_sum = 0.0
     rain_72h_sum = 0.0
 
-    # Collect all rainfall records from both windows (deduplicated by timestamp)
+    # Collect all rainfall records from all windows (deduplicated by timestamp)
     all_rain = {}
-    for r in snapshot_24h["rainfall"] + snapshot["rainfall"]:
+    for r in snapshot_72h["rainfall"] + snapshot_24h["rainfall"] + snapshot["rainfall"]:
         if r.get("field") == "precipitation_mm_h" and r.get("value") is not None:
             ts = r.get("timestamp", "")
             all_rain[ts] = r["value"]

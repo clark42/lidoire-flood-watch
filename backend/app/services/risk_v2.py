@@ -56,7 +56,11 @@ from app.models.schemas import (
 )
 
 
-def _normalize_score(value: float, thresholds: tuple[float, float, float]) -> float:
+def _normalize_score(
+    value: float,
+    thresholds: tuple[float, float, float],
+    exponential: bool = True,
+) -> float:
     """
     Normalize a value to 0-1 based on thresholds.
 
@@ -65,19 +69,30 @@ def _normalize_score(value: float, thresholds: tuple[float, float, float]) -> fl
     - 0.0-0.33: below yellow
     - 0.33-0.66: yellow to orange
     - 0.66-1.0: orange to red and above
+
+    If exponential=True, applies a power curve to make the score
+    increase faster as values approach critical thresholds.
+    This reflects the non-linear nature of flood risk.
     """
     yellow, orange, red = thresholds
 
     if value <= 0:
         return 0.0
     elif value < yellow:
-        return (value / yellow) * 0.33
+        linear = (value / yellow) * 0.33
     elif value < orange:
-        return 0.33 + ((value - yellow) / (orange - yellow)) * 0.33
+        linear = 0.33 + ((value - yellow) / (orange - yellow)) * 0.33
     elif value < red:
-        return 0.66 + ((value - orange) / (red - orange)) * 0.34
+        linear = 0.66 + ((value - orange) / (red - orange)) * 0.34
     else:
-        return 1.0
+        linear = 1.0
+
+    if exponential and linear > 0:
+        # Apply power curve: steeper increase at higher values
+        # score^0.7 makes high values contribute more
+        # e.g., 0.5 -> 0.62, 0.8 -> 0.86, 0.33 -> 0.48
+        return linear ** 0.7
+    return linear
 
 
 def _calculate_station_score(station: StationLevel) -> StationRiskScore:
@@ -223,51 +238,72 @@ def _calculate_conjunction_multiplier(
     tide_phase_score: float,
     tendency: Tendency,
     station_scores: list[StationRiskScore] | None = None,
+    rain_72h_score: float = 0.0,
 ) -> float:
     """
     Calculate conjunction multiplier for dangerous combinations.
 
-    When tide is high AND river is high AND rising, risk increases exponentially.
-    Also considers multi-station simultaneous elevation (Feb 2024 pattern).
-    Returns multiplier between 1.0 and 1.6.
+    When multiple risk factors align, danger increases exponentially.
+    v2.4: More aggressive multiplier based on Feb 2024 analysis.
+
+    Triggers:
+    - High river levels (>0.4 score)
+    - Rising tendency
+    - Multiple stations above yellow simultaneously
+    - Sustained rain (72h cumul > 0.4)
+    - High tide phase (when available)
+
+    Returns multiplier between 1.0 and 2.0.
     """
-    # Base multiplier
     multiplier = 1.0
 
-    # High tide + high river = danger
-    if tide_phase_score > 0.6 and river_score > 0.5:
+    # Rising river = increased risk
+    if tendency == Tendency.RISING:
+        if river_score > 0.5:
+            multiplier += 0.25  # Rising with elevated river
+        elif river_score > 0.3:
+            multiplier += 0.15  # Rising with moderate river
+
+    # High tide + elevated river (when tide data available)
+    if tide_phase_score > 0.5 and river_score > 0.4:
         multiplier += 0.2
 
-    # Add more if rising
-    if tendency == Tendency.RISING:
-        if tide_phase_score > 0.6 and river_score > 0.5:
-            multiplier += 0.2  # Rising during high tide with high river
-        elif river_score > 0.6:
-            multiplier += 0.1  # Rising with high river
+    # Sustained rain + elevated river = soil saturated, more runoff coming
+    if rain_72h_score > 0.4 and river_score > 0.4:
+        multiplier += 0.15
 
-    # Multi-station simultaneous elevation (v2.3)
-    # When most non-tidal stations are above yellow (score > 0.33),
-    # it signals a basin-wide flood event (Feb 2024 pattern).
+    # Multi-station simultaneous elevation (basin-wide flood signal)
     if station_scores:
         active_stations = [s for s in station_scores if s.weight > 0]
         if active_stations:
             above_yellow = sum(1 for s in active_stations if s.score > 0.33)
+            above_orange = sum(1 for s in active_stations if s.score > 0.5)
             ratio = above_yellow / len(active_stations)
-            if ratio >= 0.8:  # 80%+ stations above yellow
-                multiplier += 0.15
-            elif ratio >= 0.6:  # 60%+ stations above yellow
-                multiplier += 0.08
 
-    return min(multiplier, 1.6)
+            if ratio >= 0.7:  # 70%+ stations above yellow
+                multiplier += 0.20
+                if above_orange >= 2:  # Plus 2+ stations near orange
+                    multiplier += 0.15
+            elif ratio >= 0.5:  # 50%+ stations above yellow
+                multiplier += 0.10
+
+    return min(multiplier, 2.0)
 
 
 def _score_to_level(score: float) -> RiskLevel:
-    """Convert numerical score (0-100) to risk level."""
-    if score < 25:
+    """Convert numerical score (0-100) to risk level.
+
+    v2.4: Adjusted thresholds for earlier warnings based on Feb 2024 analysis.
+    - Green: < 20 (was 25)
+    - Yellow: 20-45 (was 25-50)
+    - Orange: 45-70 (was 50-75)
+    - Red: >= 70 (was 75)
+    """
+    if score < 20:
         return RiskLevel.GREEN
-    elif score < 50:
+    elif score < 45:
         return RiskLevel.YELLOW
-    elif score < 75:
+    elif score < 70:
         return RiskLevel.ORANGE
     else:
         return RiskLevel.RED
@@ -479,9 +515,9 @@ async def calculate_risk_score_v2(
     # Get primary station rate for raw value
     primary_rate = primary_station.rate_cm_per_hour if primary_station else 0.0
 
-    # Conjunction multiplier (v2.3: includes multi-station factor)
+    # Conjunction multiplier (v2.4: includes rain_72h and more aggressive triggers)
     conjunction_multiplier = _calculate_conjunction_multiplier(
-        river_score, tide_phase_score, primary_tendency, station_scores
+        river_score, tide_phase_score, primary_tendency, station_scores, rain_72h_score
     )
 
     # Video level score (if available)
