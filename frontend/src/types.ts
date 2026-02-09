@@ -221,10 +221,10 @@ export interface ForecastData {
   critical_periods: ForecastPoint[]
   summary: string
   data_sources: {
-    rain: string
-    tide: string
-    river: string
-    soil_saturation: number
+    rain: { status: string; source?: string; hours?: number; error?: string }
+    tide: { status: string; port?: string; error?: string }
+    river: { status: string; stations?: number; error?: string }
+    soil_wind: { status: string; error?: string }
   }
 }
 

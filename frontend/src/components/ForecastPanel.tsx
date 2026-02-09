@@ -273,10 +273,12 @@ export default function ForecastPanel({
 
       {/* Data sources footer */}
       <div className="px-4 pb-3 text-xs text-gray-400">
-        Sources: {data.data_sources.rain} | {data.data_sources.tide} | {data.data_sources.river}
-        {data.data_sources.soil_saturation > 1.1 && (
-          <span className="ml-2 text-amber-500">
-            Sol sature ({data.data_sources.soil_saturation.toFixed(2)}x)
+        Sources: {data.data_sources.rain?.source || data.data_sources.rain?.status || '?'}
+        {' | '}{data.data_sources.tide?.port || data.data_sources.tide?.status || '?'}
+        {' | '}{data.data_sources.river?.stations ? `${data.data_sources.river.stations} stations` : data.data_sources.river?.status || '?'}
+        {Object.values(data.data_sources).some(s => s?.status === 'error') && (
+          <span className="ml-2 text-red-400">
+            (sources degradees)
           </span>
         )}
       </div>
