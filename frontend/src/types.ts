@@ -287,15 +287,6 @@ export interface RealtimeData {
   nowcast_rain?: NowcastRainData
 }
 
-export interface TimelinePoint {
-  timestamp: string
-  tide_height_m: number | null
-  river_level_m: number | null
-  rainfall_mm_h: number | null
-  risk_score: number | null
-  video_level: number | null
-}
-
 export interface FloodEpisode {
   id: number | null
   start_time: string
@@ -305,14 +296,6 @@ export interface FloodEpisode {
   description: string | null
   notes: string | null
   created_at: string | null
-}
-
-export interface TimelineData {
-  start: string
-  end: string
-  resolution: string
-  points: TimelinePoint[]
-  episodes: FloodEpisode[]
 }
 
 export interface EpisodeContext {
@@ -380,21 +363,6 @@ export interface AvailableSources {
   has_infoclimat: boolean
   has_wind: boolean
   has_soil: boolean
-}
-
-export interface RainfallTimelineSeries {
-  name: string
-  position: string
-  color: string
-  unit: string
-  data: TimelineDataPoint[]
-}
-
-export interface RainfallTimelineData {
-  start: string
-  end: string
-  resolution: string
-  series: Record<string, RainfallTimelineSeries>
 }
 
 // Basin Rainfall (aggregated Lidoire basin)

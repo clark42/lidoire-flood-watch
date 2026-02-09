@@ -159,11 +159,11 @@ class RiskWeights(BaseModel):
     """
     river: float = 0.28
     rain_24h: float = 0.10
-    rain_72h: float = 0.12
+    rain_72h: float = 0.13
     rain_7d: float = 0.05
     tide: float = 0.05
     tide_phase: float = 0.05
-    tendency: float = 0.12
+    tendency: float = 0.13
     momentum: float = 0.08  # Multi-station rising simultaneously
     wind_west: float = 0.03
     soil_sat: float = 0.05

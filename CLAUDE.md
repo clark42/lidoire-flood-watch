@@ -99,7 +99,7 @@ src/
     └── DataSourcesStatus.tsx    # Statut des sources de donnees
 ```
 
-## Modele de risque v3.0 (calibre sur 14 episodes annotes)
+## Modele de risque v3.2 (calibre sur 14 episodes annotes)
 
 Le score de risque (0-100) est calcule dans `backend/app/services/risk_v2.py`.
 
@@ -111,9 +111,9 @@ Le signal le plus fort est la montee simultanee de plusieurs stations + pluie.
 |---------|-------|-------------|
 | Niveaux rivieres (multi-stations) | 28% | Moyenne ponderee, Libourne exclue |
 | Pluie 24h | 10% | Cumul precipitations |
-| Pluie 72h | 12% | Saturation 3 jours |
+| Pluie 72h | 13% | Saturation 3 jours |
 | Pluie 7j | 5% | Saturation longue duree |
-| Tendance | 12% | Vitesse de montee cm/h |
+| Tendance | 13% | Vitesse de montee cm/h |
 | Momentum | 8% | Stations en hausse simultanee |
 | Coefficient maree | 5% | Coefficient maree |
 | Phase maree | 5% | Proximite pleine mer |
@@ -123,7 +123,7 @@ Le signal le plus fort est la montee simultanee de plusieurs stations + pluie.
 
 **Multiplicateur de conjonction** (1.0 a 2.5x) : "crue active" = plusieurs stations montent + pluie.
 **Amortisseur de stabilite** (0.65 a 1.0x) : riviere haute mais stable/baisse → score reduit.
-**Gate momentum** : niveau riviere < 0.30m → momentum × 0.2.
+**Gate momentum** : score riviere < 0.30 → momentum × 0.2 (score normalise, pas metres).
 
 ### Previsions 7 jours
 
@@ -138,13 +138,13 @@ Service dans `backend/app/services/forecast.py` :
 
 | Station | Code Hub'Eau | Riviere | Distance | Delai | Poids |
 |---------|-------------|---------|----------|-------|-------|
-| Libourne | P577001001 | Dordogne | 19km | 0h | 0% (exclue: maree) |
-| Pessac-sur-Dordogne | P555001001 | Dordogne | 25km | 4h | 35% (primaire) |
-| Bergerac | P514001001 | Dordogne | 60km | 8h | 10% |
-| Abzac | P726151001 | Isle | 10km | 2h | 15% |
-| Perigueux | P704151001 | Isle | 65km | 12h | 5% |
-| Coutras | P846251001 | Dronne | 21km | 3h | 10% |
-| Riberac | P816251001 | Dronne | 50km | 10h | 5% |
+| Libourne | P577001001 | Dordogne | 5km | 0h | 0% (exclue: maree) |
+| Pessac-sur-Dordogne | P555001001 | Dordogne | 30km | 4h | 30% (primaire) |
+| Bergerac | P514001001 | Dordogne | 60km | 8h | 15% |
+| Abzac | P726151001 | Isle | 15km | 2h | 25% |
+| Perigueux | P704151001 | Isle | 80km | 12h | 10% |
+| Coutras | P846251001 | Dronne | 25km | 3h | 15% |
+| Riberac | P816251001 | Dronne | 70km | 10h | 5% |
 
 ## Sources de donnees
 

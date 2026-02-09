@@ -175,11 +175,11 @@ async def simulate_v3_score(peak_time: datetime) -> dict:
     weights = {
         "river": 0.28,
         "rain_24h": 0.10,
-        "rain_72h": 0.12,
+        "rain_72h": 0.13,
         "rain_7d": 0.05,
         "tide": 0.05,
         "tide_phase": 0.05,
-        "tendency": 0.12,
+        "tendency": 0.13,
         "momentum": 0.08,
         "wind_west": 0.03,
         "soil_sat": 0.05,

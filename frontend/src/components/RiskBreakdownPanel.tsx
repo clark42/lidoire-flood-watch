@@ -148,15 +148,16 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
 
   const { factors } = risk
   const weights = factors.weights || {
-    river: 0.45,
+    river: 0.28,
     rain_24h: 0.10,
-    rain_72h: 0.07,
-    rain_7d: 0.03,
-    tide: 0.10,
-    tide_phase: 0.08,
-    tendency: 0.05,
+    rain_72h: 0.13,
+    rain_7d: 0.05,
+    tide: 0.05,
+    tide_phase: 0.05,
+    tendency: 0.13,
+    momentum: 0.08,
     wind_west: 0.03,
-    soil_sat: 0.04,
+    soil_sat: 0.05,
     video: 0.05,
   }
 

@@ -12,7 +12,6 @@ import type {
   ForecastData,
   AvailableSources,
   UnifiedTimelineData,
-  RainfallTimelineData,
   BasinRainfallData,
 } from './types'
 
@@ -87,10 +86,6 @@ export async function getCurrentRisk(): Promise<RiskScore> {
   return fetchJson<RiskScore>(`${API_BASE}/risk`)
 }
 
-export async function getRiskForecast(hours: number = 72): Promise<any> {
-  return fetchJson<any>(`${API_BASE}/risk/forecast?hours=${hours}`)
-}
-
 export async function simulateRisk(params: {
   rain_24h_mm: number
   rain_72h_mm: number
@@ -146,23 +141,6 @@ export async function getForecast(hours: number = 168): Promise<ForecastData> {
 // Timeline Sources
 export async function getAvailableSources(): Promise<AvailableSources> {
   return fetchJson<AvailableSources>(`${API_BASE}/timeline/sources`)
-}
-
-// Rainfall Timeline
-export async function getRainfallTimeline(
-  start?: string,
-  end?: string,
-  cities?: string[],
-  sources?: string[],
-  resolution: string = '1h'
-): Promise<RainfallTimelineData> {
-  const params = new URLSearchParams({ resolution })
-  if (start) params.set('start', start)
-  if (end) params.set('end', end)
-  if (cities && cities.length > 0) params.set('cities', cities.join(','))
-  if (sources && sources.length > 0) params.set('sources', sources.join(','))
-
-  return fetchJson<RainfallTimelineData>(`${API_BASE}/timeline/rainfall?${params}`)
 }
 
 // Unified Timeline (River + Rainfall + Tide + Risk)
@@ -228,7 +206,10 @@ export async function updateEpisode(
 
 // Delete episode
 export async function deleteEpisode(id: number): Promise<void> {
-  await fetch(`${API_BASE}/episodes/${id}`, { method: 'DELETE' })
+  const response = await fetch(`${API_BASE}/episodes/${id}`, { method: 'DELETE' })
+  if (!response.ok) {
+    throw new Error(`API error: ${response.status} ${response.statusText}`)
+  }
 }
 
 // Confirm or reject episode (for model calibration)

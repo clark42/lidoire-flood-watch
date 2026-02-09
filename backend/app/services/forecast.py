@@ -15,6 +15,7 @@ v2.0 (Jan 2026): Updated to v3.0 model weights with momentum/dampener.
 """
 
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -24,6 +25,9 @@ from app.models.schemas import (
     TideType,
     WeatherForecast,
 )
+from app.services.risk_v2 import _normalize_score, _score_to_level
+
+logger = logging.getLogger(__name__)
 
 
 async def _get_redis_client():
@@ -47,7 +51,7 @@ async def _get_cached_forecast(hours: int) -> Optional[dict]:
             if age_minutes < 30:
                 return data
     except Exception as e:
-        print(f"Redis cache read error: {e}")
+        logger.warning("Redis cache read error: %s", e)
     return None
 
 
@@ -62,43 +66,8 @@ async def _set_cached_forecast(hours: int, data: dict) -> None:
         )
         await client.aclose()
     except Exception as e:
-        print(f"Redis cache write error: {e}")
+        logger.warning("Redis cache write error: %s", e)
 
-
-def _score_to_level(score: float) -> RiskLevel:
-    """Convert numerical score (0-100) to risk level (v2.5 thresholds)."""
-    if score < 15:
-        return RiskLevel.GREEN
-    elif score < 35:
-        return RiskLevel.YELLOW
-    elif score < 55:
-        return RiskLevel.ORANGE
-    else:
-        return RiskLevel.RED
-
-
-def _normalize_score(
-    value: float,
-    thresholds: tuple[float, float, float],
-    exponential: bool = True,
-) -> float:
-    """Normalize a value to 0-1 based on thresholds (same as risk_v2)."""
-    yellow, orange, red = thresholds
-
-    if value <= 0:
-        return 0.0
-    elif value < yellow:
-        linear = (value / yellow) * 0.33
-    elif value < orange:
-        linear = 0.33 + ((value - yellow) / (orange - yellow)) * 0.33
-    elif value < red:
-        linear = 0.66 + ((value - orange) / (red - orange)) * 0.34
-    else:
-        linear = 1.0
-
-    if exponential and linear > 0:
-        return linear ** 0.6
-    return linear
 
 
 async def get_risk_forecast_v2(hours: int = 168) -> dict:
@@ -124,7 +93,7 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
     # Check cache first
     cached = await _get_cached_forecast(hours)
     if cached:
-        print("forecast: from Redis cache")
+        logger.info("forecast: from Redis cache")
         return cached
 
     from app.services.collectors.tide import get_current_tide_data
@@ -142,15 +111,55 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
 
     settings = get_settings()
     now = datetime.utcnow()
+    forecast_days = min((hours // 24) + 1, 16)
 
-    # Fetch all data in parallel
-    import asyncio
-    tide_data, rain_forecast, soil_wind, stations_data = await asyncio.gather(
-        get_current_tide_data(),
-        fetch_open_meteo_forecast(settings.moulin_lat, settings.moulin_lon),
-        fetch_soil_and_wind(settings.moulin_lat, settings.moulin_lon),
-        get_multi_station_data(),
-    )
+    # Track data source status for response
+    data_sources = {}
+
+    # Fetch each data source independently for graceful degradation
+    tide_data = None
+    try:
+        tide_data = await get_current_tide_data()
+        data_sources["tide"] = {"status": "ok", "port": tide_data.port}
+    except Exception as e:
+        logger.error("Forecast: tide data fetch failed: %s", e)
+        data_sources["tide"] = {"status": "error", "error": str(e)}
+
+    rain_forecast = []
+    try:
+        rain_forecast = await fetch_open_meteo_forecast(
+            settings.moulin_lat, settings.moulin_lon, forecast_days
+        )
+        data_sources["rain"] = {
+            "status": "ok" if rain_forecast else "empty",
+            "source": "Open-Meteo (AROME/ARPEGE)",
+            "hours": len(rain_forecast),
+        }
+    except Exception as e:
+        logger.error("Forecast: rain forecast fetch failed: %s", e)
+        data_sources["rain"] = {"status": "error", "error": str(e)}
+
+    soil_wind = {}
+    try:
+        soil_wind = await fetch_soil_and_wind(
+            settings.moulin_lat, settings.moulin_lon
+        )
+        data_sources["soil_wind"] = {"status": "ok"}
+    except Exception as e:
+        logger.error("Forecast: soil/wind fetch failed: %s", e)
+        data_sources["soil_wind"] = {"status": "error", "error": str(e)}
+
+    stations_data = None
+    try:
+        stations_data = await get_multi_station_data()
+        n_stations = len(stations_data.stations) if stations_data else 0
+        data_sources["river"] = {
+            "status": "ok" if n_stations > 0 else "empty",
+            "stations": n_stations,
+        }
+    except Exception as e:
+        logger.error("Forecast: station data fetch failed: %s", e)
+        data_sources["river"] = {"status": "error", "error": str(e)}
 
     # Build rainfall lookup by hour
     rain_by_hour: dict[int, float] = {}
@@ -159,26 +168,28 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
         if 0 <= hours_ahead < hours:
             rain_by_hour[hours_ahead] = fc.precipitation_mm
 
-    # Build tide events lookup
+    # Build tide events lookup (safe even if tide_data is None)
     tide_events = []
-    for t in tide_data.tides:
-        hours_ahead = (t.timestamp - now).total_seconds() / 3600
-        if -12 <= hours_ahead <= hours + 12:
-            tide_events.append({
-                "timestamp": t.timestamp,
-                "type": t.tide_type.value if t.tide_type else None,
-                "coefficient": t.coefficient,
-                "height_m": t.height_m,
-            })
-    tide_events.sort(key=lambda t: t["timestamp"])
+    if tide_data and tide_data.tides:
+        for t in tide_data.tides:
+            hours_ahead = (t.timestamp - now).total_seconds() / 3600
+            if -12 <= hours_ahead <= hours + 12:
+                tide_events.append({
+                    "timestamp": t.timestamp,
+                    "type": t.tide_type.value if t.tide_type else None,
+                    "coefficient": t.coefficient,
+                    "height_m": t.height_m,
+                })
+        tide_events.sort(key=lambda t: t["timestamp"])
 
     # Get current station levels and rates for projection
     current_levels: dict[str, float] = {}
     current_rates: dict[str, float] = {}
-    for station in stations_data.stations:
-        if station.weight > 0:
-            current_levels[station.station_id] = station.current_level.height_m
-            current_rates[station.station_id] = station.rate_cm_per_hour
+    if stations_data:
+        for station in stations_data.stations:
+            if station.weight > 0:
+                current_levels[station.station_id] = station.current_level.height_m
+                current_rates[station.station_id] = station.rate_cm_per_hour
 
     # Compute current momentum (number of rising stations)
     n_rising = sum(1 for r in current_rates.values() if r > 1.0)
@@ -191,11 +202,11 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
     weights = {
         "river": 0.28,
         "rain_24h": 0.10,
-        "rain_72h": 0.12,
+        "rain_72h": 0.13,
         "rain_7d": 0.05,
         "tide": 0.05,
         "tide_phase": 0.05,
-        "tendency": 0.12,
+        "tendency": 0.13,
         "momentum": 0.08,
         "wind_west": 0.03,
         "soil_sat": 0.05,
@@ -383,6 +394,11 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
     if orange_hours > 0:
         summary += f" - {orange_hours}h en orange"
 
+    # Note degraded sources in summary
+    failed_sources = [k for k, v in data_sources.items() if v.get("status") == "error"]
+    if failed_sources:
+        summary += f" (sources indisponibles: {', '.join(failed_sources)})"
+
     # Duration label
     if hours >= 168:
         duration_label = "7 jours"
@@ -400,12 +416,7 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
         "max_level": max_level.value,
         "critical_periods": critical,
         "summary": summary,
-        "data_sources": {
-            "rain": "Open-Meteo (AROME/ARPEGE)",
-            "tide": tide_data.port,
-            "river": f"{len(current_levels)} stations",
-            "soil_saturation": round(saturation, 2),
-        },
+        "data_sources": data_sources,
     }
 
     # Cache result
@@ -423,4 +434,4 @@ async def invalidate_forecast_cache() -> None:
             await client.delete(*keys)
         await client.aclose()
     except Exception as e:
-        print(f"Redis cache invalidate error: {e}")
+        logger.warning("Redis cache invalidate error: %s", e)

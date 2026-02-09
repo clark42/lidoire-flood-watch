@@ -731,11 +731,11 @@ async def calculate_risk_score_v2(
     weights = {
         "river": 0.28,       # Reduced: level alone doesn't predict moulin flooding
         "rain_24h": 0.10,    # Increased: recent rain = water arriving
-        "rain_72h": 0.12,    # Sustained rain matters
+        "rain_72h": 0.13,    # Sustained rain matters (saturation signal)
         "rain_7d": 0.05,
         "tide": 0.05,
         "tide_phase": 0.05,
-        "tendency": 0.12,    # Increased: rising = danger signal
+        "tendency": 0.13,    # Increased: rising = danger signal
         "momentum": 0.08,    # NEW: multi-station rising simultaneously
         "wind_west": 0.03,
         "soil_sat": 0.05,
@@ -927,21 +927,27 @@ async def calculate_risk_from_values(
 
     video_score = (video_level / 100) if video_level is not None else None
 
-    # Unified weights (v3.0 - same as calculate_risk_score_v2)
+    # Canonical weights (v3.2 - same as calculate_risk_score_v2).
+    # Subtract unavailable factors from total_weight so remaining
+    # factors maintain their relative proportions.
     weights = {
         "river": 0.28,
         "rain_24h": 0.10,
-        "rain_72h": 0.12,
-        "rain_7d": 0.0,  # Not available in simple values mode
+        "rain_72h": 0.13,
+        "rain_7d": 0.05,
         "tide": 0.05,
         "tide_phase": 0.05,
-        "tendency": 0.12,
+        "tendency": 0.13,
         "momentum": 0.08,
-        "wind_west": 0.0,  # Not available in simple values mode
-        "soil_sat": 0.0,   # Not available in simple values mode
+        "wind_west": 0.03,
+        "soil_sat": 0.05,
         "video": 0.05,
     }
-    total_weight = sum(weights.values()) - (weights["video"] if video_score is None else 0)
+    # Factors not available in backfill/simulation mode
+    unavailable = {"rain_7d", "wind_west", "soil_sat"}
+    if video_score is None:
+        unavailable.add("video")
+    total_weight = sum(w for k, w in weights.items() if k not in unavailable)
 
     weighted_score = (
         river_score * weights["river"] +

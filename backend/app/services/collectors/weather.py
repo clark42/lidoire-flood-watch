@@ -11,6 +11,7 @@ Includes:
 - Soil moisture (for saturation factor)
 """
 
+import asyncio
 import httpx
 from datetime import datetime, timedelta
 from typing import Optional
@@ -22,6 +23,14 @@ from app.models.schemas import WeatherForecast, RainfallObservation, RainfallSum
 OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/meteofrance"
 OPEN_METEO_HISTORICAL = "https://archive-api.open-meteo.com/v1/archive"
 OPEN_METEO_CURRENT = "https://api.open-meteo.com/v1/forecast"
+
+# Multi-model forecast endpoints (for ensemble averaging)
+OPEN_METEO_MODELS = {
+    "meteofrance": "https://api.open-meteo.com/v1/meteofrance",  # AROME/ARPEGE - best for France
+    "ecmwf": "https://api.open-meteo.com/v1/ecmwf",  # European model - very reliable
+    "gfs": "https://api.open-meteo.com/v1/gfs",  # US model - good for 10+ days
+    "best_match": "https://api.open-meteo.com/v1/forecast",  # Open-Meteo best match
+}
 
 # Cache
 _weather_cache: dict = {}
@@ -35,31 +44,63 @@ SOIL_MOISTURE_WET = 0.35  # Wet (factor ~1.3)
 SOIL_MOISTURE_SATURATED = 0.45  # Saturated (factor 1.5)
 
 
-async def fetch_open_meteo_forecast(lat: float, lon: float) -> list[WeatherForecast]:
+async def fetch_open_meteo_forecast(lat: float, lon: float, forecast_days: int = 14) -> list[WeatherForecast]:
     """
-    Fetch weather forecast from Open-Meteo.
+    Fetch weather forecast from Open-Meteo with automatic model blending.
 
-    Uses the Météo-France model (AROME/ARPEGE) for best accuracy in France.
-    Includes wind direction for surge calculation.
+    Uses Météo-France (AROME/ARPEGE) for days 0-4 (best accuracy in France),
+    then blends in ECMWF for days 5+ where Météo-France has no data.
+
+    Args:
+        lat: Latitude
+        lon: Longitude
+        forecast_days: Number of days to forecast (default 14, max 16)
     """
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(
-                OPEN_METEO_FORECAST,
-                params={
-                    "latitude": lat,
-                    "longitude": lon,
-                    "hourly": "precipitation,rain,temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m",
-                    "forecast_days": 7,
-                    "timezone": "Europe/Paris",
-                },
-                timeout=30.0,
+            # Fetch both Météo-France (short range, high accuracy) and ECMWF (long range)
+            mf_response, ecmwf_response = await asyncio.gather(
+                client.get(
+                    OPEN_METEO_FORECAST,  # Météo-France
+                    params={
+                        "latitude": lat,
+                        "longitude": lon,
+                        "hourly": "precipitation,rain,temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m",
+                        "forecast_days": min(forecast_days, 16),
+                        "timezone": "Europe/Paris",
+                    },
+                    timeout=30.0,
+                ),
+                client.get(
+                    OPEN_METEO_MODELS["ecmwf"],  # ECMWF for long range
+                    params={
+                        "latitude": lat,
+                        "longitude": lon,
+                        "hourly": "precipitation,temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m",
+                        "forecast_days": min(forecast_days, 16),
+                        "timezone": "Europe/Paris",
+                    },
+                    timeout=30.0,
+                ),
             )
-            response.raise_for_status()
-            data = response.json()
+            mf_response.raise_for_status()
+            ecmwf_response.raise_for_status()
+
+            mf_data = mf_response.json()
+            ecmwf_data = ecmwf_response.json()
+
+            # Build ECMWF lookup for fallback
+            ecmwf_hourly = ecmwf_data.get("hourly", {})
+            ecmwf_times = ecmwf_hourly.get("time", [])
+            ecmwf_precip = ecmwf_hourly.get("precipitation", [])
+            ecmwf_lookup = {
+                ecmwf_times[i]: ecmwf_precip[i]
+                for i in range(len(ecmwf_times))
+                if i < len(ecmwf_precip) and ecmwf_precip[i] is not None
+            }
 
             forecasts = []
-            hourly = data.get("hourly", {})
+            hourly = mf_data.get("hourly", {})
             times = hourly.get("time", [])
             precip = hourly.get("precipitation", [])
             rain = hourly.get("rain", [])
@@ -70,12 +111,18 @@ async def fetch_open_meteo_forecast(lat: float, lon: float) -> list[WeatherForec
 
             for i, time_str in enumerate(times):
                 try:
+                    # Use Météo-France if available, otherwise ECMWF
+                    mf_precip = precip[i] if i < len(precip) else None
+                    if mf_precip is None:
+                        # Fallback to ECMWF
+                        mf_precip = ecmwf_lookup.get(time_str, 0)
+
                     forecasts.append(
                         WeatherForecast(
                             timestamp=datetime.fromisoformat(time_str),
                             point_id="moulin",
                             point_name="Moulin de la Lidoire",
-                            precipitation_mm=precip[i] if i < len(precip) else 0,
+                            precipitation_mm=mf_precip if mf_precip is not None else 0,
                             temperature_c=temp[i] if i < len(temp) else None,
                             humidity_percent=humidity[i] if i < len(humidity) else None,
                             wind_speed_kmh=wind[i] if i < len(wind) else None,
@@ -90,6 +137,122 @@ async def fetch_open_meteo_forecast(lat: float, lon: float) -> list[WeatherForec
     except Exception as e:
         print(f"Error fetching Open-Meteo forecast: {e}")
         return []
+
+
+async def fetch_multi_model_forecast(
+    lat: float, lon: float, forecast_days: int = 14
+) -> dict[str, list[dict]]:
+    """
+    Fetch precipitation forecasts from multiple models and return ensemble data.
+
+    Returns daily precipitation forecasts from:
+    - Open-Meteo Météo-France (AROME/ARPEGE)
+    - Open-Meteo ECMWF (European model)
+    - Open-Meteo GFS (US model)
+    - Open-Meteo Best Match (auto-select)
+    - Météo Agricole (scraped, 10-day)
+
+    Returns:
+        Dict with:
+        - models: dict of model_name -> list of {date, rain_mm}
+        - ensemble: list of {date, rain_mm, min_mm, max_mm, sources}
+    """
+    import asyncio
+    from statistics import median
+
+    async def fetch_model(model_name: str, url: str) -> tuple[str, list[dict]]:
+        """Fetch daily precipitation from a single Open-Meteo model."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    url,
+                    params={
+                        "latitude": lat,
+                        "longitude": lon,
+                        "daily": "precipitation_sum",
+                        "forecast_days": min(forecast_days, 16),
+                        "timezone": "Europe/Paris",
+                    },
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                daily = data.get("daily", {})
+                dates = daily.get("time", [])
+                precip = daily.get("precipitation_sum", [])
+
+                return model_name, [
+                    {"date": dates[i], "rain_mm": precip[i] if i < len(precip) else 0}
+                    for i in range(len(dates))
+                ]
+        except Exception as e:
+            print(f"Error fetching {model_name} forecast: {e}")
+            return model_name, []
+
+    # Fetch all Open-Meteo models in parallel
+    tasks = [
+        fetch_model(name, url)
+        for name, url in OPEN_METEO_MODELS.items()
+    ]
+    results = await asyncio.gather(*tasks)
+
+    models = {name: data for name, data in results if data}
+
+    # Try to add Météo Agricole
+    try:
+        from app.services.collectors.meteo_agricole import fetch_meteo_agricole
+        ma_data = await fetch_meteo_agricole()
+        if ma_data and ma_data.rain_forecast_7d_mm > 0:
+            # Météo Agricole gives total 7d, we distribute it roughly
+            # based on probability pattern (more rain in middle of period)
+            models["meteo_agricole"] = [{
+                "date": "7d_total",
+                "rain_mm": ma_data.rain_forecast_7d_mm,
+                "rain_min_mm": ma_data.rain_min_mm,
+                "rain_max_mm": ma_data.rain_max_mm,
+            }]
+    except Exception as e:
+        print(f"Error fetching Meteo Agricole for ensemble: {e}")
+
+    # Build ensemble (average across models for each day)
+    all_dates = set()
+    for model_data in models.values():
+        for point in model_data:
+            if point.get("date") and point["date"] != "7d_total":
+                all_dates.add(point["date"])
+
+    ensemble = []
+    for date in sorted(all_dates):
+        values = []
+        sources = []
+        for model_name, model_data in models.items():
+            if model_name == "meteo_agricole":
+                continue  # Skip, different format
+            for point in model_data:
+                if point.get("date") == date:
+                    val = point.get("rain_mm")
+                    if val is not None:
+                        values.append(val)
+                        sources.append(model_name)
+                    break
+
+        if values:
+            ensemble.append({
+                "date": date,
+                "rain_mm": round(sum(values) / len(values), 1),  # Mean
+                "rain_median_mm": round(median(values), 1) if len(values) >= 3 else None,
+                "rain_min_mm": round(min(values), 1),
+                "rain_max_mm": round(max(values), 1),
+                "sources": sources,
+                "n_sources": len(sources),
+            })
+
+    return {
+        "models": models,
+        "ensemble": ensemble,
+        "generated_at": datetime.utcnow().isoformat(),
+    }
 
 
 async def fetch_soil_and_wind(lat: float, lon: float) -> dict:
