@@ -14,6 +14,7 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { getStatus, getSourcesDetail, simulateRisk } from '../api'
+import ApiKeyPanel from '../components/ApiKeyPanel'
 
 export default function Configuration() {
   const [status, setStatus] = useState<any>(null)
@@ -76,6 +77,8 @@ export default function Configuration() {
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-bold">Configuration</h2>
+
+      <ApiKeyPanel />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Status */}
