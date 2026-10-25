@@ -6,13 +6,15 @@ import os
 import secrets
 import tempfile
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Security, status
 from fastapi.responses import RedirectResponse
 
+from app.api.deps import api_key_header, api_key_matches
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,11 @@ TOKEN_STORAGE_PATH = Path("/app/data/netatmo_tokens.json")
 
 # In-memory state for CSRF protection
 _oauth_states: dict[str, datetime] = {}
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _load_tokens() -> dict:
@@ -84,8 +91,8 @@ def update_netatmo_tokens(access_token: str, refresh_token: str, expires_in: int
     tokens = {
         "access_token": access_token,
         "refresh_token": refresh_token,
-        "expires_at": (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat(),
-        "updated_at": datetime.utcnow().isoformat(),
+        "expires_at": (_utcnow() + timedelta(seconds=expires_in)).isoformat(),
+        "updated_at": _utcnow().isoformat(),
     }
     _save_tokens(tokens)
 
@@ -100,17 +107,52 @@ def _get_callback_url(settings) -> str:
     return f"{settings.frontend_url.rstrip('/')}/api/auth/netatmo/callback"
 
 
+def _require_oauth_start_key(provided: Optional[str]) -> None:
+    """Gate the OAuth start on ``settings.api_key`` (no-op when it is unset)."""
+    expected = get_settings().api_key
+    if not expected:
+        return  # dev mode, same rule as the write-protection dependency
+    if not provided:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing api_key query parameter",
+        )
+    if not api_key_matches(provided, expected):
+        logger.warning("Rejected Netatmo OAuth start: invalid API key")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+        )
+
+
 @router.get("/netatmo")
-async def netatmo_auth_start():
+async def netatmo_auth_start(
+    api_key: Optional[str] = Query(
+        None,
+        description="Required when API_KEY is configured (same value as the X-API-Key header).",
+    ),
+    header_key: Optional[str] = Security(api_key_header),
+):
     """
     Start Netatmo OAuth2 authorization flow.
 
     Redirects the user to Netatmo to authorize access to weather station data.
     After authorization, Netatmo will redirect back to /api/auth/netatmo/callback.
 
+    Access control: linking a Netatmo account replaces the stored tokens, so
+    when ``API_KEY`` is configured this endpoint requires the key, passed as
+    ``?api_key=<API_KEY>`` (it is a plain browser navigation, which cannot
+    carry the ``X-API-Key`` header; the header is accepted too, e.g. for
+    curl). The key is compared in constant time; a missing or wrong key gives
+    401. Without ``API_KEY`` (dev mode) the endpoint stays open. The callback
+    stays public: it only accepts a ``state`` issued by this endpoint.
+    Note that a key in a URL can end up in proxy access logs and browser
+    history: rotate it if such logs are shared.
+
     IMPORTANT: Register the callback URL in your Netatmo app at dev.netatmo.com:
     http://localhost:3000/api/auth/netatmo/callback
     """
+    _require_oauth_start_key(api_key or header_key)
     settings = get_settings()
 
     if not settings.netatmo_client_id:
@@ -121,10 +163,10 @@ async def netatmo_auth_start():
 
     # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = datetime.utcnow()
+    _oauth_states[state] = _utcnow()
 
     # Clean old states (older than 10 minutes)
-    cutoff = datetime.utcnow() - timedelta(minutes=10)
+    cutoff = _utcnow() - timedelta(minutes=10)
     for old_state in [s for s, t in _oauth_states.items() if t < cutoff]:
         del _oauth_states[old_state]
 
@@ -254,7 +296,7 @@ async def netatmo_auth_status():
     if expires_at:
         try:
             expiry = datetime.fromisoformat(expires_at)
-            is_expired = expiry < datetime.utcnow()
+            is_expired = expiry < _utcnow()
         except (TypeError, ValueError):
             is_expired = True
     else:
