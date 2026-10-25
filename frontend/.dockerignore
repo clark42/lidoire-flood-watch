@@ -1,0 +1,14 @@
+# node_modules must be installed inside the image (Linux binaries for
+# esbuild/rollup), never copied from the host.
+node_modules/
+dist/
+.env
+.env.*
+.vite/
+coverage/
+*.log
+.git
+.gitignore
+.dockerignore
+Dockerfile
+.DS_Store
