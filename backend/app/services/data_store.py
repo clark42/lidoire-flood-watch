@@ -6,13 +6,16 @@ external APIs and stored for future use.
 Episodes are persisted in PostgreSQL via SQLAlchemy async.
 """
 
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select, delete as sa_delete
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, delete as sa_delete, inspect as sa_inspect, text
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncConnection
 
 from app.models.schemas import (
+    EpisodeOutcome,
     FloodEpisode,
     FloodEpisodeCreate,
     TimelinePoint,
@@ -23,9 +26,95 @@ from app.models.schemas import (
 from app.models.orm import FloodEpisodeRow
 from app.db import get_session_factory
 from app.services import influx_client
+from app.services.labels import LEGACY_PREFIX_SOURCE, parse_legacy_outcome
+
+_episode_logger = logging.getLogger(__name__ + ".episodes")
+
+# Ground-truth columns added after the initial flood_episodes schema.
+# create_all() never alters existing tables, so they are added at startup.
+_EPISODE_GT_COLUMNS: dict[str, str] = {
+    "outcome": "VARCHAR(32)",
+    "observed_at": "TIMESTAMP",
+    "water_height_cm": "DOUBLE PRECISION",
+    "outcome_source": "VARCHAR(100)",
+}
+
+# Fields of FloodEpisodeCreate that are only updated when explicitly sent
+_EPISODE_GT_FIELDS = ("outcome", "observed_at", "water_height_cm", "outcome_source")
+
+
+def migrate_episode_schema_sync(conn: Connection) -> dict:
+    """Idempotent startup migration of the flood_episodes table.
+
+    1. Adds the ground-truth columns if missing
+       (``ALTER TABLE ... ADD COLUMN IF NOT EXISTS`` on PostgreSQL, column
+       inspection on other dialects).
+    2. Converts legacy ``[CONFIRMED: ...]`` notes prefixes into ``outcome``
+       for rows whose outcome is still null, and strips the prefixes.
+    """
+    table = FloodEpisodeRow.__tablename__
+    added: list[str] = []
+    if conn.dialect.name == "postgresql":
+        for col, col_type in _EPISODE_GT_COLUMNS.items():
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"))
+    else:
+        existing = {c["name"] for c in sa_inspect(conn).get_columns(table)}
+        for col, col_type in _EPISODE_GT_COLUMNS.items():
+            if col not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+                added.append(col)
+
+    rows = conn.execute(
+        text(f"SELECT id, notes FROM {table} WHERE outcome IS NULL AND notes LIKE :pattern"),
+        {"pattern": "%[CONFIRMED:%"},
+    ).all()
+    migrated = 0
+    update_stmt = text(
+        f"UPDATE {table} SET outcome = :outcome, notes = :notes, outcome_source = :source "
+        "WHERE id = :id"
+    )
+    for row_id, notes in rows:
+        outcome, cleaned = parse_legacy_outcome(notes)
+        if outcome is None:
+            continue
+        conn.execute(
+            update_stmt,
+            {"outcome": outcome.value, "notes": cleaned, "source": LEGACY_PREFIX_SOURCE, "id": row_id},
+        )
+        migrated += 1
+
+    if added or migrated:
+        _episode_logger.info(
+            "flood_episodes migration: columns added=%s, legacy outcomes migrated=%d",
+            added, migrated,
+        )
+    return {"columns_added": added, "legacy_rows_migrated": migrated}
+
+
+async def migrate_episode_schema(conn: AsyncConnection) -> dict:
+    """Async wrapper of migrate_episode_schema_sync (call after create_all)."""
+    return await conn.run_sync(migrate_episode_schema_sync)
+
+
+def _parse_outcome(value: Optional[str]) -> Optional[EpisodeOutcome]:
+    if value is None:
+        return None
+    try:
+        return EpisodeOutcome(value)
+    except ValueError:
+        _episode_logger.warning("Ignoring invalid episode outcome %r", value)
+        return None
 
 
 def _row_to_episode(row: FloodEpisodeRow) -> FloodEpisode:
+    outcome = _parse_outcome(getattr(row, "outcome", None))
+    outcome_source = getattr(row, "outcome_source", None)
+    notes = row.notes
+    if outcome is None:
+        # Fallback for rows not migrated yet: derive outcome from the legacy prefix
+        legacy_outcome, cleaned = parse_legacy_outcome(notes)
+        if legacy_outcome is not None:
+            outcome, notes, outcome_source = legacy_outcome, cleaned, LEGACY_PREFIX_SOURCE
     return FloodEpisode(
         id=row.id,
         start_time=row.start_time,
@@ -33,9 +122,26 @@ def _row_to_episode(row: FloodEpisodeRow) -> FloodEpisode:
         end_time=row.end_time,
         severity=row.severity,
         description=row.description,
-        notes=row.notes,
+        notes=notes,
         created_at=row.created_at,
+        outcome=outcome,
+        observed_at=getattr(row, "observed_at", None),
+        water_height_cm=getattr(row, "water_height_cm", None),
+        outcome_source=outcome_source,
     )
+
+
+def _apply_ground_truth(row: FloodEpisodeRow, episode: FloodEpisodeCreate, only_set: bool) -> None:
+    """Copy ground-truth fields to the row (only explicitly sent ones if only_set)."""
+    for field in _EPISODE_GT_FIELDS:
+        if only_set and field not in episode.model_fields_set:
+            continue
+        value = getattr(episode, field)
+        if field == "outcome" and value is not None:
+            value = EpisodeOutcome(value).value
+        elif field == "observed_at":
+            value = _strip_tz(value)
+        setattr(row, field, value)
 
 
 async def get_all_episodes(
@@ -83,6 +189,7 @@ async def create_episode(episode: FloodEpisodeCreate) -> FloodEpisode:
             notes=episode.notes,
             created_at=datetime.utcnow(),
         )
+        _apply_ground_truth(row, episode, only_set=False)
         session.add(row)
         await session.commit()
         await session.refresh(row)
@@ -90,7 +197,11 @@ async def create_episode(episode: FloodEpisodeCreate) -> FloodEpisode:
 
 
 async def update_episode(episode_id: int, episode: FloodEpisodeCreate) -> FloodEpisode:
-    """Update an existing episode."""
+    """Update an existing episode.
+
+    Ground-truth fields are only changed when present in the payload
+    (``model_fields_set``), so partial/legacy clients keep existing labels.
+    """
     factory = get_session_factory()
     async with factory() as session:
         row = await session.get(FloodEpisodeRow, episode_id)
@@ -102,6 +213,7 @@ async def update_episode(episode_id: int, episode: FloodEpisodeCreate) -> FloodE
         row.severity = episode.severity
         row.description = episode.description
         row.notes = episode.notes
+        _apply_ground_truth(row, episode, only_set=True)
         await session.commit()
         await session.refresh(row)
         return _row_to_episode(row)
