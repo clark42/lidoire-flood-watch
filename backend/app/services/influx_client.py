@@ -698,11 +698,22 @@ async def query_all_stations_rainfall_cumulative(
     Returns:
         Dict mapping city -> {rain_24h, rain_72h, rain_7d}
     """
-    unique_cities = list(dict.fromkeys(c for c in cities if c))
+    empty = {"rain_24h_mm": None, "rain_72h_mm": None, "rain_7d_mm": None}
+    validate_source(source)
+    # City names come from the Netatmo API: skip (don't fail on) unsafe ones.
+    unique_cities: list[str] = []
+    rejected: list[str] = []
+    for c in dict.fromkeys(c for c in cities if c):
+        try:
+            unique_cities.append(validate_tag_value(c, "city"))
+        except InvalidQueryParameter:
+            rejected.append(c)
+    if rejected:
+        logger.warning("Skipping cities with unsafe names for rain cumul: %r", rejected)
     if not unique_cities:
-        return {}
+        return {c: dict(empty) for c in rejected}
 
-    cache_key = (source, tuple(sorted(unique_cities)))
+    cache_key = (source, tuple(sorted(unique_cities + rejected)))
     cached = _rain_cumul_cache.get(cache_key)
     if cached is not None:
         return {city: dict(values) for city, values in cached.items()}
@@ -715,12 +726,9 @@ async def query_all_stations_rainfall_cumulative(
     except Exception as e:
         logger.error("Error querying cumulative rainfall for %s: %s", unique_cities, e)
         # Not cached: retry on next call.
-        return {
-            city: {"rain_24h_mm": None, "rain_72h_mm": None, "rain_7d_mm": None}
-            for city in unique_cities
-        }
+        return {city: dict(empty) for city in [*unique_cities, *rejected]}
 
-    results: dict[str, dict[str, Optional[float]]] = {}
+    results: dict[str, dict[str, Optional[float]]] = {c: dict(empty) for c in rejected}
     for city in unique_cities:
         city_samples = samples.get(city, [])
         results[city] = {
