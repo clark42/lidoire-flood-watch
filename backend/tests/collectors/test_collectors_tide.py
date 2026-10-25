@@ -23,11 +23,11 @@ def writes(monkeypatch):
 
     calls = []
 
-    async def fake_write_tide(**kwargs):
-        calls.append(kwargs)
-        return True
+    async def fake_write_points_batch(points, chunk_size=5000):
+        calls.extend(influx_client.point_as_dict(p) for p in points)
+        return len(points)
 
-    monkeypatch.setattr(influx_client, "write_tide", fake_write_tide)
+    monkeypatch.setattr(influx_client, "write_points_batch", fake_write_points_batch)
     return calls
 
 

@@ -51,7 +51,7 @@ _cache_expiry: Optional[datetime] = None
 
 def _utcnow() -> datetime:
     """Naive UTC now (module-level so tests can freeze time)."""
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _to_naive_utc(dt: datetime) -> datetime:
@@ -297,24 +297,23 @@ async def get_current_tide_data() -> TideForecast:
 
 
 async def store_tides_to_influx(tides: list[TideData]) -> int:
-    """Store tide data to InfluxDB. Estimated tides are always skipped."""
+    """Store tide data to InfluxDB (one batched write). Estimated tides are always skipped."""
     from app.services import influx_client
 
-    stored = 0
-    for tide in tides:
-        if tide.source == SOURCE_ESTIMATED:
-            continue
-        success = await influx_client.write_tide(
+    points = [
+        influx_client.make_tide_point(
             port=tide.port,
             height_m=tide.height_m,
             timestamp=tide.timestamp,
             tide_type=tide.tide_type.value if tide.tide_type else None,
             coefficient=tide.coefficient,
         )
-        if success:
-            stored += 1
-
-    return stored
+        for tide in tides
+        if tide.source != SOURCE_ESTIMATED
+    ]
+    if not points:
+        return 0
+    return await influx_client.write_points_batch(points)
 
 
 async def collect_and_store_tides():
@@ -367,17 +366,16 @@ async def fetch_and_store_tides_range(start: datetime, end: datetime) -> int:
                 logger.info("No tide data from Open-Meteo Marine for %s -> %s", start_str, end_str)
                 return 0
 
-            # Store all hourly height points for continuous timeline
-            stored = 0
-            for t, h in zip(times, levels):
-                if h is not None:
-                    success = await influx_client.write_tide(
-                        port="BORDEAUX",
-                        height_m=h,
-                        timestamp=datetime.fromisoformat(t),
-                    )
-                    if success:
-                        stored += 1
+            # Store all hourly height points for continuous timeline (one batch)
+            stored = await influx_client.write_points_batch([
+                influx_client.make_tide_point(
+                    port="BORDEAUX",
+                    height_m=h,
+                    timestamp=datetime.fromisoformat(t),
+                )
+                for t, h in zip(times, levels)
+                if h is not None
+            ])
 
             # Also extract and store PM/BM events with (estimated) coefficients
             await store_tides_to_influx(_extract_tides_from_levels(times, levels))

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 import httpx
@@ -12,6 +12,12 @@ from fastapi import APIRouter
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 
 router = APIRouter()
 
@@ -89,7 +95,7 @@ async def get_status():
     healthy = all(c["status"] == "connected" for c in checks.values())
     return {
         "status": "healthy" if healthy else "degraded",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": _utcnow().isoformat(),
         "version": "1.0.0",
         "location": {
             "lat": settings.moulin_lat,

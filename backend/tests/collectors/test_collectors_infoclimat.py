@@ -40,15 +40,17 @@ async def test_store_does_not_write_fake_hourly(monkeypatch):
     from app.services import influx_client
 
     points = []
+    batches = []
 
-    async def fake_write_point(measurement, tags, fields, timestamp):
-        points.append(fields)
-        return True
+    async def fake_write_points_batch(batch, chunk_size=5000):
+        batches.append(batch)
+        points.extend(influx_client.point_as_dict(p)["fields"] for p in batch)
+        return len(batch)
 
     async def forbidden(**kwargs):
         raise AssertionError("write_rainfall would add precipitation_mm_h=0")
 
-    monkeypatch.setattr(influx_client, "write_point", fake_write_point)
+    monkeypatch.setattr(influx_client, "write_points_batch", fake_write_points_batch)
     monkeypatch.setattr(influx_client, "write_rainfall", forbidden)
 
     n = await infoclimat.store_rainfall_to_influx({
@@ -56,4 +58,5 @@ async def test_store_does_not_write_fake_hourly(monkeypatch):
         "stations": [{"station_name": "Station 1", "rain_24h_mm": 4.0}],
     })
     assert n == 2
+    assert len(batches) == 1  # one HTTP write for all stations
     assert all(set(f) == {"precipitation_mm_24h"} for f in points)

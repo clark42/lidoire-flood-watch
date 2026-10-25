@@ -725,26 +725,97 @@ def latest_level(
     return last
 
 
-def rate_cm_per_hour(
-    points: Sequence[LevelPoint],
-    t: datetime,
-    window_h: float = 3.0,
-) -> float:
-    """Rate of change (cm/h) by least-squares slope on points in [t-window, t].
+# Rate regression defaults (shared by realtime Hub'Eau, backfill, replay, forecast).
+RATE_WINDOW_H = 3.0
+RATE_MIN_POINTS = 2
+RATE_MIN_SPAN_H = 0.5
 
-    Only points at or before ``t`` are used. Returns 0.0 when fewer than two
-    points or when they span less than 30 minutes.
 
-    NOTE: collectors/hubeau.py gets an equivalent ``rate_cm_per_hour``
-    helper in parallel work; both can be deduplicated after merge.
+def _level_point(point) -> LevelPoint:
+    """(naive UTC timestamp, height_m) from a tuple, a dict or a RiverLevel-like object."""
+    if isinstance(point, (tuple, list)):
+        ts, h = point[0], point[1]
+    elif isinstance(point, Mapping):
+        ts, h = point["timestamp"], point["height_m"]
+    else:
+        ts, h = point.timestamp, point.height_m
+    if isinstance(ts, str):
+        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return to_utc_naive(ts), float(h)
+
+
+def as_level_points(points: Iterable) -> list[LevelPoint]:
+    """Normalise any level series to sorted ``(naive UTC, height_m)`` tuples.
+
+    Accepts ``(timestamp, height_m)`` tuples, dicts with ``timestamp`` /
+    ``height_m`` keys or objects with ``timestamp`` / ``height_m``
+    attributes (e.g. ``RiverLevel``); timestamps may be naive UTC, tz-aware
+    or ISO strings. Malformed points are skipped.
     """
+    out: list[LevelPoint] = []
+    for p in points:
+        try:
+            out.append(_level_point(p))
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError):
+            continue
+    out.sort(key=lambda lp: lp[0])
+    return out
+
+
+def _is_level_point_sequence(points) -> bool:
+    """True for a non-empty list/tuple of naive ``(datetime, float)`` tuples.
+
+    Such sequences follow the ``LevelPoint`` convention (sorted by time) and
+    are searched with bisect, without a copy (backfill hot path).
+    """
+    if not isinstance(points, (list, tuple)) or not points:
+        return False
+    first = points[0]
+    return (
+        isinstance(first, tuple)
+        and len(first) == 2
+        and isinstance(first[0], datetime)
+        and first[0].tzinfo is None
+    )
+
+
+def rate_cm_per_hour(
+    points: Iterable,
+    t: datetime,
+    window_h: float = RATE_WINDOW_H,
+    min_points: int = RATE_MIN_POINTS,
+    min_span_h: float = RATE_MIN_SPAN_H,
+) -> float:
+    """Rate of water level change at ``t`` in cm/h (positive = rising).
+
+    THE single implementation (collectors/hubeau.py imports it): ordinary
+    least-squares slope of height vs time over the points in
+    ``[t - window_h, t]``. Points after ``t`` are ignored, so the same helper
+    serves live data (t = now) and replays/backfills (t = past instant)
+    without look-ahead.
+
+    Args:
+        points: sorted ``(naive UTC, height_m)`` tuples (fast path), or any
+            series accepted by :func:`as_level_points` (RiverLevel objects,
+            dicts, tz-aware or ISO timestamps, any order).
+        t: evaluation instant (naive UTC or tz-aware).
+        window_h: trailing window length in hours.
+        min_points: minimum number of points in the window (at least 2).
+        min_span_h: minimum time span covered by those points (hours).
+
+    Returns:
+        Unrounded slope in cm/h; 0.0 when there is not enough data.
+    """
+    if not _is_level_point_sequence(points):
+        points = as_level_points(points)
+    t = to_utc_naive(t)
     end_idx = _index_after(points, t)
     start_idx = _index_from(points, t - timedelta(hours=window_h))
     window = points[start_idx:end_idx]
-    if len(window) < 2:
+    if len(window) < max(2, min_points):
         return 0.0
     span_h = (window[-1][0] - window[0][0]).total_seconds() / 3600
-    if span_h < 0.5:
+    if span_h < min_span_h:
         return 0.0
     xs = [(ts - window[0][0]).total_seconds() / 3600 for ts, _ in window]
     ys = [h for _, h in window]
@@ -980,6 +1051,7 @@ __all__ = [
     "TideState",
     "aggregate_hourly_rain",
     "apply_curve",
+    "as_level_points",
     "build_historical_features",
     "compute_risk",
     "conjunction_multiplier",

@@ -11,6 +11,10 @@ Safety / performance notes:
   ``_run_query`` / ``_run_write`` which offload the blocking HTTP call to a
   worker thread (``asyncio.to_thread``) so the event loop keeps serving
   requests and ``asyncio.gather`` really runs queries in parallel.
+- Bulk writes (backfills, collectors) go through ``write_points_batch``:
+  one HTTP write per chunk instead of one per point.
+- Queries use ``INFLUXDB_READ_TOKEN`` when set (read-only token), writes use
+  ``INFLUXDB_TOKEN``.
 - Flux has no bind parameters in this client version, so every value that is
   interpolated in a query is validated (whitelist from config, or a strict
   character set for free-form tag values coming from external APIs) and
@@ -43,6 +47,11 @@ def _flux_ts(dt: datetime) -> str:
     if dt.tzinfo is not None:
         dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt.isoformat() + "Z"
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def to_naive_utc(dt: datetime) -> datetime:
@@ -182,38 +191,60 @@ async def _run_write(record) -> None:
     )
 
 
-# Global client instance
+# Global client instances. Queries use ``influxdb_read_token`` when it is set
+# (read-only token: limits the blast radius of a Flux injection); writes always
+# use ``influxdb_token``. A single client is shared when both tokens are equal.
 _client: Optional[InfluxDBClient] = None
+_query_client: Optional[InfluxDBClient] = None
 _write_api = None
 _query_api = None
 
 
+def _new_client(token: str) -> InfluxDBClient:
+    settings = get_settings()
+    return InfluxDBClient(
+        url=settings.influxdb_url,
+        token=token,
+        org=settings.influxdb_org,
+    )
+
+
 def get_client() -> InfluxDBClient:
-    """Get or create InfluxDB client."""
-    global _client, _write_api, _query_api
+    """Get or create the InfluxDB (write) client."""
+    global _client, _write_api
 
     if _client is None:
-        settings = get_settings()
-        _client = InfluxDBClient(
-            url=settings.influxdb_url,
-            token=settings.influxdb_token,
-            org=settings.influxdb_org,
-        )
+        _client = _new_client(get_settings().influxdb_token)
         _write_api = _client.write_api(write_options=SYNCHRONOUS)
-        _query_api = _client.query_api()
 
     return _client
 
 
+def get_query_client() -> InfluxDBClient:
+    """Get or create the InfluxDB client used for queries (read token)."""
+    global _query_client, _query_api
+
+    if _query_client is None:
+        settings = get_settings()
+        read_token = settings.influxdb_read_token or settings.influxdb_token
+        if read_token == settings.influxdb_token:
+            _query_client = get_client()
+        else:
+            _query_client = _new_client(read_token)
+        _query_api = _query_client.query_api()
+
+    return _query_client
+
+
 def get_write_api():
-    """Get the write API."""
+    """Get the write API (write token)."""
     get_client()
     return _write_api
 
 
 def get_query_api():
-    """Get the query API."""
-    get_client()
+    """Get the query API (read token, falls back to the write token)."""
+    get_query_client()
     return _query_api
 
 
@@ -273,6 +304,27 @@ async def write_river_levels_batch(levels: list[dict]) -> int:
     return written
 
 
+def make_tide_point(
+    port: str,
+    height_m: float,
+    timestamp: datetime,
+    tide_type: Optional[str] = None,
+    coefficient: Optional[int] = None,
+) -> Point:
+    """Build a ``tide`` point (same shape as :func:`write_tide`)."""
+    point = (
+        Point("tide")
+        .tag("port", port)
+        .field("height_m", height_m)
+        .time(timestamp, WritePrecision.S)
+    )
+    if tide_type:
+        point = point.tag("tide_type", tide_type)
+    if coefficient is not None:
+        point = point.field("coefficient", coefficient)
+    return point
+
+
 async def write_tide(
     port: str,
     height_m: float,
@@ -282,23 +334,42 @@ async def write_tide(
 ) -> bool:
     """Write a tide measurement to InfluxDB."""
     try:
-        point = (
-            Point("tide")
-            .tag("port", port)
-            .field("height_m", height_m)
-            .time(timestamp, WritePrecision.S)
-        )
-
-        if tide_type:
-            point = point.tag("tide_type", tide_type)
-        if coefficient is not None:
-            point = point.field("coefficient", coefficient)
-
-        await _run_write(point)
+        await _run_write(make_tide_point(port, height_m, timestamp, tide_type, coefficient))
         return True
     except Exception as e:
         logger.error("Error writing tide to InfluxDB: %s", e)
         return False
+
+
+def make_rainfall_point(
+    source: str,
+    precipitation_mm_h: float,
+    timestamp: datetime,
+    precipitation_mm_24h: Optional[float] = None,
+    station_city: Optional[str] = None,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+) -> Point:
+    """Build a ``rainfall`` point (same shape as :func:`write_rainfall`)."""
+    # Ensure numeric values are floats, not None
+    precip_h = float(precipitation_mm_h) if precipitation_mm_h is not None else 0.0
+
+    point = (
+        Point("rainfall")
+        .tag("source", source)
+        .field("precipitation_mm_h", precip_h)
+        .time(timestamp, WritePrecision.S)
+    )
+
+    if precipitation_mm_24h is not None:
+        point = point.field("precipitation_mm_24h", float(precipitation_mm_24h))
+    if station_city:
+        point = point.tag("city", str(station_city))
+    if lat is not None:
+        point = point.field("lat", float(lat))
+    if lon is not None:
+        point = point.field("lon", float(lon))
+    return point
 
 
 async def write_rainfall(
@@ -312,30 +383,34 @@ async def write_rainfall(
 ) -> bool:
     """Write rainfall observation to InfluxDB."""
     try:
-        # Ensure numeric values are floats, not None
-        precip_h = float(precipitation_mm_h) if precipitation_mm_h is not None else 0.0
-
-        point = (
-            Point("rainfall")
-            .tag("source", source)
-            .field("precipitation_mm_h", precip_h)
-            .time(timestamp, WritePrecision.S)
-        )
-
-        if precipitation_mm_24h is not None:
-            point = point.field("precipitation_mm_24h", float(precipitation_mm_24h))
-        if station_city:
-            point = point.tag("city", str(station_city))
-        if lat is not None:
-            point = point.field("lat", float(lat))
-        if lon is not None:
-            point = point.field("lon", float(lon))
-
-        await _run_write(point)
+        await _run_write(make_rainfall_point(
+            source, precipitation_mm_h, timestamp,
+            precipitation_mm_24h, station_city, lat, lon,
+        ))
         return True
     except Exception as e:
         logger.error("Error writing rainfall to InfluxDB for %s/%s: %s", station_city, source, e)
         return False
+
+
+def make_point(
+    measurement: str,
+    tags: dict,
+    fields: dict,
+    timestamp: datetime,
+) -> Point:
+    """Build a generic point (numbers stored as float, None fields skipped)."""
+    point = Point(measurement).time(timestamp, WritePrecision.S)
+
+    for key, value in tags.items():
+        point = point.tag(key, str(value))
+
+    for key, value in fields.items():
+        if isinstance(value, (int, float)):
+            point = point.field(key, float(value))
+        elif value is not None:
+            point = point.field(key, str(value))
+    return point
 
 
 async def write_point(
@@ -346,22 +421,49 @@ async def write_point(
 ) -> bool:
     """Write a generic point to InfluxDB."""
     try:
-        point = Point(measurement).time(timestamp, WritePrecision.S)
-
-        for key, value in tags.items():
-            point = point.tag(key, str(value))
-
-        for key, value in fields.items():
-            if isinstance(value, (int, float)):
-                point = point.field(key, float(value))
-            elif value is not None:
-                point = point.field(key, str(value))
-
-        await _run_write(point)
+        await _run_write(make_point(measurement, tags, fields, timestamp))
         return True
     except Exception as e:
         logger.error("Error writing point to InfluxDB: %s", e)
         return False
+
+
+def point_as_dict(point: Point) -> dict:
+    """``{"measurement", "tags", "fields", "timestamp"}`` view of a Point (tests, logs)."""
+    return {
+        "measurement": point._name,
+        "tags": dict(point._tags),
+        "fields": dict(point._fields),
+        "timestamp": point._time,
+    }
+
+
+async def write_points_batch(points: list, chunk_size: int = 5000) -> int:
+    """Write many points with one HTTP write per ``chunk_size`` points.
+
+    Non-blocking (goes through ``_run_write``). Each item is either an
+    ``influxdb_client.Point`` (see ``make_point`` / ``make_tide_point`` /
+    ``make_rainfall_point``) or a dict ``{"measurement", "tags", "fields",
+    "timestamp"}`` with the same semantics as :func:`write_point`.
+    Invalid items are skipped (logged). Returns the number of points
+    actually written (0 when the write fails).
+    """
+    built = []
+    for item in points:
+        try:
+            built.append(item if isinstance(item, Point) else make_point(**item))
+        except Exception as e:
+            logger.warning("Skipping invalid InfluxDB point %r: %s", item, e)
+
+    written = 0
+    for i in range(0, len(built), max(1, chunk_size)):
+        chunk = built[i:i + chunk_size]
+        try:
+            await _run_write(chunk)
+            written += len(chunk)
+        except Exception as e:
+            logger.error("Error writing batch of %d points to InfluxDB: %s", len(chunk), e)
+    return written
 
 
 async def write_risk_score(
@@ -397,7 +499,7 @@ async def write_risk_score(
         await _run_write(point)
         return True
     except Exception as e:
-        print(f"Error writing risk score to InfluxDB: {e}")
+        logger.error("Error writing risk score to InfluxDB: %s", e)
         return False
 
 
@@ -673,7 +775,7 @@ async def query_station_rainfall_cumulative(
     Returns:
         Cumulative rainfall in mm, or None if no data
     """
-    now = datetime.utcnow()
+    now = _utcnow()
     num_days = max(1, hours // 24)
 
     try:
@@ -690,6 +792,7 @@ async def query_station_rainfall_cumulative(
 async def query_all_stations_rainfall_cumulative(
     cities: list[str],
     source: str = "netatmo-lidoire",
+    aliases: Optional[dict[str, list[str]]] = None,
 ) -> dict[str, dict[str, Optional[float]]]:
     """
     Query cumulative rainfall for multiple stations over 24h, 72h, and 7 days.
@@ -698,6 +801,10 @@ async def query_all_stations_rainfall_cumulative(
     of cities x 11 sequential queries); results are cached in-process for
     ``RAIN_CUMUL_CACHE_TTL_S`` seconds since the Dashboard polls this path
     from several endpoints.
+
+    ``aliases`` maps a requested city to other ``city`` tag values whose
+    samples are merged into it (e.g. legacy raw Netatmo spellings written
+    before city tags were canonicalised to the config spelling).
 
     Returns:
         Dict mapping city -> {rain_24h, rain_72h, rain_7d}
@@ -717,14 +824,34 @@ async def query_all_stations_rainfall_cumulative(
     if not unique_cities:
         return {c: dict(empty) for c in rejected}
 
-    cache_key = (source, tuple(sorted(unique_cities + rejected)))
+    alias_map: dict[str, list[str]] = {}
+    for city in unique_cities:
+        extra = []
+        for alias in (aliases or {}).get(city, []):
+            if not alias or alias == city or alias in extra:
+                continue
+            try:
+                extra.append(validate_tag_value(alias, "city"))
+            except InvalidQueryParameter:
+                logger.warning("Skipping unsafe city alias for rain cumul: %r", alias)
+        if extra:
+            alias_map[city] = extra
+    query_cities = list(dict.fromkeys(
+        [*unique_cities, *(a for extra in alias_map.values() for a in extra)]
+    ))
+
+    cache_key = (
+        source,
+        tuple(sorted(unique_cities + rejected)),
+        tuple(sorted((c, tuple(a)) for c, a in alias_map.items())),
+    )
     cached = _rain_cumul_cache.get(cache_key)
     if cached is not None:
         return {city: dict(values) for city, values in cached.items()}
 
-    now = datetime.utcnow()
+    now = _utcnow()
     try:
-        samples = await _query_rainfall_counters(unique_cities, source, 7, now)
+        samples = await _query_rainfall_counters(query_cities, source, 7, now)
     except InvalidQueryParameter:
         raise
     except Exception as e:
@@ -734,7 +861,10 @@ async def query_all_stations_rainfall_cumulative(
 
     results: dict[str, dict[str, Optional[float]]] = {c: dict(empty) for c in rejected}
     for city in unique_cities:
-        city_samples = samples.get(city, [])
+        city_samples = list(samples.get(city, []))
+        for alias in alias_map.get(city, []):
+            city_samples.extend(samples.get(alias, []))
+        city_samples.sort(key=lambda sample: sample[0])
         results[city] = {
             "rain_24h_mm": sum_daily_counters(city_samples, now, 1),
             "rain_72h_mm": sum_daily_counters(city_samples, now, 3),
@@ -836,7 +966,7 @@ async def query_risk_scores(
         tables = await _run_query(query)
         return select_risk_rows_by_version(_risk_rows_from_tables(tables), preferred)
     except Exception as e:
-        print(f"Error querying risk scores from InfluxDB: {e}")
+        logger.error("Error querying risk scores from InfluxDB: %s", e)
         return []
 
 
@@ -1237,7 +1367,7 @@ async def query_risk_scores_timeline(
             for r in select_risk_rows_by_version(results, preferred)
         ]
     except Exception as e:
-        print(f"Error querying risk scores timeline from InfluxDB: {e}")
+        logger.error("Error querying risk scores timeline from InfluxDB: %s", e)
         return []
 
 
@@ -1270,7 +1400,7 @@ def build_basin_sparkline_query(
 async def query_basin_rainfall_sparkline(hours: int = 24) -> list[dict]:
     """Query hourly basin rainfall for sparkline display (mean of netatmo-lidoire)."""
     hours = max(1, min(int(hours), 24 * 14))
-    end = datetime.utcnow()
+    end = _utcnow()
     start = end - timedelta(hours=hours)
 
     query = build_basin_sparkline_query(start, end)
@@ -1372,7 +1502,7 @@ async def query_historical_snapshot(target_time: datetime, window_hours: int = 1
                         "level": record.values.get("level"),
                     })
     except Exception as e:
-        print(f"Error querying historical snapshot: {e}")
+        logger.error("Error querying historical snapshot: %s", e)
 
     return snapshot
 
@@ -1416,7 +1546,7 @@ async def query_latest_measurement(
         f"{flux_string(validate_tag_value(str(v), k))})"
         for k, v in tags.items()
     )
-    start = datetime.utcnow() - timedelta(hours=max_age_hours)
+    start = _utcnow() - timedelta(hours=max_age_hours)
 
     query = f'''
     from(bucket: {_bucket()})
@@ -1580,10 +1710,13 @@ async def query_wind_timeline(
 
 
 def close_client():
-    """Close the InfluxDB client."""
-    global _client, _write_api, _query_api
+    """Close the InfluxDB client(s)."""
+    global _client, _query_client, _write_api, _query_api
+    if _query_client is not None and _query_client is not _client:
+        _query_client.close()
     if _client:
         _client.close()
-        _client = None
-        _write_api = None
-        _query_api = None
+    _client = None
+    _query_client = None
+    _write_api = None
+    _query_api = None

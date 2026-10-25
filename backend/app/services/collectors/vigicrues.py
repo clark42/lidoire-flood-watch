@@ -48,7 +48,7 @@ _cache_expiry: Optional[datetime] = None
 
 def _utcnow() -> datetime:
     """Naive UTC now (module-level so tests can freeze time)."""
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _to_naive_utc(dt: datetime) -> datetime:

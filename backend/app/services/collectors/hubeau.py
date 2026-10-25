@@ -17,14 +17,22 @@ Data source priority for historical periods (> 30 days):
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Optional
+from typing import Optional
 
 import httpx
 
 from app.config import get_settings
 from app.models.schemas import RiverLevel, Tendency, MultiStationData, StationLevel
+# Single (pure) implementation of the regression rate, shared with the risk
+# model backfill/replay/forecast. Re-exported here for existing callers.
+from app.services.risk_core import rate_cm_per_hour, to_utc_naive
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # Hub'Eau API base URLs
@@ -105,7 +113,7 @@ async def fetch_realtime_observations(
     url = f"{HUBEAU_API_BASE}/observations_tr"
 
     # Calculate date range
-    end_date = datetime.utcnow()
+    end_date = _utcnow()
     start_date = end_date - timedelta(hours=hours_back)
 
     params = {
@@ -327,13 +335,13 @@ async def fetch_all_stations_realtime(hours_back: int = 48) -> dict[str, list[Ri
     Returns:
         Dictionary mapping station_id to list of RiverLevel
     """
-    now = datetime.utcnow()
+    now = _utcnow()
     cached = _stations_cache_by_hours.get(hours_back)
     if cached and cached[0] > now:
         return cached[1]
 
     async with _stations_lock:
-        now = datetime.utcnow()
+        now = _utcnow()
         cached = _stations_cache_by_hours.get(hours_back)
         if cached and cached[0] > now:
             return cached[1]
@@ -372,7 +380,7 @@ async def get_multi_station_data() -> MultiStationData:
     """
     settings = get_settings()
     all_data = await fetch_all_stations_realtime(hours_back=24)
-    now = datetime.utcnow()
+    now = _utcnow()
 
     stations = []
     for station_config in settings.hubeau_stations:
@@ -410,7 +418,7 @@ async def get_multi_station_data() -> MultiStationData:
     stations.sort(key=lambda s: s.distance_km)
 
     return MultiStationData(
-        timestamp=datetime.utcnow(),
+        timestamp=_utcnow(),
         stations=stations,
         primary_station_id=settings.hubeau_primary_station,
     )
@@ -425,6 +433,8 @@ async def fetch_episode_context(
     Fetch historical data for all stations around a flood episode date.
 
     This is used to analyze past flood events and calibrate the risk model.
+    Stations are fetched concurrently (at most MAX_CONCURRENT_REQUESTS at a
+    time); the result keeps the configured station order.
 
     Args:
         episode_date: Date/time of the flood event (peak or start)
@@ -438,52 +448,37 @@ async def fetch_episode_context(
 
     start_date = episode_date - timedelta(hours=hours_before)
     end_date = episode_date + timedelta(hours=hours_after)
+    start_naive = to_utc_naive(start_date)
+    end_naive = to_utc_naive(end_date)
 
-    results = {}
+    # Real-time API only keeps ~30 days
+    now = _utcnow()
+    use_realtime = start_naive > now - timedelta(days=30)
+    hours_back = int((now - start_naive).total_seconds() / 3600)
 
-    # First try real-time data (if within last 30 days)
-    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-    # Normalize to naive for comparison
-    start_date_naive = start_date.replace(tzinfo=None) if start_date.tzinfo else start_date
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-    for station in settings.hubeau_stations:
-        station_id = station["id"]
-
-        if start_date_naive > thirty_days_ago:
-            # Use real-time API
-            levels = await fetch_realtime_observations(
-                station_id,
-                hours_back=int((datetime.utcnow() - start_date_naive).total_seconds() / 3600),
-            )
-            # Filter to our date range (handle timezone-aware vs naive)
-            def to_naive(dt):
-                return dt.replace(tzinfo=None) if dt.tzinfo else dt
-            start_naive = to_naive(start_date)
-            end_naive = to_naive(end_date)
-            levels = [
-                lv for lv in levels
-                if start_naive <= to_naive(lv.timestamp) <= end_naive
-            ]
-        else:
-            # Use Hydroportail for sub-hourly historical data
-            levels = await fetch_hydroportail_data(
-                station_id,
-                start_date,
-                end_date,
-            )
-            # Fallback to Hub'Eau obs_elab (daily max) if Hydroportail fails
+    async def _one(station_id: str) -> tuple[str, list[RiverLevel]]:
+        async with semaphore:
+            if use_realtime:
+                levels = await fetch_realtime_observations(station_id, hours_back=hours_back)
+                return station_id, [
+                    lv for lv in levels
+                    if start_naive <= to_utc_naive(lv.timestamp) <= end_naive
+                ]
+            # Hydroportail for sub-hourly historical data, then Hub'Eau
+            # obs_elab (daily max) if Hydroportail fails
+            levels = await fetch_hydroportail_data(station_id, start_date, end_date)
             if not levels:
                 levels = await fetch_historical_data(
-                    station_id,
-                    start_date,
-                    end_date,
-                    granularity="daily_max",
+                    station_id, start_date, end_date, granularity="daily_max",
                 )
+            return station_id, levels
 
-        if levels:
-            results[station_id] = levels
-
-    return results
+    fetched = await asyncio.gather(
+        *[_one(station["id"]) for station in settings.hubeau_stations]
+    )
+    return {station_id: levels for station_id, levels in fetched if levels}
 
 
 def _get_station_config(station_id: str) -> dict:
@@ -493,78 +488,6 @@ def _get_station_config(station_id: str) -> dict:
         if station["id"] == station_id:
             return station
     return {"name": "Unknown", "river": "Unknown"}
-
-
-def _to_naive_utc(dt: datetime) -> datetime:
-    if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
-
-
-def _point_ts_height(point) -> tuple[datetime, float]:
-    """Extract (timestamp, height_m) from a RiverLevel, a dict or a tuple."""
-    if isinstance(point, (tuple, list)):
-        ts, h = point[0], point[1]
-    elif isinstance(point, dict):
-        ts, h = point["timestamp"], point["height_m"]
-    else:
-        ts, h = point.timestamp, point.height_m
-    if isinstance(ts, str):
-        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    return _to_naive_utc(ts), float(h)
-
-
-def rate_cm_per_hour(
-    points: Iterable,
-    t: datetime,
-    window_h: float = 3.0,
-    min_points: int = 3,
-    min_span_h: float = 0.5,
-) -> float:
-    """Rate of water level change at time ``t`` in cm/h (positive = rising).
-
-    Ordinary least-squares slope of height vs time over the points in
-    [t - window_h, t]. Points after ``t`` are ignored, so the helper can be
-    used for live data (t = now) and for replays/backfills (t = past instant)
-    without look-ahead. A regression over 3h is much less noisy than a
-    first/last difference over 1h of 5-min data.
-
-    Args:
-        points: RiverLevel objects, dicts with "timestamp"/"height_m", or
-            (timestamp, height_m) tuples; timestamps naive UTC or tz-aware.
-        t: Evaluation instant (naive UTC or tz-aware).
-        window_h: Trailing window length in hours.
-        min_points: Minimum number of points in the window.
-        min_span_h: Minimum time span covered by those points (hours).
-
-    Returns:
-        Slope in cm/h, rounded to 0.01; 0.0 when there is not enough data.
-    """
-    t_n = _to_naive_utc(t)
-    start = t_n - timedelta(hours=window_h)
-
-    xs: list[float] = []
-    ys: list[float] = []
-    for p in points:
-        try:
-            ts, h = _point_ts_height(p)
-        except (KeyError, TypeError, ValueError, AttributeError, IndexError):
-            continue
-        if start <= ts <= t_n:
-            xs.append((ts - t_n).total_seconds() / 3600.0)
-            ys.append(h * 100.0)  # cm
-
-    if len(xs) < min_points or (max(xs) - min(xs)) < min_span_h:
-        return 0.0
-
-    n = len(xs)
-    mean_x = sum(xs) / n
-    mean_y = sum(ys) / n
-    sxx = sum((x - mean_x) ** 2 for x in xs)
-    if sxx <= 0:
-        return 0.0
-    sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
-    return round(sxy / sxx, 2)
 
 
 def _calculate_tendency(
@@ -585,7 +508,7 @@ def _calculate_tendency(
     Returns:
         Tendency enum value
     """
-    rate = rate_cm_per_hour(levels, t or datetime.utcnow(), window_h=window_hours)
+    rate = rate_cm_per_hour(levels, t or _utcnow(), window_h=window_hours)
     change_cm = rate * window_hours
 
     # More than 5cm change is significant
@@ -613,7 +536,7 @@ def _calculate_rate_of_change(
     Returns:
         Rate of change in cm/hour (positive = rising), rounded to 0.1
     """
-    return round(rate_cm_per_hour(levels, t or datetime.utcnow(), window_h=window_hours), 1)
+    return round(rate_cm_per_hour(levels, t or _utcnow(), window_h=window_hours), 1)
 
 
 async def collect_and_store_all_stations():

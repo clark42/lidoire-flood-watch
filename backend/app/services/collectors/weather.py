@@ -16,7 +16,7 @@ import logging
 import math
 import time
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.config import get_settings
@@ -51,7 +51,7 @@ _past_rain_lock = asyncio.Lock()
 
 def _utcnow() -> datetime:
     """Naive UTC now (module-level so tests can freeze time)."""
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # Soil moisture thresholds for saturation factor
 # m³/m³ volumetric water content
@@ -272,7 +272,7 @@ async def fetch_multi_model_forecast(
     return {
         "models": models,
         "ensemble": ensemble,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": _utcnow().isoformat(),
     }
 
 
@@ -610,7 +610,7 @@ async def get_forecast_rainfall(hours: int = 72) -> list[WeatherForecast]:
     settings = get_settings()
     forecasts = await fetch_open_meteo_forecast(settings.moulin_lat, settings.moulin_lon)
 
-    now = datetime.utcnow()
+    now = _utcnow()
     cutoff = now + timedelta(hours=hours)
 
     return [f for f in forecasts if f.timestamp <= cutoff]
@@ -678,27 +678,29 @@ async def get_soil_wind_cached() -> dict:
     data = await fetch_soil_and_wind(settings.moulin_lat, settings.moulin_lon)
 
     # 3. Store to InfluxDB
-    now = datetime.utcnow()
+    now = _utcnow()
     try:
-        await influx_client.write_point(
-            measurement="soil_moisture",
-            tags={"location": "moulin"},
-            fields={
-                "moisture": data["soil_moisture"],
-                "saturation_factor": data["soil_saturation_factor"],
-            },
-            timestamp=now,
-        )
-        await influx_client.write_point(
-            measurement="wind",
-            tags={"location": "moulin"},
-            fields={
-                "speed_kmh": data["wind_speed_kmh"],
-                "direction_deg": data["wind_direction_deg"],
-                "westerly_kmh": data["westerly_wind_kmh"],
-            },
-            timestamp=now,
-        )
+        points = [
+            influx_client.make_point(
+                measurement="soil_moisture",
+                tags={"location": "moulin"},
+                fields={
+                    "moisture": data["soil_moisture"],
+                    "saturation_factor": data["soil_saturation_factor"],
+                },
+                timestamp=now,
+            ),
+            influx_client.make_point(
+                measurement="wind",
+                tags={"location": "moulin"},
+                fields={
+                    "speed_kmh": data["wind_speed_kmh"],
+                    "direction_deg": data["wind_direction_deg"],
+                    "westerly_kmh": data["westerly_wind_kmh"],
+                },
+                timestamp=now,
+            ),
+        ]
         # Store agricultural data
         agri_fields = {}
         if data.get("moisture_deep") is not None:
@@ -710,12 +712,13 @@ async def get_soil_wind_cached() -> dict:
         if data.get("precip_probability") is not None:
             agri_fields["precip_probability"] = float(data["precip_probability"])
         if agri_fields:
-            await influx_client.write_point(
+            points.append(influx_client.make_point(
                 measurement="soil_agricultural",
                 tags={"location": "moulin"},
                 fields=agri_fields,
                 timestamp=now,
-            )
+            ))
+        await influx_client.write_points_batch(points)
     except Exception as e:
         logger.warning(f"Error storing soil/wind to InfluxDB: {e}")
 
@@ -964,7 +967,7 @@ async def fetch_and_store_historical_rainfall(start: datetime, end: datetime) ->
     end_str = end.strftime("%Y-%m-%d")
 
     # Use forecast API for recent data (supports past_days up to 92)
-    days_ago = (datetime.utcnow() - start).days
+    days_ago = (_utcnow() - start).days
     url = OPEN_METEO_HISTORICAL if days_ago > 90 else OPEN_METEO_CURRENT
 
     try:
@@ -992,17 +995,16 @@ async def fetch_and_store_historical_rainfall(start: datetime, end: datetime) ->
                 logger.info(f"No precipitation data from Open-Meteo for {start_str} -> {end_str}")
                 return 0
 
-            stored = 0
+            points = []
             for t, p in zip(times, precips):
                 if p is not None and p >= 0:
-                    success = await influx_client.write_rainfall(
+                    points.append(influx_client.make_rainfall_point(
                         source="open-meteo",
                         precipitation_mm_h=p,
                         timestamp=datetime.fromisoformat(t),
                         station_city="Moulin-Lidoire",
-                    )
-                    if success:
-                        stored += 1
+                    ))
+            stored = await influx_client.write_points_batch(points) if points else 0
 
             logger.info(f"Stored {stored} hourly precipitation points for {start_str} -> {end_str}")
             return stored
@@ -1012,6 +1014,36 @@ async def fetch_and_store_historical_rainfall(start: datetime, end: datetime) ->
         return 0
 
 
+def daily_et0_by_date(
+    daily: dict,
+    hourly_times: list[str],
+    hourly_et0: list,
+) -> dict[str, float]:
+    """Daily ET0 (mm/day) keyed by UTC date 'YYYY-MM-DD'.
+
+    Uses Open-Meteo's daily ``et0_fao_evapotranspiration`` sum when present;
+    for days missing from it, sums the hourly values (mm/h) of complete days
+    (24 non-null hours) only, so partial days never look drier than they are.
+    """
+    out: dict[str, float] = {}
+    for date_str, value in zip(daily.get("time", []) or [], daily.get("et0_fao_evapotranspiration", []) or []):
+        if date_str and value is not None:
+            out[str(date_str)[:10]] = float(value)
+
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for time_str, value in zip(hourly_times, hourly_et0):
+        if not time_str or value is None:
+            continue
+        day = time_str[:10]
+        sums[day] = sums.get(day, 0.0) + float(value)
+        counts[day] = counts.get(day, 0) + 1
+    for day, total in sums.items():
+        if day not in out and counts[day] >= 24:
+            out[day] = total
+    return out
+
+
 async def fetch_and_store_soil_historical(start: datetime, end: datetime) -> int:
     """Fetch historical soil moisture, soil temperature, and ET0 from Open-Meteo and store in InfluxDB.
 
@@ -1019,6 +1051,12 @@ async def fetch_and_store_soil_historical(start: datetime, end: datetime) -> int
     or the archive API for older dates.
 
     Stores to measurement 'soil_timeline' with tag location=moulin.
+
+    ET0 units: ``et0_mm`` is the DAILY reference evapotranspiration (mm/day,
+    same unit as the realtime ``soil_agricultural.et0_mm``) of the UTC day of
+    each hourly point; the raw hourly value is kept as ``et0_mm_h`` (mm/h).
+    The daily value comes from Open-Meteo's daily sum, or from the sum of the
+    24 hourly values of that day when the daily series is missing.
 
     Args:
         start: Start datetime
@@ -1036,7 +1074,7 @@ async def fetch_and_store_soil_historical(start: datetime, end: datetime) -> int
     start_str = start.strftime("%Y-%m-%d")
     end_str = end.strftime("%Y-%m-%d")
 
-    days_ago = (datetime.utcnow() - start).days
+    days_ago = (_utcnow() - start).days
     url = OPEN_METEO_HISTORICAL if days_ago > 90 else OPEN_METEO_CURRENT
 
     hourly_params = ",".join([
@@ -1055,6 +1093,8 @@ async def fetch_and_store_soil_historical(start: datetime, end: datetime) -> int
                     "latitude": lat,
                     "longitude": lon,
                     "hourly": hourly_params,
+                    # Daily ET0 sum (mm/day), see docstring
+                    "daily": "et0_fao_evapotranspiration",
                     "start_date": start_str,
                     "end_date": end_str,
                     "timezone": "UTC",
@@ -1076,7 +1116,9 @@ async def fetch_and_store_soil_historical(start: datetime, end: datetime) -> int
                 logger.info(f"No soil data from Open-Meteo for {start_str} -> {end_str}")
                 return 0
 
-            stored = 0
+            et0_daily = daily_et0_by_date(data.get("daily") or {}, times, et0_list)
+
+            points = []
             for i, time_str in enumerate(times):
                 # Shallow moisture: 0-7cm
                 shallow = sm_0_7[i] if i < len(sm_0_7) else None
@@ -1090,7 +1132,8 @@ async def fetch_and_store_soil_historical(start: datetime, end: datetime) -> int
                 deep = sum(deep_values) / len(deep_values) if deep_values else None
 
                 soil_temp = st_0_7[i] if i < len(st_0_7) else None
-                et0 = et0_list[i] if i < len(et0_list) else None
+                et0_h = et0_list[i] if i < len(et0_list) else None
+                et0_day = et0_daily.get(time_str[:10])
 
                 # Build fields (skip None values)
                 fields = {}
@@ -1100,24 +1143,26 @@ async def fetch_and_store_soil_historical(start: datetime, end: datetime) -> int
                     fields["moisture_deep"] = round(deep, 4)
                 if soil_temp is not None:
                     fields["soil_temp"] = round(soil_temp, 1)
-                if et0 is not None:
-                    fields["et0_mm"] = round(et0, 2)
+                if et0_day is not None:
+                    fields["et0_mm"] = round(et0_day, 2)
+                if et0_h is not None:
+                    fields["et0_mm_h"] = round(et0_h, 3)
 
                 if not fields:
                     continue
 
                 try:
                     ts = datetime.fromisoformat(time_str)
-                    await influx_client.write_point(
-                        measurement="soil_timeline",
-                        tags={"location": "moulin"},
-                        fields=fields,
-                        timestamp=ts,
-                    )
-                    stored += 1
-                except (ValueError, Exception):
+                except ValueError:
                     continue
+                points.append(influx_client.make_point(
+                    measurement="soil_timeline",
+                    tags={"location": "moulin"},
+                    fields=fields,
+                    timestamp=ts,
+                ))
 
+            stored = await influx_client.write_points_batch(points) if points else 0
             logger.info(f"Stored {stored} soil timeline points for {start_str} -> {end_str}")
             return stored
 
@@ -1142,7 +1187,7 @@ async def fetch_and_store_wind_historical(start: datetime, end: datetime) -> int
     start_str = start.strftime("%Y-%m-%d")
     end_str = end.strftime("%Y-%m-%d")
 
-    days_ago = (datetime.utcnow() - start).days
+    days_ago = (_utcnow() - start).days
     url = OPEN_METEO_HISTORICAL if days_ago > 90 else OPEN_METEO_CURRENT
 
     try:
@@ -1171,7 +1216,7 @@ async def fetch_and_store_wind_historical(start: datetime, end: datetime) -> int
                 logger.info(f"No wind data from Open-Meteo for {start_str} -> {end_str}")
                 return 0
 
-            stored = 0
+            points = []
             for i, time_str in enumerate(times):
                 speed = speeds[i] if i < len(speeds) else None
                 direction = directions[i] if i < len(directions) else None
@@ -1193,16 +1238,16 @@ async def fetch_and_store_wind_historical(start: datetime, end: datetime) -> int
 
                 try:
                     ts = datetime.fromisoformat(time_str)
-                    await influx_client.write_point(
-                        measurement="wind",
-                        tags={"location": "moulin"},
-                        fields=fields,
-                        timestamp=ts,
-                    )
-                    stored += 1
-                except (ValueError, Exception):
+                except ValueError:
                     continue
+                points.append(influx_client.make_point(
+                    measurement="wind",
+                    tags={"location": "moulin"},
+                    fields=fields,
+                    timestamp=ts,
+                ))
 
+            stored = await influx_client.write_points_batch(points) if points else 0
             logger.info(f"Stored {stored} wind timeline points for {start_str} -> {end_str}")
             return stored
 

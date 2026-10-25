@@ -58,12 +58,7 @@ def test_counter_query_rejects_bad_city():
 async def test_all_stations_cumulative_single_query_and_cache(capture_queries, fake_tables, monkeypatch):
     queries, set_response = capture_queries
 
-    class FrozenDatetime(datetime):
-        @classmethod
-        def utcnow(cls):
-            return NOW
-
-    monkeypatch.setattr(ic, "datetime", FrozenDatetime)
+    monkeypatch.setattr(ic, "_utcnow", lambda: NOW)
 
     def rows(city, values_by_day):
         return [

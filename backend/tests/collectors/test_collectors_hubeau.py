@@ -55,7 +55,7 @@ def test_rate_robust_to_single_spike():
 
 def test_rate_insufficient_data():
     assert hubeau.rate_cm_per_hour([], T) == 0.0
-    assert hubeau.rate_cm_per_hour(_levels([3.0, 3.5]), T) == 0.0  # 2 points
+    assert hubeau.rate_cm_per_hour(_levels([3.0, 3.5]), T) == 0.0  # 2 points over 15 min < min span
     # 3 points over 10 min < min span
     assert hubeau.rate_cm_per_hour(_levels([3.0, 3.1, 3.2], step_min=5), T) == 0.0
 
