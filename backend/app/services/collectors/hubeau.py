@@ -14,12 +14,17 @@ Data source priority for historical periods (> 30 days):
 2. Hub'Eau obs_elab HIXnJ — daily max, full history
 """
 
+import asyncio
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, Optional
+
 import httpx
-from datetime import datetime, timedelta
-from typing import Optional
 
 from app.config import get_settings
 from app.models.schemas import RiverLevel, Tendency, MultiStationData, StationLevel
+
+logger = logging.getLogger(__name__)
 
 
 # Hub'Eau API base URLs
@@ -28,15 +33,60 @@ HUBEAU_API_BASE = "https://hubeau.eaufrance.fr/api/v2/hydrometrie"
 # Hydroportail AJAX API (sub-hourly historical data, no time limit)
 HYDROPORTAIL_BASE = "https://www.hydro.eaufrance.fr/stationhydro/ajax"
 
-# Cache for river data
-_stations_cache: dict[str, list[RiverLevel]] = {}
-_cache_expiry: Optional[datetime] = None
+# Cache for river data: hours_back -> (expiry, {station_id: levels})
+_stations_cache_by_hours: dict[int, tuple[datetime, dict[str, list[RiverLevel]]]] = {}
+_stations_lock = asyncio.Lock()
 CACHE_DURATION_MINUTES = 5
+# Bounded concurrency towards Hub'Eau
+MAX_CONCURRENT_REQUESTS = 4
+
+# Hub'Eau obs_elab height grandeurs. Hub'Eau has no daily *minimum height*
+# (QINnJ is a minimum *discharge*), so no "daily_min" granularity is offered.
+HEIGHT_GRANDEURS = {
+    "daily_max": "HIXnJ",   # Hauteur Instantanée maXimale n-Jours (daily max)
+    "monthly_max": "HIXM",  # Hauteur Instantanée maXimale Mensuelle
+}
+
+
+def parse_observations_tr(data: dict, station_id: str, station_config: Optional[dict] = None) -> list[RiverLevel]:
+    """Parse a Hub'Eau observations_tr payload (H in millimetres) into RiverLevel (metres).
+
+    Timestamps are kept tz-aware (UTC) as returned by Hub'Eau. Sorted by time.
+    """
+    station_config = station_config or _get_station_config(station_id)
+    levels = []
+    for obs in (data or {}).get("data", []) or []:
+        try:
+            # Hub'Eau returns height in mm, convert to m
+            height_mm = obs.get("resultat_obs")
+            if height_mm is None:
+                continue
+
+            timestamp_str = obs.get("date_obs")
+            if not timestamp_str:
+                continue
+
+            levels.append(
+                RiverLevel(
+                    timestamp=datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")),
+                    station_id=station_id,
+                    station_name=station_config.get("name", "Unknown"),
+                    river=station_config.get("river", "Unknown"),
+                    height_m=float(height_mm) / 1000,
+                    flow_m3s=None,
+                )
+            )
+        except (KeyError, ValueError, TypeError) as e:
+            logger.debug("Error parsing Hub'Eau observation: %s", e)
+            continue
+
+    return sorted(levels, key=lambda x: x.timestamp)
 
 
 async def fetch_realtime_observations(
     station_id: str,
     hours_back: int = 48,
+    client: Optional[httpx.AsyncClient] = None,
 ) -> list[RiverLevel]:
     """
     Fetch real-time observations from Hub'Eau for a specific station.
@@ -44,6 +94,7 @@ async def fetch_realtime_observations(
     Args:
         station_id: Hub'Eau station code (e.g., P577001001)
         hours_back: Number of hours of history to fetch (max ~720 = 30 days)
+        client: Optional shared httpx client (a temporary one is created otherwise)
 
     Returns:
         List of RiverLevel observations sorted by timestamp
@@ -57,58 +108,29 @@ async def fetch_realtime_observations(
     end_date = datetime.utcnow()
     start_date = end_date - timedelta(hours=hours_back)
 
+    params = {
+        "code_entite": station_id,
+        "grandeur_hydro": "H",  # Height
+        "date_debut_obs": start_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "date_fin_obs": end_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "size": 10000,  # ~35 days at 5-min intervals
+        "sort": "asc",
+    }
+
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                url,
-                params={
-                    "code_entite": station_id,
-                    "grandeur_hydro": "H",  # Height
-                    "date_debut_obs": start_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "date_fin_obs": end_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "size": 10000,  # ~35 days at 5-min intervals
-                    "sort": "asc",
-                },
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            levels = []
-            for obs in data.get("data", []):
-                try:
-                    # Hub'Eau returns height in mm, convert to m
-                    height_mm = obs.get("resultat_obs")
-                    if height_mm is None:
-                        continue
-
-                    timestamp_str = obs.get("date_obs")
-                    if not timestamp_str:
-                        continue
-
-                    levels.append(
-                        RiverLevel(
-                            timestamp=datetime.fromisoformat(
-                                timestamp_str.replace("Z", "+00:00")
-                            ),
-                            station_id=station_id,
-                            station_name=station_config.get("name", "Unknown"),
-                            river=station_config.get("river", "Unknown"),
-                            height_m=float(height_mm) / 1000,
-                            flow_m3s=None,
-                        )
-                    )
-                except (KeyError, ValueError, TypeError) as e:
-                    print(f"Error parsing Hub'Eau observation: {e}")
-                    continue
-
-            return sorted(levels, key=lambda x: x.timestamp)
+        if client is not None:
+            response = await client.get(url, params=params, timeout=30.0)
+        else:
+            async with httpx.AsyncClient() as own_client:
+                response = await own_client.get(url, params=params, timeout=30.0)
+        response.raise_for_status()
+        return parse_observations_tr(response.json(), station_id, station_config)
 
     except httpx.HTTPStatusError as e:
-        print(f"Hub'Eau API error for station {station_id}: {e.response.status_code}")
+        logger.warning(f"Hub'Eau API error for station {station_id}: {e.response.status_code}")
         return []
     except Exception as e:
-        print(f"Error fetching Hub'Eau data for station {station_id}: {e}")
+        logger.warning(f"Error fetching Hub'Eau data for station {station_id}: {e}")
         return []
 
 
@@ -125,10 +147,11 @@ async def fetch_historical_data(
         station_id: Hub'Eau station code
         start_date: Start of the period
         end_date: End of the period
-        granularity: Type of data:
-            - "daily_max": Maximum daily height (HXI)
-            - "daily_mean": Mean daily flow (QmJ) - if available
-            - "monthly_max": Maximum monthly height
+        granularity: Type of data (heights only):
+            - "daily_max": Maximum daily height (HIXnJ)
+            - "monthly_max": Maximum monthly height (HIXM)
+            Any other value (e.g. the former "daily_min", which was mapped to
+            QINnJ, a *discharge*) is rejected and returns [].
 
     Returns:
         List of RiverLevel observations
@@ -139,12 +162,13 @@ async def fetch_historical_data(
 
     # Map granularity to Hub'Eau parameter
     # Valid values: QmnJ, QmM, HIXnJ, HIXM, QIXnJ, QIXM, QINnJ, QINM
-    grandeur_map = {
-        "daily_max": "HIXnJ",   # Hauteur Instantanée maXimale n-Jours (daily max)
-        "monthly_max": "HIXM",  # Hauteur Instantanée maXimale Mensuelle
-        "daily_min": "QINnJ",   # Débit Instantané miNimal n-Jours
-    }
-    grandeur = grandeur_map.get(granularity, "HIXnJ")
+    # Only H* grandeurs are heights; Q* are discharges (l/s) and must not be
+    # parsed as height_m.
+    grandeur = HEIGHT_GRANDEURS.get(granularity)
+    if grandeur is None:
+        logger.warning("Hub'Eau: unsupported height granularity %r (use %s)",
+                       granularity, list(HEIGHT_GRANDEURS))
+        return []
 
     try:
         async with httpx.AsyncClient() as client:
@@ -188,16 +212,16 @@ async def fetch_historical_data(
                         )
                     )
                 except (KeyError, ValueError, TypeError) as e:
-                    print(f"Error parsing Hub'Eau historical data: {e}")
+                    logger.warning(f"Error parsing Hub'Eau historical data: {e}")
                     continue
 
             return sorted(levels, key=lambda x: x.timestamp)
 
     except httpx.HTTPStatusError as e:
-        print(f"Hub'Eau API error for historical data {station_id}: {e.response.status_code}")
+        logger.warning(f"Hub'Eau API error for historical data {station_id}: {e.response.status_code}")
         return []
     except Exception as e:
-        print(f"Error fetching Hub'Eau historical data for station {station_id}: {e}")
+        logger.warning(f"Error fetching Hub'Eau historical data for station {station_id}: {e}")
         return []
 
 
@@ -277,17 +301,17 @@ async def fetch_hydroportail_data(
                         )
                     )
                 except (KeyError, ValueError, TypeError) as e:
-                    print(f"Error parsing Hydroportail observation: {e}")
+                    logger.warning(f"Error parsing Hydroportail observation: {e}")
                     continue
 
-            print(f"  Hydroportail: {len(levels)} sub-hourly points for {station_config.get('name', station_id)}")
+            logger.info(f"  Hydroportail: {len(levels)} sub-hourly points for {station_config.get('name', station_id)}")
             return sorted(levels, key=lambda x: x.timestamp)
 
     except httpx.HTTPStatusError as e:
-        print(f"Hydroportail API error for {station_id}: {e.response.status_code}")
+        logger.warning(f"Hydroportail API error for {station_id}: {e.response.status_code}")
         return []
     except Exception as e:
-        print(f"Error fetching Hydroportail data for {station_id}: {e}")
+        logger.warning(f"Error fetching Hydroportail data for {station_id}: {e}")
         return []
 
 
@@ -295,31 +319,48 @@ async def fetch_all_stations_realtime(hours_back: int = 48) -> dict[str, list[Ri
     """
     Fetch real-time data for all configured stations.
 
+    Stations are fetched concurrently (at most MAX_CONCURRENT_REQUESTS at a
+    time) over a single HTTP client. Results are cached per ``hours_back`` for
+    CACHE_DURATION_MINUTES; a lock prevents concurrent callers from issuing
+    duplicate requests.
+
     Returns:
         Dictionary mapping station_id to list of RiverLevel
     """
-    global _stations_cache, _cache_expiry
-
     now = datetime.utcnow()
+    cached = _stations_cache_by_hours.get(hours_back)
+    if cached and cached[0] > now:
+        return cached[1]
 
-    # Check cache
-    if _cache_expiry and _cache_expiry > now and _stations_cache:
-        return _stations_cache
+    async with _stations_lock:
+        now = datetime.utcnow()
+        cached = _stations_cache_by_hours.get(hours_back)
+        if cached and cached[0] > now:
+            return cached[1]
 
-    settings = get_settings()
-    results = {}
+        settings = get_settings()
+        semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-    for station in settings.hubeau_stations:
-        station_id = station["id"]
-        levels = await fetch_realtime_observations(station_id, hours_back)
-        if levels:
-            results[station_id] = levels
+        async with httpx.AsyncClient() as client:
+            async def _one(station_id: str) -> tuple[str, list[RiverLevel]]:
+                async with semaphore:
+                    return station_id, await fetch_realtime_observations(
+                        station_id, hours_back, client=client
+                    )
 
-    # Update cache
-    _stations_cache = results
-    _cache_expiry = now + timedelta(minutes=CACHE_DURATION_MINUTES)
+            fetched = await asyncio.gather(
+                *[_one(station["id"]) for station in settings.hubeau_stations]
+            )
 
-    return results
+        results = {station_id: levels for station_id, levels in fetched if levels}
+
+        # Do not cache a total failure: retry on next call
+        if results:
+            _stations_cache_by_hours[hours_back] = (
+                now + timedelta(minutes=CACHE_DURATION_MINUTES), results
+            )
+
+        return results
 
 
 async def get_multi_station_data() -> MultiStationData:
@@ -331,6 +372,7 @@ async def get_multi_station_data() -> MultiStationData:
     """
     settings = get_settings()
     all_data = await fetch_all_stations_realtime(hours_back=24)
+    now = datetime.utcnow()
 
     stations = []
     for station_config in settings.hubeau_stations:
@@ -341,8 +383,8 @@ async def get_multi_station_data() -> MultiStationData:
             continue
 
         current = levels[-1]
-        tendency = _calculate_tendency(levels)
-        rate = _calculate_rate_of_change(levels)
+        tendency = _calculate_tendency(levels, t=now)
+        rate = _calculate_rate_of_change(levels, t=now)
 
         # Get thresholds for this station
         thresholds = station_config.get("thresholds", {})
@@ -453,73 +495,125 @@ def _get_station_config(station_id: str) -> dict:
     return {"name": "Unknown", "river": "Unknown"}
 
 
-def _calculate_tendency(levels: list[RiverLevel], window_hours: int = 3) -> Tendency:
+def _to_naive_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _point_ts_height(point) -> tuple[datetime, float]:
+    """Extract (timestamp, height_m) from a RiverLevel, a dict or a tuple."""
+    if isinstance(point, (tuple, list)):
+        ts, h = point[0], point[1]
+    elif isinstance(point, dict):
+        ts, h = point["timestamp"], point["height_m"]
+    else:
+        ts, h = point.timestamp, point.height_m
+    if isinstance(ts, str):
+        ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return _to_naive_utc(ts), float(h)
+
+
+def rate_cm_per_hour(
+    points: Iterable,
+    t: datetime,
+    window_h: float = 3.0,
+    min_points: int = 3,
+    min_span_h: float = 0.5,
+) -> float:
+    """Rate of water level change at time ``t`` in cm/h (positive = rising).
+
+    Ordinary least-squares slope of height vs time over the points in
+    [t - window_h, t]. Points after ``t`` are ignored, so the helper can be
+    used for live data (t = now) and for replays/backfills (t = past instant)
+    without look-ahead. A regression over 3h is much less noisy than a
+    first/last difference over 1h of 5-min data.
+
+    Args:
+        points: RiverLevel objects, dicts with "timestamp"/"height_m", or
+            (timestamp, height_m) tuples; timestamps naive UTC or tz-aware.
+        t: Evaluation instant (naive UTC or tz-aware).
+        window_h: Trailing window length in hours.
+        min_points: Minimum number of points in the window.
+        min_span_h: Minimum time span covered by those points (hours).
+
+    Returns:
+        Slope in cm/h, rounded to 0.01; 0.0 when there is not enough data.
     """
-    Calculate the tendency from recent measurements.
+    t_n = _to_naive_utc(t)
+    start = t_n - timedelta(hours=window_h)
+
+    xs: list[float] = []
+    ys: list[float] = []
+    for p in points:
+        try:
+            ts, h = _point_ts_height(p)
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError):
+            continue
+        if start <= ts <= t_n:
+            xs.append((ts - t_n).total_seconds() / 3600.0)
+            ys.append(h * 100.0)  # cm
+
+    if len(xs) < min_points or (max(xs) - min(xs)) < min_span_h:
+        return 0.0
+
+    n = len(xs)
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    sxx = sum((x - mean_x) ** 2 for x in xs)
+    if sxx <= 0:
+        return 0.0
+    sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    return round(sxy / sxx, 2)
+
+
+def _calculate_tendency(
+    levels: list[RiverLevel],
+    window_hours: float = 3,
+    t: Optional[datetime] = None,
+) -> Tendency:
+    """
+    Calculate the tendency from the regression rate over the last window.
+
+    RISING/FALLING when the regressed change over the window exceeds 5 cm.
 
     Args:
         levels: List of RiverLevel sorted by timestamp
         window_hours: Number of hours to consider for tendency
+        t: Evaluation instant (default: now, UTC); later points are ignored
 
     Returns:
         Tendency enum value
     """
-    if len(levels) < 2:
-        return Tendency.STABLE
-
-    now = levels[-1].timestamp
-    cutoff = now - timedelta(hours=window_hours)
-
-    recent = [lv for lv in levels if lv.timestamp >= cutoff]
-    if len(recent) < 2:
-        recent = levels[-5:] if len(levels) >= 5 else levels
-
-    if len(recent) < 2:
-        return Tendency.STABLE
-
-    first_height = recent[0].height_m
-    last_height = recent[-1].height_m
-    diff = last_height - first_height
+    rate = rate_cm_per_hour(levels, t or datetime.utcnow(), window_h=window_hours)
+    change_cm = rate * window_hours
 
     # More than 5cm change is significant
-    if diff > 0.05:
+    if change_cm > 5:
         return Tendency.RISING
-    elif diff < -0.05:
+    elif change_cm < -5:
         return Tendency.FALLING
     else:
         return Tendency.STABLE
 
 
-def _calculate_rate_of_change(levels: list[RiverLevel], window_hours: int = 1) -> float:
+def _calculate_rate_of_change(
+    levels: list[RiverLevel],
+    window_hours: float = 3,
+    t: Optional[datetime] = None,
+) -> float:
     """
-    Calculate rate of water level change in cm/hour.
+    Calculate rate of water level change in cm/hour (see rate_cm_per_hour).
 
     Args:
         levels: List of RiverLevel sorted by timestamp
-        window_hours: Number of hours to consider
+        window_hours: Number of hours to consider (default 3h regression)
+        t: Evaluation instant (default: now, UTC); later points are ignored
 
     Returns:
-        Rate of change in cm/hour (positive = rising)
+        Rate of change in cm/hour (positive = rising), rounded to 0.1
     """
-    if len(levels) < 2:
-        return 0.0
-
-    now = levels[-1].timestamp
-    cutoff = now - timedelta(hours=window_hours)
-
-    recent = [lv for lv in levels if lv.timestamp >= cutoff]
-    if len(recent) < 2:
-        return 0.0
-
-    first = recent[0]
-    last = recent[-1]
-
-    time_diff_hours = (last.timestamp - first.timestamp).total_seconds() / 3600
-    if time_diff_hours < 0.1:  # Less than 6 minutes
-        return 0.0
-
-    height_diff_cm = (last.height_m - first.height_m) * 100
-    return round(height_diff_cm / time_diff_hours, 1)
+    return round(rate_cm_per_hour(levels, t or datetime.utcnow(), window_h=window_hours), 1)
 
 
 async def collect_and_store_all_stations():

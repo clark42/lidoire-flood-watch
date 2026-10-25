@@ -12,12 +12,17 @@ Includes:
 """
 
 import asyncio
+import logging
+import math
+import time
 import httpx
 from datetime import datetime, timedelta
 from typing import Optional
 
 from app.config import get_settings
 from app.models.schemas import WeatherForecast, RainfallObservation, RainfallSummary
+
+logger = logging.getLogger(__name__)
 
 # Open-Meteo API endpoints
 OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/meteofrance"
@@ -35,6 +40,18 @@ OPEN_METEO_MODELS = {
 # Cache
 _weather_cache: dict = {}
 _cache_expiry: Optional[datetime] = None
+
+# In-memory TTL cache for Open-Meteo past hourly rain, keyed by (lat, lon).
+# Shared by get_rainfall_summary, get_past_rainfall_sums (Netatmo fallback)
+# and fetch_past_hourly_rain (forecast seeding): one HTTP call per 15 min.
+PAST_RAIN_CACHE_TTL_S = 15 * 60
+_past_rain_cache: dict[tuple[float, float], tuple[float, list[tuple[datetime, float]]]] = {}
+_past_rain_lock = asyncio.Lock()
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.utcnow()
 
 # Soil moisture thresholds for saturation factor
 # m³/m³ volumetric water content
@@ -55,6 +72,9 @@ async def fetch_open_meteo_forecast(lat: float, lon: float, forecast_days: int =
         lat: Latitude
         lon: Longitude
         forecast_days: Number of days to forecast (default 14, max 16)
+
+    Timestamps are naive UTC. Open-Meteo hourly precipitation at label T is the
+    sum over the preceding hour [T-1h, T).
     """
     try:
         async with httpx.AsyncClient() as client:
@@ -67,7 +87,8 @@ async def fetch_open_meteo_forecast(lat: float, lon: float, forecast_days: int =
                         "longitude": lon,
                         "hourly": "precipitation,rain,temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m",
                         "forecast_days": min(forecast_days, 16),
-                        "timezone": "Europe/Paris",
+                        # UTC: all callers compare these naive timestamps to utcnow()
+                        "timezone": "UTC",
                     },
                     timeout=30.0,
                 ),
@@ -78,7 +99,7 @@ async def fetch_open_meteo_forecast(lat: float, lon: float, forecast_days: int =
                         "longitude": lon,
                         "hourly": "precipitation,temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m",
                         "forecast_days": min(forecast_days, 16),
-                        "timezone": "Europe/Paris",
+                        "timezone": "UTC",
                     },
                     timeout=30.0,
                 ),
@@ -135,7 +156,7 @@ async def fetch_open_meteo_forecast(lat: float, lon: float, forecast_days: int =
             return forecasts
 
     except Exception as e:
-        print(f"Error fetching Open-Meteo forecast: {e}")
+        logger.warning(f"Error fetching Open-Meteo forecast: {e}")
         return []
 
 
@@ -187,7 +208,7 @@ async def fetch_multi_model_forecast(
                     for i in range(len(dates))
                 ]
         except Exception as e:
-            print(f"Error fetching {model_name} forecast: {e}")
+            logger.warning(f"Error fetching {model_name} forecast: {e}")
             return model_name, []
 
     # Fetch all Open-Meteo models in parallel
@@ -213,7 +234,7 @@ async def fetch_multi_model_forecast(
                 "rain_max_mm": ma_data.rain_max_mm,
             }]
     except Exception as e:
-        print(f"Error fetching Meteo Agricole for ensemble: {e}")
+        logger.warning(f"Error fetching Meteo Agricole for ensemble: {e}")
 
     # Build ensemble (average across models for each day)
     all_dates = set()
@@ -255,6 +276,20 @@ async def fetch_multi_model_forecast(
     }
 
 
+def _current_hour_index(times: list[str], now: datetime) -> int:
+    """Index of the last hourly label <= now (naive UTC). 0 if none parse."""
+    idx = 0
+    for i, time_str in enumerate(times):
+        try:
+            if datetime.fromisoformat(time_str) <= now:
+                idx = i
+            else:
+                break
+        except (TypeError, ValueError):
+            continue
+    return idx
+
+
 async def fetch_soil_and_wind(lat: float, lon: float) -> dict:
     """
     Fetch current soil moisture and wind data from Open-Meteo.
@@ -288,8 +323,11 @@ async def fetch_soil_and_wind(lat: float, lon: float) -> dict:
                         "wind_speed_10m",
                         "wind_direction_10m",
                     ]),
+                    # Daily ET0 sum (mm/day): the hourly value is mm/hour and
+                    # cannot be compared to the mm/day thresholds below.
+                    "daily": "et0_fao_evapotranspiration",
                     "forecast_days": 1,
-                    "timezone": "Europe/Paris",
+                    "timezone": "UTC",
                 },
                 timeout=30.0,
             )
@@ -297,9 +335,9 @@ async def fetch_soil_and_wind(lat: float, lon: float) -> dict:
             data = response.json()
 
             hourly = data.get("hourly", {})
-            # Get current hour's data (index 0-23 based on current hour)
-            now = datetime.now()
-            current_hour = now.hour
+            # Index of the current UTC hour in the (UTC) hourly series.
+            # Name kept as current_hour for the lookups below.
+            current_hour = _current_hour_index(hourly.get("time", []), _utcnow())
 
             soil_0_1 = hourly.get("soil_moisture_0_to_1cm", [])
             soil_1_3 = hourly.get("soil_moisture_1_to_3cm", [])
@@ -334,12 +372,14 @@ async def fetch_soil_and_wind(lat: float, lon: float) -> dict:
                 else None
             )
 
-            # ET0 evapotranspiration (mm/day)
-            et0_mm = (
-                et0_list[current_hour]
-                if current_hour < len(et0_list) and et0_list[current_hour] is not None
-                else None
-            )
+            # ET0 evapotranspiration (mm/day): daily sum, hourly fallback x24
+            daily_et0 = (data.get("daily", {}) or {}).get("et0_fao_evapotranspiration", []) or []
+            if daily_et0 and daily_et0[0] is not None:
+                et0_mm = daily_et0[0]
+            elif current_hour < len(et0_list) and et0_list[current_hour] is not None:
+                et0_mm = et0_list[current_hour] * 24
+            else:
+                et0_mm = None
 
             # Precipitation probability
             precip_prob = (
@@ -371,13 +411,20 @@ async def fetch_soil_and_wind(lat: float, lon: float) -> dict:
 
             saturation_factor = round(saturation_factor, 2)
 
-            # Get current wind
-            current_wind_speed = wind_speed[current_hour] if current_hour < len(wind_speed) else 0
-            current_wind_dir = wind_dir[current_hour] if current_hour < len(wind_dir) else 0
+            # Get current wind (None-safe)
+            current_wind_speed = (
+                wind_speed[current_hour]
+                if current_hour < len(wind_speed) and wind_speed[current_hour] is not None
+                else 0
+            )
+            current_wind_dir = (
+                wind_dir[current_hour]
+                if current_hour < len(wind_dir) and wind_dir[current_hour] is not None
+                else 0
+            )
 
             # Calculate westerly wind component
             # West = 270°, we want winds from 225° (SW) to 315° (NW)
-            import math
             wind_rad = math.radians(current_wind_dir)
             # Westerly component: positive when wind comes from west
             westerly_component = current_wind_speed * math.cos(math.radians(270) - wind_rad)
@@ -396,7 +443,7 @@ async def fetch_soil_and_wind(lat: float, lon: float) -> dict:
             }
 
     except Exception as e:
-        print(f"Error fetching soil/wind data: {e}")
+        logger.warning(f"Error fetching soil/wind data: {e}")
         return {
             "soil_moisture": 0.25,
             "moisture_deep": None,
@@ -427,7 +474,7 @@ async def fetch_open_meteo_historical(
                     "start_date": start_date.strftime("%Y-%m-%d"),
                     "end_date": end_date.strftime("%Y-%m-%d"),
                     "hourly": "precipitation,rain",
-                    "timezone": "Europe/Paris",
+                    "timezone": "UTC",
                 },
                 timeout=60.0,
             )
@@ -440,12 +487,17 @@ async def fetch_open_meteo_historical(
             precip = hourly.get("precipitation", [])
 
             for i, time_str in enumerate(times):
+                # Archive (ERA5) lags several days: missing hours are null.
+                # Skip them instead of reporting 0 mm.
+                p = precip[i] if i < len(precip) else None
+                if p is None:
+                    continue
                 try:
                     observations.append(
                         RainfallObservation(
                             timestamp=datetime.fromisoformat(time_str),
                             source="open-meteo-archive",
-                            precipitation_mm_h=precip[i] if i < len(precip) else 0,
+                            precipitation_mm_h=p,
                             basin_avg=False,
                         )
                     )
@@ -455,7 +507,7 @@ async def fetch_open_meteo_historical(
             return observations
 
     except Exception as e:
-        print(f"Error fetching Open-Meteo historical data: {e}")
+        logger.warning(f"Error fetching Open-Meteo historical data: {e}")
         return []
 
 
@@ -496,90 +548,50 @@ async def fetch_basin_rainfall(points: list[dict]) -> list[RainfallObservation]:
     return observations
 
 
-def _generate_mock_rainfall() -> RainfallSummary:
-    """Generate mock rainfall summary for development."""
-    return RainfallSummary(
-        last_hour_mm=0.5,
-        last_6h_mm=3.2,
-        last_24h_mm=12.5,
-        last_72h_mm=28.0,
-        forecast_24h_mm=8.0,
-        forecast_72h_mm=25.0,
-    )
-
-
 async def get_rainfall_summary() -> RainfallSummary:
     """
-    Get current rainfall summary for the basin.
+    Get current rainfall summary for the basin (moulin point).
 
     Includes:
-    - Historical rainfall (1h, 6h, 24h, 72h, 7d)
-    - Forecast rainfall (24h, 72h)
+    - Observed rainfall (1h, 6h, 24h, 72h, 7d) from the Open-Meteo forecast
+      endpoint with past_days in UTC (see get_past_rainfall_sums): windows
+      contain the N latest *complete* hours, never future hours.
+    - Forecast rainfall (24h, 72h): hourly labels in (now, now + N h].
     - Soil moisture and saturation factor
     """
     global _weather_cache, _cache_expiry
 
     settings = get_settings()
-    now = datetime.utcnow()
+    now = _utcnow()
 
     # Check cache (15 min for rainfall data)
     if _cache_expiry and _cache_expiry > now and "summary" in _weather_cache:
         return _weather_cache["summary"]
 
-    # Fetch forecast data
-    forecasts = await fetch_open_meteo_forecast(settings.moulin_lat, settings.moulin_lon)
-
-    # Fetch historical data (last 7 days)
-    historical = await fetch_open_meteo_historical(
-        settings.moulin_lat,
-        settings.moulin_lon,
-        now - timedelta(days=7),
-        now,
+    forecasts, past, soil_wind = await asyncio.gather(
+        fetch_open_meteo_forecast(settings.moulin_lat, settings.moulin_lon),
+        get_past_rainfall_sums(settings.moulin_lat, settings.moulin_lon),
+        fetch_soil_and_wind(settings.moulin_lat, settings.moulin_lon),
     )
+    if not past:
+        logger.warning("Rainfall summary: Open-Meteo past rain unavailable, observed sums set to 0")
 
-    # Fetch soil moisture and wind data
-    soil_wind = await fetch_soil_and_wind(settings.moulin_lat, settings.moulin_lon)
-
-    # Calculate historical rainfall sums
-    last_hour_mm = 0.0
-    last_6h_mm = 0.0
-    last_24h_mm = 0.0
-    last_72h_mm = 0.0
-    last_7d_mm = 0.0
-
-    for obs in historical:
-        hours_ago = (now - obs.timestamp).total_seconds() / 3600
-        precip = obs.precipitation_mm_h or 0
-
-        if hours_ago <= 1:
-            last_hour_mm += precip
-        if hours_ago <= 6:
-            last_6h_mm += precip
-        if hours_ago <= 24:
-            last_24h_mm += precip
-        if hours_ago <= 72:
-            last_72h_mm += precip
-        if hours_ago <= 168:  # 7 days
-            last_7d_mm += precip
-
-    # Calculate forecast rainfall sums
+    # Calculate forecast rainfall sums (strictly future hours)
     forecast_24h = 0.0
     forecast_72h = 0.0
-
-    if forecasts:
-        for f in forecasts:
-            hours_ahead = (f.timestamp - now).total_seconds() / 3600
-            if 0 <= hours_ahead <= 24:
-                forecast_24h += f.precipitation_mm
-            if 0 <= hours_ahead <= 72:
-                forecast_72h += f.precipitation_mm
+    for f in forecasts or []:
+        hours_ahead = (f.timestamp - now).total_seconds() / 3600
+        if 0 < hours_ahead <= 24:
+            forecast_24h += f.precipitation_mm
+        if 0 < hours_ahead <= 72:
+            forecast_72h += f.precipitation_mm
 
     summary = RainfallSummary(
-        last_hour_mm=round(last_hour_mm, 1),
-        last_6h_mm=round(last_6h_mm, 1),
-        last_24h_mm=round(last_24h_mm, 1),
-        last_72h_mm=round(last_72h_mm, 1),
-        last_7d_mm=round(last_7d_mm, 1),
+        last_hour_mm=past.get("rain_1h_mm", 0.0),
+        last_6h_mm=past.get("rain_6h_mm", 0.0),
+        last_24h_mm=past.get("rain_24h_mm", 0.0),
+        last_72h_mm=past.get("rain_72h_mm", 0.0),
+        last_7d_mm=past.get("rain_7d_mm", 0.0),
         forecast_24h_mm=round(forecast_24h, 1),
         forecast_72h_mm=round(forecast_72h, 1),
         soil_moisture=soil_wind["soil_moisture"],
@@ -648,7 +660,7 @@ async def get_soil_wind_cached() -> dict:
         # Get agricultural data if available
         agri_cached = await influx_client.query_latest_point("soil_agricultural", "moulin", max_age_hours=1)
 
-        print("soil/wind: from InfluxDB cache")
+        logger.info("soil/wind: from InfluxDB cache")
         return {
             "soil_moisture": cached.get("moisture", 0.25),
             "moisture_deep": agri_cached.get("moisture_deep") if agri_cached else None,
@@ -662,7 +674,7 @@ async def get_soil_wind_cached() -> dict:
         }
 
     # 2. Fetch from Open-Meteo
-    print("soil/wind: fetching from Open-Meteo API")
+    logger.info("soil/wind: fetching from Open-Meteo API")
     data = await fetch_soil_and_wind(settings.moulin_lat, settings.moulin_lon)
 
     # 3. Store to InfluxDB
@@ -705,7 +717,7 @@ async def get_soil_wind_cached() -> dict:
                 timestamp=now,
             )
     except Exception as e:
-        print(f"Error storing soil/wind to InfluxDB: {e}")
+        logger.warning(f"Error storing soil/wind to InfluxDB: {e}")
 
     return data
 
@@ -726,6 +738,113 @@ async def get_current_wind() -> dict:
     }
 
 
+def _parse_hourly_series(data: dict) -> list[tuple[datetime, float]]:
+    """Parse an Open-Meteo hourly precipitation payload (timezone=UTC).
+
+    Returns sorted (label, mm) pairs; null values are skipped (missing, not 0).
+    """
+    hourly = (data or {}).get("hourly", {}) or {}
+    times = hourly.get("time", []) or []
+    precip = hourly.get("precipitation", []) or []
+    series: list[tuple[datetime, float]] = []
+    for time_str, p in zip(times, precip):
+        if p is None:
+            continue
+        try:
+            series.append((datetime.fromisoformat(time_str), float(p)))
+        except (TypeError, ValueError):
+            continue
+    series.sort(key=lambda x: x[0])
+    return series
+
+
+def sum_rain_windows(
+    series: list[tuple[datetime, float]],
+    now: datetime,
+    windows_h: tuple[int, ...] = (1, 6, 24, 72, 168),
+) -> dict[int, float]:
+    """Sum hourly rain over trailing windows ending at ``now`` (naive UTC).
+
+    Label T holds rain over [T-1h, T). An hour is counted in the N-hour window
+    when it is complete (T <= now) and 0 <= now - T < N h, i.e. the N latest
+    complete hours, which approximates [now - N h, now). Future (forecast)
+    hours are never counted.
+    """
+    sums = {w: 0.0 for w in windows_h}
+    for ts, p in series:
+        hours_ago = (now - ts).total_seconds() / 3600
+        if hours_ago < 0:
+            continue
+        for w in windows_h:
+            if hours_ago < w:
+                sums[w] += p
+    return {w: round(v, 1) for w, v in sums.items()}
+
+
+def hourly_offsets(
+    series: list[tuple[datetime, float]],
+    now: datetime,
+    past_days: int = 7,
+) -> dict[int, float]:
+    """Map complete past hours to negative offsets: -1 = latest complete hour.
+
+    Offset = -(floor((now - T) / 1h) + 1) for labels T <= now, so the hour that
+    ended less than one hour ago is -1 (it used to be lost by int() truncation).
+    """
+    result: dict[int, float] = {}
+    max_hours = past_days * 24
+    for ts, p in series:
+        hours_ago = (now - ts).total_seconds() / 3600
+        if hours_ago < 0:
+            continue
+        offset = -(math.floor(hours_ago) + 1)
+        if -offset <= max_hours:
+            result[offset] = p
+    return result
+
+
+async def _fetch_past_hourly_series(lat: float, lon: float) -> list[tuple[datetime, float]]:
+    """Hourly precipitation for the last 7 days + today (UTC), cached 15 min.
+
+    Uses the forecast endpoint (no multi-day lag, unlike the ERA5 archive).
+    ``forecast_days=1`` is required: with ``forecast_days=0`` Open-Meteo stops at
+    yesterday 23:00 and today's hours would be missing. Future labels are
+    filtered by the consumers. Returns [] on error (errors are not cached).
+    """
+    key = (round(lat, 4), round(lon, 4))
+    cached = _past_rain_cache.get(key)
+    if cached and time.monotonic() - cached[0] < PAST_RAIN_CACHE_TTL_S:
+        return cached[1]
+
+    async with _past_rain_lock:
+        cached = _past_rain_cache.get(key)
+        if cached and time.monotonic() - cached[0] < PAST_RAIN_CACHE_TTL_S:
+            return cached[1]
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    OPEN_METEO_CURRENT,
+                    params={
+                        "latitude": lat,
+                        "longitude": lon,
+                        "hourly": "precipitation",
+                        "past_days": 7,
+                        "forecast_days": 1,
+                        "timezone": "UTC",
+                    },
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                series = _parse_hourly_series(response.json())
+        except Exception as e:
+            logger.warning("Error fetching past hourly rain from Open-Meteo: %s", e)
+            return []
+
+        if series:
+            _past_rain_cache[key] = (time.monotonic(), series)
+        return series
+
+
 async def fetch_past_hourly_rain(lat: float, lon: float, past_days: int = 7) -> dict[int, float]:
     """
     Fetch past observed hourly precipitation from Open-Meteo.
@@ -734,46 +853,11 @@ async def fetch_past_hourly_rain(lat: float, lon: float, past_days: int = 7) -> 
     provides observed data for the recent past (no multi-day lag).
 
     Returns:
-        Dict mapping hour_offset (negative int, e.g. -1 = 1h ago) to precipitation_mm.
+        Dict mapping hour_offset (negative int, -1 = latest complete hour,
+        i.e. the hour that ended less than 1h ago) to precipitation_mm.
     """
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                OPEN_METEO_CURRENT,
-                params={
-                    "latitude": lat,
-                    "longitude": lon,
-                    "hourly": "precipitation",
-                    "past_days": past_days,
-                    "forecast_days": 0,
-                    "timezone": "UTC",
-                },
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            hourly = data.get("hourly", {})
-            times = hourly.get("time", [])
-            precip = hourly.get("precipitation", [])
-
-            now = datetime.utcnow()
-            result: dict[int, float] = {}
-
-            for i, time_str in enumerate(times):
-                if i >= len(precip):
-                    break
-                ts = datetime.fromisoformat(time_str)
-                hour_offset = int((ts - now).total_seconds() / 3600)
-                p = precip[i] or 0
-                if -(past_days * 24) <= hour_offset < 0:
-                    result[hour_offset] = p
-
-            return result
-
-    except Exception as e:
-        print(f"Error fetching past hourly rain from Open-Meteo: {e}")
-        return {}
+    series = await _fetch_past_hourly_series(lat, lon)
+    return hourly_offsets(series, _utcnow(), past_days)
 
 
 async def get_past_rainfall_sums(lat: float, lon: float) -> dict:
@@ -782,95 +866,75 @@ async def get_past_rainfall_sums(lat: float, lon: float) -> dict:
 
     Uses the standard forecast endpoint which provides observed data
     for the recent past, unlike the archive API which has a multi-day lag.
+    Windows follow sum_rain_windows (latest complete hours, UTC).
 
     Returns:
-        Dict with keys: rain_24h_mm, rain_72h_mm, rain_7d_mm (in mm)
+        Dict with keys: rain_1h_mm, rain_6h_mm, rain_24h_mm, rain_72h_mm,
+        rain_7d_mm (in mm), or {} when Open-Meteo is unavailable.
     """
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                OPEN_METEO_CURRENT,
-                params={
-                    "latitude": lat,
-                    "longitude": lon,
-                    "hourly": "precipitation",
-                    "past_days": 7,
-                    "forecast_days": 0,
-                    "timezone": "UTC",
-                },
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            hourly = data.get("hourly", {})
-            times = hourly.get("time", [])
-            precip = hourly.get("precipitation", [])
-
-            now = datetime.utcnow()
-            rain_24h = 0.0
-            rain_72h = 0.0
-            rain_7d = 0.0
-
-            for i, time_str in enumerate(times):
-                if i >= len(precip):
-                    break
-                ts = datetime.fromisoformat(time_str)
-                hours_ago = (now - ts).total_seconds() / 3600
-                p = precip[i] or 0
-
-                if 0 <= hours_ago <= 24:
-                    rain_24h += p
-                if 0 <= hours_ago <= 72:
-                    rain_72h += p
-                if 0 <= hours_ago <= 168:
-                    rain_7d += p
-
-            return {
-                "rain_24h_mm": round(rain_24h, 1),
-                "rain_72h_mm": round(rain_72h, 1),
-                "rain_7d_mm": round(rain_7d, 1),
-            }
-
-    except Exception as e:
-        print(f"Error fetching past rainfall from Open-Meteo: {e}")
+    series = await _fetch_past_hourly_series(lat, lon)
+    if not series:
         return {}
+    sums = sum_rain_windows(series, _utcnow())
+    return {
+        "rain_1h_mm": sums[1],
+        "rain_6h_mm": sums[6],
+        "rain_24h_mm": sums[24],
+        "rain_72h_mm": sums[72],
+        "rain_7d_mm": sums[168],
+    }
+
+
+async def get_last_complete_hour_rain(lat: float, lon: float) -> Optional[tuple[datetime, float]]:
+    """Latest complete hour (label T <= now, rain over [T-1h, T)) or None."""
+    series = await _fetch_past_hourly_series(lat, lon)
+    now = _utcnow()
+    past = [(ts, p) for ts, p in series if ts <= now]
+    return past[-1] if past else None
 
 
 async def collect_and_store_weather():
     """Collect weather data and store in database.
+
+    The Open-Meteo rainfall point is written at the label of the latest complete
+    hour (same timestamp convention as fetch_and_store_historical_rainfall), so
+    the "open-meteo / Moulin-Lidoire" series keeps exactly one point per hour
+    and sum aggregations stay correct.
 
     Uses get_soil_wind_cached() which handles its own InfluxDB storage,
     avoiding double writes for soil/wind data.
     """
     from app.services import influx_client
 
-    now = datetime.utcnow()
+    settings = get_settings()
     stored = 0
 
-    # Fetch and store rainfall summary
     summary = await get_rainfall_summary()
+    last_hour = await get_last_complete_hour_rain(settings.moulin_lat, settings.moulin_lon)
 
-    # Store rainfall to InfluxDB
-    try:
-        success = await influx_client.write_rainfall(
-            source="open-meteo",
-            precipitation_mm_h=summary.last_hour_mm,
-            timestamp=now,
-            precipitation_mm_24h=summary.last_24h_mm,
-            station_city="Moulin-Lidoire",
-        )
-        if success:
-            stored += 1
-    except Exception as e:
-        print(f"Error storing rainfall to InfluxDB: {e}")
+    if last_hour is not None:
+        hour_ts, hour_mm = last_hour
+        try:
+            success = await influx_client.write_rainfall(
+                source="open-meteo",
+                precipitation_mm_h=hour_mm,
+                timestamp=hour_ts,
+                precipitation_mm_24h=summary.last_24h_mm,
+                station_city="Moulin-Lidoire",
+            )
+            if success:
+                stored += 1
+        except Exception as e:
+            logger.warning("Error storing rainfall to InfluxDB: %s", e)
+    else:
+        logger.warning("No Open-Meteo past rain available: rainfall point not stored")
 
     # Fetch soil/wind data via cache-through (handles its own InfluxDB storage)
     try:
         await get_soil_wind_cached()
         stored += 2  # soil + wind
     except Exception as e:
-        print(f"Error collecting soil/wind data: {e}")
+        logger.warning("Error collecting soil/wind data: %s", e)
 
     return stored
 
@@ -925,7 +989,7 @@ async def fetch_and_store_historical_rainfall(start: datetime, end: datetime) ->
             precips = hourly.get("precipitation", [])
 
             if not times or not precips:
-                print(f"No precipitation data from Open-Meteo for {start_str} -> {end_str}")
+                logger.info(f"No precipitation data from Open-Meteo for {start_str} -> {end_str}")
                 return 0
 
             stored = 0
@@ -940,11 +1004,11 @@ async def fetch_and_store_historical_rainfall(start: datetime, end: datetime) ->
                     if success:
                         stored += 1
 
-            print(f"Stored {stored} hourly precipitation points for {start_str} -> {end_str}")
+            logger.info(f"Stored {stored} hourly precipitation points for {start_str} -> {end_str}")
             return stored
 
     except Exception as e:
-        print(f"Error fetching historical rainfall from Open-Meteo: {e}")
+        logger.warning(f"Error fetching historical rainfall from Open-Meteo: {e}")
         return 0
 
 
@@ -1009,7 +1073,7 @@ async def fetch_and_store_soil_historical(start: datetime, end: datetime) -> int
             et0_list = hourly.get("et0_fao_evapotranspiration", [])
 
             if not times:
-                print(f"No soil data from Open-Meteo for {start_str} -> {end_str}")
+                logger.info(f"No soil data from Open-Meteo for {start_str} -> {end_str}")
                 return 0
 
             stored = 0
@@ -1054,11 +1118,11 @@ async def fetch_and_store_soil_historical(start: datetime, end: datetime) -> int
                 except (ValueError, Exception):
                     continue
 
-            print(f"Stored {stored} soil timeline points for {start_str} -> {end_str}")
+            logger.info(f"Stored {stored} soil timeline points for {start_str} -> {end_str}")
             return stored
 
     except Exception as e:
-        print(f"Error fetching historical soil data from Open-Meteo: {e}")
+        logger.warning(f"Error fetching historical soil data from Open-Meteo: {e}")
         return 0
 
 
@@ -1104,7 +1168,7 @@ async def fetch_and_store_wind_historical(start: datetime, end: datetime) -> int
             directions = hourly.get("wind_direction_10m", [])
 
             if not times:
-                print(f"No wind data from Open-Meteo for {start_str} -> {end_str}")
+                logger.info(f"No wind data from Open-Meteo for {start_str} -> {end_str}")
                 return 0
 
             stored = 0
@@ -1139,9 +1203,9 @@ async def fetch_and_store_wind_historical(start: datetime, end: datetime) -> int
                 except (ValueError, Exception):
                     continue
 
-            print(f"Stored {stored} wind timeline points for {start_str} -> {end_str}")
+            logger.info(f"Stored {stored} wind timeline points for {start_str} -> {end_str}")
             return stored
 
     except Exception as e:
-        print(f"Error fetching historical wind data from Open-Meteo: {e}")
+        logger.warning(f"Error fetching historical wind data from Open-Meteo: {e}")
         return 0

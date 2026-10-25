@@ -13,14 +13,20 @@ Authentication:
 - Tokens are automatically refreshed and persisted
 """
 
-import httpx
-import unicodedata
-from datetime import datetime, timedelta
-from typing import Optional
+import asyncio
+import logging
 import math
+import re
+import unicodedata
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+import httpx
 
 from app.config import get_settings
 from app.models.schemas import RainfallObservation
+
+logger = logging.getLogger(__name__)
 
 
 # Netatmo API endpoints
@@ -35,6 +41,35 @@ CACHE_DURATION_MINUTES = 10
 # Cache for discovered Lidoire station device/module IDs (persists across requests)
 # Maps city_name -> {"device_id": str, "rain_module_id": str}
 _lidoire_device_cache: dict[str, dict] = {}
+
+# Serializes token refreshes (Netatmo rotates refresh tokens)
+_token_lock = asyncio.Lock()
+
+# Cache for InfluxDB cumulative history + Open-Meteo fallback (get_basin_rainfall)
+HISTORY_CACHE_MINUTES = 15
+_history_cache: dict = {}
+
+# Hourly-aligned precipitation_mm_h writes: (source, city) -> last slot written
+HOURLY_WRITE_MAX_LAG = timedelta(minutes=20)
+_last_hourly_write: dict[tuple[str, str], datetime] = {}
+
+_SAFE_SOURCE_RE = re.compile(r"^[a-z0-9-]+$")
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.utcnow()
+
+
+def _to_naive_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _utc_from_epoch(ts: int | float) -> datetime:
+    """Epoch seconds -> naive UTC (datetime.fromtimestamp alone gives local time)."""
+    return datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
 
 
 def _get_stored_tokens() -> dict:
@@ -52,7 +87,19 @@ def _update_stored_tokens(access_token: str, refresh_token: str, expires_in: int
         from app.api.auth import update_netatmo_tokens
         update_netatmo_tokens(access_token, refresh_token, expires_in)
     except ImportError:
-        print("Warning: Could not persist Netatmo tokens")
+        logger.warning("Could not persist Netatmo tokens")
+
+
+def _valid_access_token(tokens: dict) -> Optional[str]:
+    """Return the stored access token if it is valid for at least 5 more minutes."""
+    if tokens.get("access_token") and tokens.get("expires_at"):
+        try:
+            expiry = datetime.fromisoformat(tokens["expires_at"])
+            if expiry > datetime.utcnow() + timedelta(minutes=5):
+                return tokens["access_token"]
+        except (TypeError, ValueError):
+            pass
+    return None
 
 
 async def _get_access_token() -> Optional[str]:
@@ -63,6 +110,11 @@ async def _get_access_token() -> Optional[str]:
     After initial authorization via /api/auth/netatmo, tokens are
     automatically refreshed as needed.
 
+    Netatmo rotates refresh tokens: two concurrent refreshes with the same
+    refresh token would invalidate one another. The refresh is therefore
+    serialized by ``_token_lock`` and the stored tokens are re-read once the
+    lock is held (a concurrent caller may already have refreshed them).
+
     Returns:
         Access token string or None if not available
     """
@@ -70,34 +122,34 @@ async def _get_access_token() -> Optional[str]:
 
     # Check if we have credentials
     if not settings.netatmo_client_id or not settings.netatmo_client_secret:
-        print("Netatmo client credentials not configured")
+        logger.info("Netatmo client credentials not configured")
         return None
 
-    # Load stored tokens
-    tokens = _get_stored_tokens()
+    # Fast path: valid access token, no lock needed
+    token = _valid_access_token(_get_stored_tokens())
+    if token:
+        return token
 
-    # Check if we have a valid access token
-    if tokens.get("access_token") and tokens.get("expires_at"):
-        try:
-            expiry = datetime.fromisoformat(tokens["expires_at"])
-            if expiry > datetime.utcnow() + timedelta(minutes=5):
-                # Token still valid (with 5 min buffer)
-                return tokens["access_token"]
-        except Exception:
-            pass
+    async with _token_lock:
+        tokens = _get_stored_tokens()
+        token = _valid_access_token(tokens)
+        if token:
+            return token  # refreshed by a concurrent caller
 
-    # Need to refresh - check for refresh token
-    refresh_token = tokens.get("refresh_token")
+        refresh_token = tokens.get("refresh_token") or settings.netatmo_refresh_token
+        if not refresh_token:
+            logger.warning("Netatmo: No refresh token available. Please authorize at /api/auth/netatmo")
+            return None
 
-    # Fallback to env var if no stored token
-    if not refresh_token:
-        refresh_token = settings.netatmo_refresh_token
+        return await _refresh_access_token(refresh_token)
 
-    if not refresh_token:
-        print("Netatmo: No refresh token available. Please authorize at /api/auth/netatmo")
-        return None
 
-    # Refresh the token
+async def _refresh_access_token(refresh_token: str) -> Optional[str]:
+    """Exchange a refresh token for a new access token and persist both.
+
+    Must be called with ``_token_lock`` held.
+    """
+    settings = get_settings()
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -116,11 +168,11 @@ async def _get_access_token() -> Optional[str]:
 
             if response.status_code != 200:
                 error_text = response.text
-                print(f"Netatmo refresh error: {response.status_code} - {error_text}")
+                logger.warning("Netatmo refresh error: %s - %s", response.status_code, error_text)
 
                 # If refresh token is invalid, need to re-authorize
                 if "invalid" in error_text.lower() or response.status_code == 400:
-                    print("Netatmo: Refresh token invalid. Please re-authorize at /api/auth/netatmo")
+                    logger.warning("Netatmo: Refresh token invalid. Please re-authorize at /api/auth/netatmo")
 
                 return None
 
@@ -131,7 +183,7 @@ async def _get_access_token() -> Optional[str]:
             expires_in = data.get("expires_in", 10800)  # Usually 3 hours
 
             if not access_token:
-                print("Netatmo: No access token in response")
+                logger.warning("Netatmo: No access token in response")
                 return None
 
             # Save tokens (Netatmo rotates refresh tokens since May 2024)
@@ -141,11 +193,11 @@ async def _get_access_token() -> Optional[str]:
                 expires_in
             )
 
-            print(f"Netatmo token refreshed, expires in {expires_in}s")
+            logger.info("Netatmo token refreshed, expires in %ss", expires_in)
             return access_token
 
     except Exception as e:
-        print(f"Error refreshing Netatmo token: {e}")
+        logger.warning("Error refreshing Netatmo token: %s", e)
         return None
 
 
@@ -177,7 +229,7 @@ async def fetch_public_stations_data(
 
     token = await _get_access_token()
     if not token:
-        print("No Netatmo token available")
+        logger.info("No Netatmo token available")
         return []
 
     # Calculate bounding box from center + radius
@@ -221,10 +273,10 @@ async def fetch_public_stations_data(
             return stations
 
     except httpx.HTTPStatusError as e:
-        print(f"Netatmo API error: {e.response.status_code}")
+        logger.info(f"Netatmo API error: {e.response.status_code}")
         return []
     except Exception as e:
-        print(f"Error fetching Netatmo data: {e}")
+        logger.warning(f"Error fetching Netatmo data: {e}")
         return []
 
 
@@ -256,7 +308,7 @@ def _parse_station_data(station: dict, ref_lat: float, ref_lon: float) -> Option
                     "rain_60min_mm": module_data.get("rain_60min", 0) or 0,
                     "rain_24h_mm": module_data.get("rain_24h", 0) or 0,
                     "rain_live_mm": module_data.get("rain_live", 0) or 0,
-                    "timestamp": datetime.fromtimestamp(rain_timeutc) if rain_timeutc else datetime.utcnow(),
+                    "timestamp": _utc_from_epoch(rain_timeutc) if rain_timeutc else datetime.utcnow(),
                 }
 
             # Temperature/humidity modules have res structure
@@ -290,7 +342,7 @@ def _parse_station_data(station: dict, ref_lat: float, ref_lon: float) -> Option
         }
 
     except Exception as e:
-        print(f"Error parsing Netatmo station: {e}")
+        logger.warning(f"Error parsing Netatmo station: {e}")
         return None
 
 
@@ -349,6 +401,121 @@ def _match_priority_station(station: dict, priority_stations: list[dict]) -> dic
     return None
 
 
+def consecutive_daily_coverage(
+    timestamps: list[datetime],
+    now: datetime,
+    max_days: int = 7,
+) -> int:
+    """Number of consecutive 24h chunks (k = 0, 1, ...) that have a sample.
+
+    Mirrors the sampling of influx_client.query_station_rainfall_cumulative:
+    chunk k is covered when a precipitation_mm_24h point exists in
+    [now - 24k h - 3h, now - 24k h + 1h]. A 72h cumulative is complete when
+    coverage >= 3, a 7-day one when coverage >= 7. Counting points instead of
+    comparing values avoids flagging dry periods (0 == 0) as incomplete.
+    """
+    covered = 0
+    for k in range(max_days):
+        target = now - timedelta(hours=24 * k)
+        lo = target - timedelta(hours=3)
+        hi = target + timedelta(hours=1)
+        if any(lo <= ts <= hi for ts in timestamps):
+            covered += 1
+        else:
+            break
+    return covered
+
+
+async def _query_daily_coverage(cities: list[str], source: str = "netatmo-lidoire") -> dict[str, int]:
+    """Per-city consecutive 24h coverage of precipitation_mm_24h samples (one query).
+
+    Cities are filtered in Python (never interpolated into Flux: they come from
+    the Netatmo API).
+    """
+    from app.services import influx_client
+
+    if not _SAFE_SOURCE_RE.match(source):
+        raise ValueError(f"invalid rainfall source: {source!r}")
+
+    settings = get_settings()
+    now = datetime.utcnow()
+    start = now - timedelta(days=7, hours=4)
+    stop = now + timedelta(minutes=5)
+    query = f'''
+    from(bucket: "{settings.influxdb_bucket}")
+        |> range(start: {influx_client._flux_ts(start)}, stop: {influx_client._flux_ts(stop)})
+        |> filter(fn: (r) => r._measurement == "rainfall")
+        |> filter(fn: (r) => r.source == "{source}")
+        |> filter(fn: (r) => r._field == "precipitation_mm_24h")
+        |> keep(columns: ["_time", "city"])
+    '''
+    wanted = set(cities)
+    by_city: dict[str, list[datetime]] = {c: [] for c in cities}
+    tables = influx_client.get_query_api().query(query, org=settings.influxdb_org)
+    for table in tables:
+        for record in table.records:
+            city = record.values.get("city")
+            if city in wanted:
+                ts = record.get_time()
+                if ts is not None:
+                    by_city[city].append(_to_naive_utc(ts))
+    return {c: consecutive_daily_coverage(ts_list, now) for c, ts_list in by_city.items()}
+
+
+async def _get_lidoire_history(cities: list[str]) -> tuple[dict, dict, Optional[dict]]:
+    """InfluxDB cumulative rain, coverage and Open-Meteo fallback, cached 15 min.
+
+    Returns (historical_rainfall, coverage, open_meteo_fallback).
+    """
+    global _history_cache
+
+    settings = get_settings()
+    key = tuple(sorted(cities))
+    now = datetime.utcnow()
+    if (_history_cache.get("key") == key and _history_cache.get("expires")
+            and _history_cache["expires"] > now):
+        return _history_cache["historical"], _history_cache["coverage"], _history_cache["fallback"]
+
+    from app.services import influx_client
+
+    historical_rainfall: dict = {}
+    try:
+        historical_rainfall = await influx_client.query_all_stations_rainfall_cumulative(
+            cities, source="netatmo-lidoire"
+        )
+    except Exception as e:
+        logger.warning("Error fetching historical rainfall: %s", e)
+
+    coverage: dict[str, int] = {}
+    try:
+        coverage = await _query_daily_coverage(cities, source="netatmo-lidoire")
+    except Exception as e:
+        logger.warning("Error querying Netatmo rainfall coverage: %s", e)
+
+    # Open-Meteo fallback for 72h/7d when InfluxDB history is incomplete
+    # (Netatmo only provides 24h counters). The Open-Meteo call itself is
+    # cached 15 min in the weather collector.
+    open_meteo_fallback: Optional[dict] = None
+    needs_fallback = any(coverage.get(c, 0) < 7 for c in cities)
+    if needs_fallback:
+        try:
+            from app.services.collectors.weather import get_past_rainfall_sums
+            open_meteo_fallback = await get_past_rainfall_sums(
+                settings.moulin_lat, settings.moulin_lon
+            ) or None
+        except Exception as e:
+            logger.warning("Error fetching Open-Meteo fallback: %s", e)
+
+    _history_cache = {
+        "key": key,
+        "expires": now + timedelta(minutes=HISTORY_CACHE_MINUTES),
+        "historical": historical_rainfall,
+        "coverage": coverage,
+        "fallback": open_meteo_fallback,
+    }
+    return historical_rainfall, coverage, open_meteo_fallback
+
+
 async def get_basin_rainfall() -> dict:
     """
     Get rainfall data from Netatmo stations covering the Lidoire basin.
@@ -365,11 +532,12 @@ async def get_basin_rainfall() -> dict:
 
     # Fetch stations near the moulin
     # Note: Rain gauges are rare, need larger radius (closest ~50km from moulin)
-    stations = await fetch_public_stations_data(
+    # Copy: the returned list is the cached object and is extended/sorted below
+    stations = list(await fetch_public_stations_data(
         lat=settings.moulin_lat,
         lon=settings.moulin_lon,
         radius_km=75.0,  # Larger radius to find rain gauges
-    )
+    ))
 
     # Secondary search for upstream Lidoire basin (Saint-Rémy area)
     # This catches stations that might be cut off due to API limits
@@ -434,44 +602,12 @@ async def get_basin_rainfall() -> dict:
         if priority:
             lidoire_cities.append(s.get("city"))
 
-    # Query historical rainfall for Lidoire stations from InfluxDB
-    historical_rainfall = {}
+    # Historical cumulatives (InfluxDB), coverage and Open-Meteo fallback
+    historical_rainfall: dict = {}
+    coverage: dict[str, int] = {}
+    open_meteo_fallback: Optional[dict] = None
     if lidoire_cities:
-        try:
-            from app.services import influx_client
-            historical_rainfall = await influx_client.query_all_stations_rainfall_cumulative(
-                lidoire_cities, source="netatmo-lidoire"
-            )
-        except Exception as e:
-            print(f"Error fetching historical rainfall: {e}")
-
-    # Fallback: always fetch Open-Meteo past rainfall to supplement Netatmo
-    # 72h/7d data. Netatmo only provides 24h counters; InfluxDB often has
-    # insufficient history, causing 72h == 24h. Open-Meteo observed data
-    # (past_days=7) fills the gap reliably.
-    open_meteo_fallback = None
-    if lidoire_cities:
-        needs_fallback = True
-        if historical_rainfall:
-            sample = next(iter(historical_rainfall.values()), {})
-            r24 = sample.get("rain_24h_mm")
-            r72 = sample.get("rain_72h_mm")
-            r7d = sample.get("rain_7d_mm")
-            # Data looks complete if 72h and 7d differ from 24h
-            if r24 is not None and r72 is not None and r72 != r24 and r7d is not None and r7d != r72:
-                needs_fallback = False
-        if needs_fallback:
-            try:
-                from app.services.collectors.weather import get_past_rainfall_sums
-                open_meteo_fallback = await get_past_rainfall_sums(
-                    settings.moulin_lat, settings.moulin_lon
-                )
-                if open_meteo_fallback:
-                    print(f"Netatmo: using Open-Meteo fallback for 72h/7d "
-                          f"(72h={open_meteo_fallback.get('rain_72h_mm')}mm, "
-                          f"7d={open_meteo_fallback.get('rain_7d_mm')}mm)")
-            except Exception as e:
-                print(f"Error fetching Open-Meteo fallback: {e}")
+        historical_rainfall, coverage, open_meteo_fallback = await _get_lidoire_history(lidoire_cities)
 
     for s in stations:
         city = s.get("city")
@@ -490,12 +626,12 @@ async def get_basin_rainfall() -> dict:
             station_data["position"] = priority.get("position", "unknown")
             # Add historical data from InfluxDB
             hist = historical_rainfall.get(city, {})
-            influx_24h = hist.get("rain_24h_mm")
             rain_72h = hist.get("rain_72h_mm")
             rain_7d = hist.get("rain_7d_mm")
 
             # Use Open-Meteo fallback when InfluxDB data is incomplete.
-            # Detection: value equals influx_24h means only one 24h chunk was found.
+            # Detection: number of consecutive 24h chunks with samples
+            # (consecutive_daily_coverage), not value equality.
             # Strategy: keep Netatmo 24h (real sensor), add Open-Meteo delta for older periods.
             # 72h = netatmo_24h + open_meteo_(24h..72h delta)
             # 7d  = netatmo_24h + open_meteo_(24h..7d delta)
@@ -507,8 +643,9 @@ async def get_basin_rainfall() -> dict:
                 # Delta = rain that fell between 24h ago and 72h/7d ago
                 delta_72h = max(0, om_72h - om_24h)
                 delta_7d = max(0, om_7d - om_24h)
-                incomplete_72h = rain_72h is None or rain_72h == influx_24h
-                incomplete_7d = rain_7d is None or rain_7d == influx_24h
+                city_coverage = coverage.get(city, 0)
+                incomplete_72h = rain_72h is None or city_coverage < 3
+                incomplete_7d = rain_7d is None or city_coverage < 7
                 if incomplete_72h:
                     rain_72h = round(station_24h + delta_72h, 1)
                 if incomplete_7d:
@@ -542,51 +679,124 @@ async def get_basin_rainfall() -> dict:
     }
 
 
-async def store_rainfall_to_influx(basin_data: dict) -> int:
-    """Store Netatmo rainfall data to InfluxDB."""
+def hourly_slot(
+    now: datetime,
+    last_written: Optional[datetime],
+    max_lag: timedelta = HOURLY_WRITE_MAX_LAG,
+) -> Optional[datetime]:
+    """Clock-hour label to write the hourly rain value at, or None to skip.
+
+    The label is ``now`` floored to the hour (T) and the value written there is
+    Netatmo's sliding ``rain_60min`` read shortly after T, i.e. rain over
+    ~[T-1h, T) — the same "label = end of the hour" convention as the Open-Meteo
+    series. A slot is written once (first collection within ``max_lag`` after
+    the hour); later collections of the same hour are skipped.
+    """
+    slot = now.replace(minute=0, second=0, microsecond=0)
+    if last_written is not None and last_written >= slot:
+        return None
+    if now - slot > max_lag:
+        return None
+    return slot
+
+
+async def _write_station_rain(
+    source: str,
+    city: Optional[str],
+    rain_1h_mm: Optional[float],
+    rain_24h_mm: Optional[float],
+    now: datetime,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+) -> int:
+    """Write one Netatmo station (or the basin average) to InfluxDB.
+
+    Rain over-count fix: Netatmo's rain_60min is a *sliding* 60 min total.
+    Writing it every 15 min as precipitation_mm_h made every hour counted ~4x
+    by downstream ``sum`` aggregations. Now:
+
+    - ``precipitation_mm_h`` (the field every rain sum uses) is written at most
+      once per clock hour, aligned on the hour (see ``hourly_slot``), so the
+      series has non-overlapping 1h intervals and sums are correct;
+    - every collection still writes a snapshot point at ``now`` WITHOUT
+      precipitation_mm_h: ``precipitation_mm_24h`` (sampled at 24h boundaries
+      for 72h/7d cumulatives) and ``rain_60min_mm`` (latest sliding value, for
+      display only — never sum it).
+    """
     from app.services import influx_client
 
     stored = 0
-    timestamp = basin_data.get("timestamp", datetime.utcnow())
+    tags = {"source": source}
+    if city:
+        tags["city"] = str(city)
 
-    # Store basin average
-    success = await influx_client.write_rainfall(
-        source="netatmo",
-        precipitation_mm_h=basin_data.get("rain_1h_avg_mm", 0),
-        timestamp=timestamp,
-        precipitation_mm_24h=basin_data.get("rain_24h_avg_mm", 0),
-        station_city="basin_average",
-    )
-    if success:
+    fields: dict = {
+        "precipitation_mm_24h": float(rain_24h_mm or 0),
+        "rain_60min_mm": float(rain_1h_mm or 0),
+    }
+    if lat is not None:
+        fields["lat"] = float(lat)
+    if lon is not None:
+        fields["lon"] = float(lon)
+    if await influx_client.write_point(
+        measurement="rainfall", tags=tags, fields=fields, timestamp=now,
+    ):
         stored += 1
 
-    # Store Lidoire stations
-    for station in basin_data.get("lidoire_stations", []):
-        success = await influx_client.write_rainfall(
-            source="netatmo-lidoire",
-            precipitation_mm_h=station.get("rain_1h_mm") or 0,
-            timestamp=timestamp,
-            precipitation_mm_24h=station.get("rain_24h_mm") or 0,
-            station_city=station.get("city"),
-            lat=station.get("lat"),
-            lon=station.get("lon"),
-        )
-        if success:
+    key = (source, str(city))
+    slot = hourly_slot(now, _last_hourly_write.get(key))
+    if slot is not None:
+        if await influx_client.write_rainfall(
+            source=source,
+            precipitation_mm_h=rain_1h_mm or 0,
+            timestamp=slot,
+            station_city=city,
+            lat=lat,
+            lon=lon,
+        ):
+            _last_hourly_write[key] = slot
             stored += 1
 
-    # Store other nearby stations (top 5)
-    for station in basin_data.get("stations", [])[:5]:
-        success = await influx_client.write_rainfall(
-            source="netatmo",
-            precipitation_mm_h=station.get("rain_1h_mm") or 0,
-            timestamp=timestamp,
-            precipitation_mm_24h=station.get("rain_24h_mm") or 0,
-            station_city=station.get("city"),
+    return stored
+
+
+async def store_rainfall_to_influx(basin_data: dict) -> int:
+    """Store Netatmo rainfall data to InfluxDB (see _write_station_rain)."""
+    stored = 0
+    now = _utcnow()
+
+    # Basin average
+    stored += await _write_station_rain(
+        source="netatmo",
+        city="basin_average",
+        rain_1h_mm=basin_data.get("rain_1h_avg_mm", 0),
+        rain_24h_mm=basin_data.get("rain_24h_avg_mm", 0),
+        now=now,
+    )
+
+    # Lidoire stations
+    for station in basin_data.get("lidoire_stations", []):
+        stored += await _write_station_rain(
+            source="netatmo-lidoire",
+            city=station.get("city"),
+            rain_1h_mm=station.get("rain_1h_mm"),
+            rain_24h_mm=station.get("rain_24h_mm"),
+            now=now,
             lat=station.get("lat"),
             lon=station.get("lon"),
         )
-        if success:
-            stored += 1
+
+    # Other nearby stations (top 5)
+    for station in basin_data.get("stations", [])[:5]:
+        stored += await _write_station_rain(
+            source="netatmo",
+            city=station.get("city"),
+            rain_1h_mm=station.get("rain_1h_mm"),
+            rain_24h_mm=station.get("rain_24h_mm"),
+            now=now,
+            lat=station.get("lat"),
+            lon=station.get("lon"),
+        )
 
     return stored
 
@@ -642,7 +852,7 @@ async def _discover_lidoire_device_ids() -> dict[str, dict]:
                     "lon": s.get("lon"),
                 }
 
-    print(f"Netatmo: discovered {len(_lidoire_device_cache)} Lidoire stations with device IDs: "
+    logger.info(f"Netatmo: discovered {len(_lidoire_device_cache)} Lidoire stations with device IDs: "
           f"{list(_lidoire_device_cache.keys())}")
     return _lidoire_device_cache
 
@@ -693,7 +903,7 @@ async def fetch_netatmo_station_history(
             )
 
             if response.status_code == 404:
-                print(f"Netatmo getmeasure: station {device_id} not found or not public")
+                logger.info(f"Netatmo getmeasure: station {device_id} not found or not public")
                 return []
 
             response.raise_for_status()
@@ -703,7 +913,7 @@ async def fetch_netatmo_station_history(
             results = []
 
             for ts_str, values in body.items():
-                ts = datetime.fromtimestamp(int(ts_str))
+                ts = _utc_from_epoch(int(ts_str))
                 rain_mm = values[0] if isinstance(values, list) and len(values) > 0 else 0.0
                 results.append({
                     "timestamp": ts,
@@ -714,10 +924,10 @@ async def fetch_netatmo_station_history(
             return results
 
     except httpx.HTTPStatusError as e:
-        print(f"Netatmo getmeasure HTTP error: {e.response.status_code} for {device_id}")
+        logger.info(f"Netatmo getmeasure HTTP error: {e.response.status_code} for {device_id}")
         return []
     except Exception as e:
-        print(f"Netatmo getmeasure error for {device_id}: {e}")
+        logger.info(f"Netatmo getmeasure error for {device_id}: {e}")
         return []
 
 
@@ -743,7 +953,7 @@ async def fetch_and_store_netatmo_historical_range(
 
     device_cache = await _discover_lidoire_device_ids()
     if not device_cache:
-        print("Netatmo historical: no Lidoire station device IDs discovered")
+        logger.info("Netatmo historical: no Lidoire station device IDs discovered")
         return 0
 
     total_stored = 0
@@ -760,7 +970,7 @@ async def fetch_and_store_netatmo_historical_range(
         device_id = info["device_id"]
         module_id = info["rain_module_id"]
 
-        print(f"Netatmo historical: fetching {city} ({device_id}/{module_id}) for {start} -> {end}")
+        logger.info(f"Netatmo historical: fetching {city} ({device_id}/{module_id}) for {start} -> {end}")
 
         points = await fetch_netatmo_station_history(
             device_id=device_id,
@@ -770,7 +980,7 @@ async def fetch_and_store_netatmo_historical_range(
         )
 
         if not points:
-            print(f"  No historical data for {city}")
+            logger.info(f"  No historical data for {city}")
             continue
 
         # Store to InfluxDB — normalize city name (strip accents) for consistent tags
@@ -788,7 +998,7 @@ async def fetch_and_store_netatmo_historical_range(
             if success:
                 stored += 1
 
-        print(f"  Stored {stored}/{len(points)} points for {city}")
+        logger.info(f"  Stored {stored}/{len(points)} points for {city}")
         total_stored += stored
 
     return total_stored

@@ -14,7 +14,7 @@ Uses InfluxDB cache-through to avoid unnecessary scraping.
 
 import re
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.config import get_settings
@@ -360,7 +360,11 @@ async def get_nowcast_rain_cached() -> Optional[NowcastRainData]:
         cache_time = cached.get("_time")
         if cache_time:
             # Ensure cache_time is naive for comparison
-            ct = cache_time.replace(tzinfo=None) if hasattr(cache_time, 'replace') and cache_time.tzinfo else cache_time
+            # (convert to UTC first: stripping tzinfo alone is only right for UTC)
+            ct = (
+                cache_time.astimezone(timezone.utc).replace(tzinfo=None)
+                if getattr(cache_time, "tzinfo", None) else cache_time
+            )
             age_minutes = (now - ct).total_seconds() / 60
             if age_minutes < NOWCAST_CACHE_MINUTES:
                 print("nowcast_rain: from InfluxDB cache")
