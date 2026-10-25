@@ -35,6 +35,9 @@ class TideData(BaseModel):
     tide_type: TideType
     height_m: float
     coefficient: Optional[int] = None
+    # Data origin: "shom", "open-meteo-marine" (model sea level, coefficient
+    # estimated from height) or "estimated" (computed placeholder, no real source)
+    source: Optional[str] = None
 
 
 class TideForecast(BaseModel):
@@ -44,6 +47,10 @@ class TideForecast(BaseModel):
     next_low_tide: Optional[TideData] = None
     current_coefficient: Optional[int] = None
     tides: list[TideData] = []
+    # False when no real tide source answered: tides are computed estimates
+    # and must not drive the risk model as if they were real.
+    available: bool = True
+    source: Optional[str] = None
 
 
 # River level data
@@ -63,6 +70,10 @@ class RiverLevelForecast(BaseModel):
     current: RiverLevel
     tendency: Tendency
     forecast_scenarios: list[dict] = []
+    # False when no real data is available: current.height_m is then a 0.0
+    # placeholder. source: "vigicrues", "vigicrues-stale" or "unavailable".
+    available: bool = True
+    source: Optional[str] = None
 
 
 class StationLevel(BaseModel):

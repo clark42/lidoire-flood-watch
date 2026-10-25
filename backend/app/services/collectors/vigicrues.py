@@ -2,46 +2,143 @@
 
 Fetches river level data from the French Vigicrues service.
 https://www.vigicrues.gouv.fr/
+
+Endpoint notes (verified 2026-10):
+- ``services/observations.json`` answers with a 302 to
+  ``services/observations.json/index.php``; we call the final URL directly and
+  still enable ``follow_redirects`` in case it moves again.
+- ``ResObsHydro`` is already expressed in metres (e.g. 1.24 for Libourne),
+  unlike Hub'Eau which returns millimetres.
+- ``services/previsions.json/index.php`` returns ``{"Simul": {"Prevs": [...]}}``
+  with epoch-millisecond ``DtPrev`` and min/mean/max levels in metres.
+
+No mock data is ever returned: when Vigicrues cannot be reached the collector
+returns an explicit "unavailable" result (see ``get_current_river_level``).
 """
 
-import httpx
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+import httpx
 
 from app.config import get_settings
 from app.models.schemas import RiverLevel, RiverLevelForecast, Tendency
 
+logger = logging.getLogger(__name__)
+
 # Vigicrues API base URL
 VIGICRUES_API_BASE = "https://www.vigicrues.gouv.fr/services"
+VIGICRUES_OBSERVATIONS_URL = f"{VIGICRUES_API_BASE}/observations.json/index.php"
+VIGICRUES_FORECAST_URL = f"{VIGICRUES_API_BASE}/previsions.json/index.php"
+
+# Source labels exposed on RiverLevelForecast.source
+SOURCE_LIVE = "vigicrues"
+SOURCE_STALE = "vigicrues-stale"
+SOURCE_UNAVAILABLE = "unavailable"
+
+CACHE_DURATION = timedelta(minutes=15)
+# How long a previous successful fetch may be served when Vigicrues is down
+STALE_MAX_AGE = timedelta(hours=6)
 
 # Cache for river data
 _river_cache: dict = {}
 _cache_expiry: Optional[datetime] = None
 
 
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.utcnow()
+
+
+def _to_naive_utc(dt: datetime) -> datetime:
+    """Convert a datetime to naive UTC (tz-aware values are converted, not stripped)."""
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _station_info(station_id: str) -> dict:
+    """Return display name and river for a Vigicrues station code."""
+    settings = get_settings()
+    for station in settings.vigicrues_stations:
+        if station.get("id") == station_id:
+            return {"name": station.get("name", "Unknown"), "river": station.get("river", "Unknown")}
+    return {"name": "Unknown", "river": "Unknown"}
+
+
+def parse_observations(data: dict, station_id: str) -> list[RiverLevel]:
+    """Parse a Vigicrues observations.json payload into RiverLevel (metres, naive UTC).
+
+    Returned levels are sorted by timestamp. Invalid entries are skipped.
+    """
+    info = _station_info(station_id)
+    levels: list[RiverLevel] = []
+
+    observations = (data or {}).get("Serie", {}).get("ObssHydro", []) or []
+    for obs in observations:
+        try:
+            value = obs["ResObsHydro"]
+            if value is None:
+                continue
+            ts = datetime.fromisoformat(str(obs["DtObsHydro"]).replace("Z", "+00:00"))
+            levels.append(
+                RiverLevel(
+                    timestamp=_to_naive_utc(ts),
+                    station_id=station_id,
+                    station_name=info["name"],
+                    river=info["river"],
+                    height_m=float(value),  # already in metres
+                    flow_m3s=None,
+                )
+            )
+        except (KeyError, ValueError, TypeError) as e:
+            logger.debug("Vigicrues: skipping invalid observation %r: %s", obs, e)
+            continue
+
+    levels.sort(key=lambda lv: lv.timestamp)
+    return levels
+
+
+def parse_forecast(data: dict) -> list[dict]:
+    """Parse a Vigicrues previsions.json payload.
+
+    Returns a list of ``{"timestamp": ISO8601 UTC, "min_m", "mean_m", "max_m"}``
+    sorted by time (empty when Vigicrues publishes no forecast for the station).
+    """
+    prevs = (data or {}).get("Simul", {}).get("Prevs", []) or []
+    result: list[dict] = []
+    for prev in prevs:
+        try:
+            raw_ts = prev["DtPrev"]
+            if isinstance(raw_ts, (int, float)):
+                ts = datetime.fromtimestamp(raw_ts / 1000, tz=timezone.utc)
+            else:
+                ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+            result.append({
+                "timestamp": _to_naive_utc(ts).isoformat() + "Z",
+                "min_m": prev.get("ResMinPrev"),
+                "mean_m": prev.get("ResMoyPrev"),
+                "max_m": prev.get("ResMaxPrev"),
+            })
+        except (KeyError, ValueError, TypeError) as e:
+            logger.debug("Vigicrues: skipping invalid forecast %r: %s", prev, e)
+            continue
+    result.sort(key=lambda p: p["timestamp"])
+    return result
+
+
 async def fetch_station_data(station_id: str) -> list[RiverLevel]:
     """
     Fetch river level data from Vigicrues for a specific station.
 
-    Station IDs for the area:
-    - O9720010: Libourne (Dordogne)
-    - O9700010: Bergerac (Dordogne)
+    Station IDs use the 10-character Hydro code shared with Hub'Eau
+    (e.g. P577001001 for Libourne). Returns [] on any error.
     """
-    # Vigicrues observations endpoint
-    url = f"{VIGICRUES_API_BASE}/observations.json"
-
-    settings = get_settings()
-    station_info = {
-        "O9720010": {"name": "Libourne", "river": "Dordogne"},
-        "O9700010": {"name": "Bergerac", "river": "Dordogne"},
-    }
-
-    info = station_info.get(station_id, {"name": "Unknown", "river": "Unknown"})
-
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(
-                url,
+                VIGICRUES_OBSERVATIONS_URL,
                 params={
                     "CdStationHydro": station_id,
                     "GrdSerie": "H",  # Hauteur (height)
@@ -50,100 +147,42 @@ async def fetch_station_data(station_id: str) -> list[RiverLevel]:
                 timeout=30.0,
             )
             response.raise_for_status()
-            data = response.json()
-
-            levels = []
-            observations = data.get("Serie", {}).get("ObssHydro", [])
-
-            for obs in observations:
-                try:
-                    levels.append(
-                        RiverLevel(
-                            timestamp=datetime.fromisoformat(obs["DtObsHydro"].replace("Z", "+00:00")),
-                            station_id=station_id,
-                            station_name=info["name"],
-                            river=info["river"],
-                            height_m=float(obs["ResObsHydro"]) / 1000,  # Convert mm to m
-                            flow_m3s=None,  # Would need separate query
-                        )
-                    )
-                except (KeyError, ValueError) as e:
-                    print(f"Error parsing observation: {e}")
-                    continue
-
-            return levels
+            return parse_observations(response.json(), station_id)
 
     except Exception as e:
-        print(f"Error fetching Vigicrues data for station {station_id}: {e}")
+        logger.warning("Error fetching Vigicrues data for station %s: %s", station_id, e)
         return []
 
 
 async def fetch_station_forecast(station_id: str) -> list[dict]:
-    """Fetch forecast scenarios from Vigicrues."""
-    url = f"{VIGICRUES_API_BASE}/previsions.json"
-
+    """Fetch forecast levels from Vigicrues (see parse_forecast). Returns [] on error."""
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(
-                url,
-                params={
-                    "CdStationHydro": station_id,
-                },
+                VIGICRUES_FORECAST_URL,
+                params={"CdStationHydro": station_id},
                 timeout=30.0,
             )
             response.raise_for_status()
-            data = response.json()
-
-            scenarios = data.get("Scenarios", [])
-            return scenarios
+            return parse_forecast(response.json())
 
     except Exception as e:
-        print(f"Error fetching Vigicrues forecast for station {station_id}: {e}")
+        logger.warning("Error fetching Vigicrues forecast for station %s: %s", station_id, e)
         return []
 
 
-def _generate_mock_river_data(station_id: str) -> list[RiverLevel]:
-    """Generate mock river level data for development."""
-    now = datetime.utcnow()
-    levels = []
-
-    station_info = {
-        "O9720010": {"name": "Libourne", "river": "Dordogne"},
-    }
-    info = station_info.get(station_id, {"name": "Unknown", "river": "Unknown"})
-
-    # Generate hourly data for the last 48 hours
-    base_level = 2.5  # meters
-
-    for i in range(48):
-        timestamp = now - timedelta(hours=48 - i)
-        # Add some variation based on time (simulating tidal influence)
-        hour_factor = 0.3 * (1 + 0.5 * ((i % 12) - 6) / 6)
-        level = base_level + hour_factor + 0.1 * (i % 5 - 2)
-
-        levels.append(
-            RiverLevel(
-                timestamp=timestamp,
-                station_id=station_id,
-                station_name=info["name"],
-                river=info["river"],
-                height_m=round(level, 2),
-                flow_m3s=None,
-            )
-        )
-
-    return levels
-
-
-def _calculate_tendency(levels: list[RiverLevel]) -> Tendency:
-    """Calculate the tendency from recent measurements."""
-    if len(levels) < 3:
+def _calculate_tendency(levels: list[RiverLevel], window_hours: float = 1.0) -> Tendency:
+    """Tendency from the level change over the last ``window_hours`` of data."""
+    if len(levels) < 2:
         return Tendency.STABLE
 
-    recent = levels[-3:]
-    heights = [l.height_m for l in recent]
+    last = levels[-1]
+    cutoff = last.timestamp - timedelta(hours=window_hours)
+    recent = [lv for lv in levels if lv.timestamp >= cutoff]
+    if len(recent) < 2:
+        return Tendency.STABLE
 
-    diff = heights[-1] - heights[0]
+    diff = recent[-1].height_m - recent[0].height_m
 
     if diff > 0.05:
         return Tendency.RISING
@@ -153,49 +192,75 @@ def _calculate_tendency(levels: list[RiverLevel]) -> Tendency:
         return Tendency.STABLE
 
 
+def _unavailable_forecast(station_id: str, now: datetime) -> RiverLevelForecast:
+    """Placeholder returned when no real Vigicrues data is available.
+
+    ``current.height_m`` is 0.0 and MUST NOT be interpreted as a measurement:
+    callers have to check ``available`` (False) / ``source`` ("unavailable").
+    """
+    info = _station_info(station_id)
+    return RiverLevelForecast(
+        current=RiverLevel(
+            timestamp=now,
+            station_id=station_id,
+            station_name=info["name"],
+            river=info["river"],
+            height_m=0.0,
+            tendency=Tendency.STABLE,
+        ),
+        tendency=Tendency.STABLE,
+        forecast_scenarios=[],
+        available=False,
+        source=SOURCE_UNAVAILABLE,
+    )
+
+
 async def get_current_river_level() -> RiverLevelForecast:
-    """Get current river level with forecast."""
+    """Get current river level (Libourne) with Vigicrues forecast.
+
+    Contract for callers:
+    - ``available=True, source="vigicrues"``: fresh data (cached 15 min).
+    - ``available=True, source="vigicrues-stale"``: Vigicrues is down, the last
+      successful fetch (< 6 h old) is served; ``current.timestamp`` tells its age.
+    - ``available=False, source="unavailable"``: no real data at all;
+      ``current.height_m`` is a 0.0 placeholder and must be ignored.
+    """
     global _river_cache, _cache_expiry
 
     settings = get_settings()
     station_id = settings.vigicrues_station_libourne
-    now = datetime.utcnow()
+    now = _utcnow()
 
-    # Check cache
-    if _cache_expiry and _cache_expiry > now and _river_cache:
-        levels = _river_cache.get("levels", [])
+    source = SOURCE_LIVE
+    if _cache_expiry and _cache_expiry > now and _river_cache.get("levels"):
+        levels = _river_cache["levels"]
+        scenarios = _river_cache.get("scenarios", [])
     else:
-        # Fetch real data
         levels = await fetch_station_data(station_id)
+        if levels:
+            scenarios = await fetch_station_forecast(station_id)
+            _river_cache = {"levels": levels, "scenarios": scenarios, "fetched_at": now}
+            _cache_expiry = now + CACHE_DURATION
+        else:
+            fetched_at = _river_cache.get("fetched_at")
+            if _river_cache.get("levels") and fetched_at and now - fetched_at <= STALE_MAX_AGE:
+                logger.warning("Vigicrues unavailable, serving stale data from %s", fetched_at)
+                levels = _river_cache["levels"]
+                scenarios = _river_cache.get("scenarios", [])
+                source = SOURCE_STALE
+            else:
+                logger.warning("Vigicrues unavailable and no recent data: river level unavailable")
+                return _unavailable_forecast(station_id, now)
 
-        if not levels:
-            # Fall back to mock data
-            levels = _generate_mock_river_data(station_id)
-
-        # Update cache (15 minutes)
-        _river_cache = {"levels": levels}
-        _cache_expiry = now + timedelta(minutes=15)
-
-    # Get current level (most recent)
-    current = levels[-1] if levels else RiverLevel(
-        timestamp=now,
-        station_id=station_id,
-        station_name="Libourne",
-        river="Dordogne",
-        height_m=2.5,
-    )
-
-    # Calculate tendency
     tendency = _calculate_tendency(levels)
-    current.tendency = tendency
-
-    # Fetch forecast scenarios
-    scenarios = await fetch_station_forecast(station_id)
+    current = levels[-1].model_copy(update={"tendency": tendency})
 
     return RiverLevelForecast(
         current=current,
         tendency=tendency,
         forecast_scenarios=scenarios,
+        available=True,
+        source=source,
     )
 
 
@@ -204,38 +269,24 @@ async def get_historical_levels(
     start: datetime,
     end: datetime,
 ) -> list[RiverLevel]:
-    """Get historical river levels for a time range."""
-    # For historical data, we would query our stored data
-    # For now, return mock data
-    levels = []
+    """Get river levels for a time range from Vigicrues.
 
-    current = start
-    while current <= end:
-        base_level = 2.5 + 0.5 * ((current.hour % 12) - 6) / 6
-        levels.append(
-            RiverLevel(
-                timestamp=current,
-                station_id=station_id,
-                station_name="Libourne",
-                river="Dordogne",
-                height_m=base_level,
-            )
-        )
-        current += timedelta(hours=1)
-
-    return levels
+    Vigicrues only serves about the last month of observations: older ranges
+    return []. Use Hub'Eau / Hydroportail for real history.
+    """
+    start_n = _to_naive_utc(start)
+    end_n = _to_naive_utc(end)
+    levels = await fetch_station_data(station_id)
+    return [lv for lv in levels if start_n <= lv.timestamp <= end_n]
 
 
 async def collect_and_store_river_levels():
-    """Collect river level data and store in database."""
+    """Collect river level data (storage is handled by the Hub'Eau pipeline)."""
     settings = get_settings()
 
-    total_stored = 0
+    total_fetched = 0
     for station in settings.vigicrues_stations:
         levels = await fetch_station_data(station["id"])
-        if levels:
-            # Store in InfluxDB
-            # TODO: Implement storage
-            total_stored += len(levels)
+        total_fetched += len(levels)
 
-    return total_stored
+    return total_fetched
