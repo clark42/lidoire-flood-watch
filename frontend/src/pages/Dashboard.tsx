@@ -279,6 +279,9 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Forecast Panel - Prominent position after risk overview */}
+      {!timeMachineActive && <ForecastPanel hours={168} autoRefresh={true} />}
+
       {/* Risk Breakdown Panel */}
       <RiskBreakdownPanel risk={data.risk} defaultExpanded={breakdownExpanded} />
 
@@ -373,9 +376,6 @@ export default function Dashboard() {
             }}
             loading={loading}
           />
-
-          {/* ForecastPanel v2 - autonomous, fetches its own data */}
-          {!timeMachineActive && <ForecastPanel hours={168} autoRefresh={true} />}
         </div>
       </div>
 

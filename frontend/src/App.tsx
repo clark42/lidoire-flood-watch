@@ -3,6 +3,7 @@ import { Waves, Clock, Calendar, Settings, AlertTriangle } from 'lucide-react'
 import Dashboard from './pages/Dashboard'
 import Timeline from './pages/Timeline'
 import Episodes from './pages/Episodes'
+// import Photos from './pages/Photos'
 import Configuration from './pages/Configuration'
 
 function App() {
@@ -53,6 +54,19 @@ function App() {
                 <Calendar className="w-4 h-4" />
                 <span>Episodes</span>
               </NavLink>
+              {/* Photos page temporarily disabled
+              <NavLink
+                to="/photos"
+                className={({ isActive }) =>
+                  `flex items-center gap-2 px-4 py-2 rounded-lg transition ${
+                    isActive ? 'bg-blue-600' : 'hover:bg-blue-600/50'
+                  }`
+                }
+              >
+                <Camera className="w-4 h-4" />
+                <span>Photos</span>
+              </NavLink>
+              */}
               <NavLink
                 to="/config"
                 className={({ isActive }) =>
@@ -75,6 +89,7 @@ function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/timeline" element={<Timeline />} />
           <Route path="/episodes" element={<Episodes />} />
+          {/* <Route path="/photos" element={<Photos />} /> */}
           <Route path="/config" element={<Configuration />} />
         </Routes>
       </main>

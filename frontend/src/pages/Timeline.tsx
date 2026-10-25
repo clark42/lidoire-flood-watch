@@ -11,21 +11,25 @@ import {
   Tooltip,
   ResponsiveContainer,
   Brush,
+  ReferenceLine,
 } from 'recharts'
-import { ChevronLeft, ChevronRight, Calendar, AlertTriangle } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Calendar, AlertTriangle, Camera } from 'lucide-react'
 import InfoTooltip from '../components/InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 import {
   getAvailableSources,
   getUnifiedTimeline,
   getEpisodesList,
+  getPhotos,
 } from '../api'
 import type {
   AvailableSources,
   UnifiedTimelineData,
   FloodEpisode,
+  PhotoData,
 } from '../types'
 import TimelineSourceSelector from '../components/TimelineSourceSelector'
+// import PhotoTimelineMap from '../components/PhotoTimelineMap'
 
 type Resolution = '15m' | '1h' | '6h' | '12h' | '1d'
 
@@ -40,23 +44,35 @@ export default function Timeline() {
   }
 
   // Sources — initialized from URL
+  // Default: Pessac-sur-Dordogne (primary station, not tidal-influenced like Libourne)
   const [selectedRiverStations, setSelectedRiverStations] = useState<string[]>(
-    () => parseParamList('rivers', ['P577001001'])
+    () => parseParamList('rivers', ['P555001001'])
   )
+  // Default: Open-Meteo (always available) + Netatmo amont/aval for basin coverage
   const [selectedRainfallStations, setSelectedRainfallStations] = useState<string[]>(
-    () => parseParamList('rain', [])
+    () => parseParamList('rain', [
+      'open-meteo:Moulin-Lidoire',
+      'netatmo-lidoire:Saint-Remy',
+      'netatmo-lidoire:Les Salles-de-Castillon',
+    ])
   )
   const [tideEnabled, setTideEnabled] = useState(() => searchParams.get('tide') !== '0')
-  const [riskEnabled, setRiskEnabled] = useState(() => searchParams.get('risk') === '1')
+  // Default ON: risk score and forecast are key indicators
+  const [riskEnabled, setRiskEnabled] = useState(() => searchParams.get('risk') !== '0')
   const [soilEnabled, setSoilEnabled] = useState(() => searchParams.get('soil') === '1')
   const [infoclimatEnabled, setInfoclimatEnabled] = useState(() => searchParams.get('infoclimat') !== '0')
   const [windEnabled, setWindEnabled] = useState(() => searchParams.get('wind') === '1')
-  const [forecastEnabled, setForecastEnabled] = useState(() => searchParams.get('forecast') === '1')
+  const [forecastEnabled, setForecastEnabled] = useState(() => searchParams.get('forecast') !== '0')
 
   // Data
   const [unifiedData, setUnifiedData] = useState<UnifiedTimelineData | null>(null)
   const [availableSources, setAvailableSources] = useState<AvailableSources | null>(null)
   const [episodes, setEpisodes] = useState<FloodEpisode[]>([])
+
+  // Photos
+  const [photos, setPhotos] = useState<PhotoData[]>([])
+  const [photosEnabled, setPhotosEnabled] = useState(() => searchParams.get('photos') !== '0')
+  const [photoTime, setPhotoTime] = useState<Date>(new Date())
 
   // Controls — initialized from URL
   const [startDate, setStartDate] = useState(() => {
@@ -90,13 +106,14 @@ export default function Timeline() {
       params.rain = selectedRainfallStations.join(',')
     }
     if (!tideEnabled) params.tide = '0'
-    if (riskEnabled) params.risk = '1'
+    if (!riskEnabled) params.risk = '0'
     if (soilEnabled) params.soil = '1'
     if (!infoclimatEnabled) params.infoclimat = '0'
     if (windEnabled) params.wind = '1'
-    if (forecastEnabled) params.forecast = '1'
+    if (!forecastEnabled) params.forecast = '0'
+    if (!photosEnabled) params.photos = '0'
     setSearchParams(params, { replace: true })
-  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, setSearchParams])
+  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, photosEnabled, setSearchParams])
 
   // Fetch available sources and episodes on mount
   useEffect(() => {
@@ -143,6 +160,32 @@ export default function Timeline() {
   useEffect(() => {
     fetchData()
   }, [fetchData])
+
+  // Fetch photos when period changes
+  useEffect(() => {
+    if (!photosEnabled) {
+      setPhotos([])
+      return
+    }
+
+    async function fetchPhotos() {
+      try {
+        const result = await getPhotos({
+          start_date: startDate.toISOString(),
+          end_date: endDate.toISOString(),
+          limit: 200,
+        })
+        setPhotos(result.photos)
+        // Set photo time to middle of period
+        const midTime = new Date((startDate.getTime() + endDate.getTime()) / 2)
+        setPhotoTime(midTime)
+      } catch (err) {
+        console.error('Error fetching photos:', err)
+        setPhotos([])
+      }
+    }
+    fetchPhotos()
+  }, [startDate, endDate, photosEnabled])
 
   // Period navigation
   const shiftPeriod = (days: number) => {
@@ -204,6 +247,7 @@ export default function Timeline() {
     setInfoclimatEnabled(false)
     setWindEnabled(false)
     setForecastEnabled(false)
+    setPhotosEnabled(false)
   }
 
   // Unified chart data: merge all series into timestamp-indexed rows
@@ -276,6 +320,36 @@ export default function Timeline() {
     risk: TOOLTIPS.timelineRisk,
     soil: TOOLTIPS.timelineSoilMoisture,
   }
+
+  // Photo markers for chart (displayTime format)
+  const photoMarkers = useMemo(() => {
+    if (!photosEnabled || photos.length === 0) return []
+    return photos.map((p) => ({
+      id: p.id,
+      displayTime: format(new Date(p.timestamp), 'dd/MM HH:mm', { locale: fr }),
+      timestamp: new Date(p.timestamp).getTime(),
+    }))
+  }, [photos, photosEnabled])
+
+  // Current photo time marker
+  const currentPhotoMarker = useMemo(() => {
+    return format(photoTime, 'dd/MM HH:mm', { locale: fr })
+  }, [photoTime])
+
+  // Handle chart click to sync photo time
+  const handleChartClick = useCallback((data: { activeLabel?: string }) => {
+    if (!data.activeLabel || !photosEnabled) return
+    // Parse the displayTime back to a Date
+    // Format is "dd/MM HH:mm"
+    const [datePart, timePart] = data.activeLabel.split(' ')
+    if (!datePart || !timePart) return
+    const [day, month] = datePart.split('/')
+    const [hour, minute] = timePart.split(':')
+    // Use current year from startDate
+    const year = startDate.getFullYear()
+    const newTime = new Date(year, parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(minute))
+    setPhotoTime(newTime)
+  }, [photosEnabled, startDate])
 
   // Ordered list of visible chart panels (for knowing which is last = gets Brush)
   const visiblePanels = useMemo(() => {
@@ -448,6 +522,39 @@ export default function Timeline() {
         </div>
       )}
 
+      {/* Photos toggle */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setPhotosEnabled((v) => !v)}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${
+            photosEnabled
+              ? 'bg-purple-50 border-purple-300 text-purple-700'
+              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+          }`}
+        >
+          <Camera className="w-4 h-4" />
+          Photos ({photos.length})
+        </button>
+        {photosEnabled && photos.length > 0 && (
+          <span className="text-sm text-gray-500">
+            Synchronise avec la timeline
+          </span>
+        )}
+      </div>
+
+      {/* Photos panel - temporarily disabled for debugging */}
+      {/* photosEnabled && photos.length > 0 && (
+        <div className="h-[350px]">
+          <PhotoTimelineMap
+            photos={photos}
+            currentTime={photoTime}
+            onTimeChange={setPhotoTime}
+            timeRange={{ start: startDate, end: endDate }}
+            compact
+          />
+        </div>
+      ) */}
+
       {/* Charts — stacked, synchronized via syncId */}
       <div className="bg-white rounded-lg shadow p-4">
         {loading ? (
@@ -522,8 +629,35 @@ export default function Timeline() {
                       data={chartData}
                       syncId="timeline"
                       margin={{ top: 5, right: 10, bottom: isLast ? 5 : 0, left: 10 }}
+                      onClick={handleChartClick}
                     >
                       <CartesianGrid strokeDasharray="3 3" opacity={0.5} />
+
+                      {/* Photo markers - thin vertical lines */}
+                      {photosEnabled && photoMarkers.map((marker) => (
+                        <ReferenceLine
+                          key={marker.id}
+                          x={marker.displayTime}
+                          stroke="#a855f7"
+                          strokeWidth={1}
+                          strokeDasharray="2 2"
+                          opacity={0.5}
+                        />
+                      ))}
+
+                      {/* Current photo time indicator - bold line */}
+                      {photosEnabled && photos.length > 0 && (
+                        <ReferenceLine
+                          x={currentPhotoMarker}
+                          stroke="#7c3aed"
+                          strokeWidth={2}
+                          label={{
+                            value: '📷',
+                            position: 'top',
+                            fontSize: 12,
+                          }}
+                        />
+                      )}
 
                       {/* X axis: only show ticks on the last chart */}
                       <XAxis

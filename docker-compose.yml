@@ -33,6 +33,7 @@ services:
     volumes:
       - ./backend:/app
       - backend_data:/app/data
+      - photos_data:/app/data/photos
     networks:
       - lidoire-network
 
@@ -98,6 +99,7 @@ volumes:
   influxdb_data:
   redis_data:
   backend_data:
+  photos_data:
 
 networks:
   lidoire-network:

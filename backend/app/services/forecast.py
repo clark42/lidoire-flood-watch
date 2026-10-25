@@ -6,12 +6,14 @@ Generates hourly risk predictions for the next 7 days based on:
 - Projected river levels from upstream stations with propagation delays
 - Current soil moisture and saturation factor
 - Momentum (multi-station rising pattern)
+- Multi-station above threshold trigger (v3.2)
 
 The forecast is cached in Redis (30 min TTL) since weather forecasts
 update approximately every 6 hours but we want fresh data for users.
 
 v1.0 (Jan 2026): Initial implementation based on Feb 2024 calibration.
 v2.0 (Jan 2026): Updated to v3.0 model weights with momentum/dampener.
+v3.0 (Jan 2026): Updated to v3.2 model with multi-station threshold trigger.
 """
 
 import json
@@ -138,7 +140,7 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
         _calculate_conjunction_multiplier,
         _calculate_stability_dampener,
     )
-    from app.models.schemas import Tendency
+    from app.models.schemas import Tendency, StationRiskScore
 
     settings = get_settings()
     now = datetime.utcnow()
@@ -172,17 +174,25 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
             })
     tide_events.sort(key=lambda t: t["timestamp"])
 
-    # Get current station levels and rates for projection
+    # Get current station levels, rates, and thresholds for projection
     current_levels: dict[str, float] = {}
     current_rates: dict[str, float] = {}
+    station_weights: dict[str, float] = {}
+    station_thresholds: dict[str, tuple[float, float, float]] = {}
+    station_names: dict[str, str] = {}
+    station_rivers: dict[str, str] = {}
     for station in stations_data.stations:
-        if station.weight > 0:
-            current_levels[station.station_id] = station.current_level.height_m
-            current_rates[station.station_id] = station.rate_cm_per_hour
+        sid = station.station_id
+        current_levels[sid] = station.current_level.height_m
+        current_rates[sid] = station.rate_cm_per_hour
+        station_weights[sid] = station.weight
+        station_thresholds[sid] = (station.threshold_yellow, station.threshold_orange, station.threshold_red)
+        station_names[sid] = station.station_name
+        station_rivers[sid] = station.river
 
-    # Compute current momentum (number of rising stations)
-    n_rising = sum(1 for r in current_rates.values() if r > 1.0)
-    n_total = max(len(current_rates), 1)
+    # Compute current momentum (number of rising stations with weight > 0)
+    n_rising = sum(1 for sid, r in current_rates.items() if r > 1.0 and station_weights.get(sid, 0) > 0)
+    n_total = max(sum(1 for w in station_weights.values() if w > 0), 1)
 
     # Soil saturation factor
     saturation = soil_wind.get("soil_saturation_factor", 1.0)
@@ -242,19 +252,21 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
             if closest_ht["coefficient"]:
                 tide_coef = closest_ht["coefficient"]
 
-        # --- River level projection ---
+        # --- River level projection with station scores (v3.2) ---
         projected_level = 2.0  # Default baseline
         total_weight = 0.0
         weighted_sum = 0.0
+        projected_station_scores: list[StationRiskScore] = []
 
         for station_cfg in settings.hubeau_stations:
             sid = station_cfg["id"]
             weight = station_cfg.get("weight", 0)
             delay = station_cfg.get("delay_hours", 0)
 
-            if weight <= 0 or sid not in current_levels:
+            if sid not in current_levels:
                 continue
 
+            # Project level forward
             if h >= delay:
                 base_level = current_levels[sid]
                 rate = current_rates.get(sid, 0)
@@ -264,8 +276,36 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
             else:
                 projected = current_levels[sid]
 
-            weighted_sum += projected * weight
-            total_weight += weight
+            # Calculate station score using thresholds
+            thresholds = station_thresholds.get(sid, (3.0, 3.8, 4.5))
+            station_score = _normalize_score(projected, thresholds)
+
+            # Project tendency with decay
+            base_rate = current_rates.get(sid, 0)
+            decay_factor = max(0.0, 1.0 - h / 24.0) if h > 0 else 1.0
+            proj_rate = base_rate * decay_factor
+            if proj_rate > 1.0:
+                proj_tendency = Tendency.RISING
+            elif proj_rate < -1.0:
+                proj_tendency = Tendency.FALLING
+            else:
+                proj_tendency = Tendency.STABLE
+
+            projected_station_scores.append(StationRiskScore(
+                station_id=sid,
+                station_name=station_names.get(sid, sid),
+                river=station_rivers.get(sid, "Unknown"),
+                height_m=projected,
+                score=station_score,
+                weight=weight,
+                weighted_score=station_score * weight if weight > 0 else 0,
+                tendency=proj_tendency,
+                rate_cm_per_hour=proj_rate,
+            ))
+
+            if weight > 0:
+                weighted_sum += projected * weight
+                total_weight += weight
 
         if total_weight > 0:
             projected_level = weighted_sum / total_weight
@@ -316,16 +356,19 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
             n_rising=proj_n_rising, n_total=n_total, river_score=river_score,
         )
 
-        # Conjunction multiplier (v3.0)
+        # Conjunction multiplier (v3.2 with station_scores)
         conjunction = _calculate_conjunction_multiplier(
             river_score, tide_phase_score, tendency,
             rain_72h_score=rain_72h_score, rain_24h_score=rain_24h_score,
             n_rising=proj_n_rising,
+            station_scores=projected_station_scores,
         )
 
-        # Stability dampener (v3.0)
+        # Stability dampener (v3.2 with station_scores)
         dampener = _calculate_stability_dampener(
             river_score, tendency, n_rising=proj_n_rising,
+            rain_72h_score=rain_72h_score,
+            station_scores=projected_station_scores,
         )
 
         # Weighted calculation (v3.0 weights)

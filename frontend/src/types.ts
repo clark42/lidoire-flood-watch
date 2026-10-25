@@ -406,3 +406,45 @@ export interface BasinRainfallData {
   by_position: Record<string, { total: number; count: number; avg: number }>
   sparkline_24h: { timestamp: string; value: number }[]
 }
+
+// Photo Timeline Map Types
+export interface PhotoLabel {
+  key: string
+  value: string
+  confidence?: number
+}
+
+export interface PhotoData {
+  id: string
+  timestamp: string
+  lat: number
+  lon: number
+  thumbnailUrl: string
+  fullUrl: string
+  labels: PhotoLabel[]
+  zone?: PhotoZone
+  description?: string
+}
+
+export type PhotoZone = 'seuil' | 'jardin' | 'entree' | 'moulin' | 'camera'
+
+export interface PhotoTimeRange {
+  start: Date
+  end: Date
+}
+
+export interface MoulinZone {
+  id: PhotoZone
+  name: string
+  description: string
+  // Relative position on the map (0-100 scale)
+  x: number
+  y: number
+  // Bounding box for GPS matching
+  bounds: {
+    minLat: number
+    maxLat: number
+    minLon: number
+    maxLon: number
+  }
+}

@@ -14,6 +14,7 @@ import type {
   UnifiedTimelineData,
   RainfallTimelineData,
   BasinRainfallData,
+  PhotoData,
 } from './types'
 
 const API_BASE = '/api'
@@ -244,4 +245,45 @@ export async function confirmEpisode(
   return fetchJson(`${API_BASE}/episodes/confirm/${id}?${params}`, {
     method: 'POST',
   })
+}
+
+// Photos
+export interface PhotoListResponse {
+  total: number
+  photos: PhotoData[]
+  episodes: Record<string, {
+    period: string
+    severity: number
+    photo_count: number
+  }>
+}
+
+export async function getPhotos(params?: {
+  episode_id?: string
+  start_date?: string
+  end_date?: string
+  zone?: string
+  has_water_label?: boolean
+  limit?: number
+  offset?: number
+}): Promise<PhotoListResponse> {
+  const searchParams = new URLSearchParams()
+  if (params?.episode_id) searchParams.set('episode_id', params.episode_id)
+  if (params?.start_date) searchParams.set('start_date', params.start_date)
+  if (params?.end_date) searchParams.set('end_date', params.end_date)
+  if (params?.zone) searchParams.set('zone', params.zone)
+  if (params?.has_water_label) searchParams.set('has_water_label', 'true')
+  if (params?.limit) searchParams.set('limit', params.limit.toString())
+  if (params?.offset) searchParams.set('offset', params.offset.toString())
+
+  const query = searchParams.toString()
+  return fetchJson<PhotoListResponse>(`${API_BASE}/photos${query ? `?${query}` : ''}`)
+}
+
+export async function getPhotoEpisodes(): Promise<Record<string, {
+  period: string
+  severity: number
+  photo_count: number
+}>> {
+  return fetchJson(`${API_BASE}/photos/episodes`)
 }
