@@ -1,7 +1,10 @@
 """OAuth2 authentication endpoints for external services."""
 
 import json
+import logging
+import os
 import secrets
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
@@ -12,6 +15,7 @@ from fastapi.responses import RedirectResponse
 
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -33,18 +37,41 @@ def _load_tokens() -> dict:
         try:
             return json.loads(TOKEN_STORAGE_PATH.read_text())
         except Exception as e:
-            print(f"Error loading Netatmo tokens: {e}")
+            logger.warning("Error loading Netatmo tokens: %s", e)
     return {}
 
 
-def _save_tokens(tokens: dict) -> None:
-    """Save tokens to file."""
+def _atomic_write_private(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` atomically with 0600 permissions.
+
+    The data goes to a temp file in the same directory (created 0600 by
+    mkstemp), is fsynced, then os.replace()d over the target, so a crash or a
+    concurrent reader never sees a truncated token file.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     try:
-        TOKEN_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_STORAGE_PATH.write_text(json.dumps(tokens, indent=2))
-        print(f"Netatmo tokens saved to {TOKEN_STORAGE_PATH}")
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _save_tokens(tokens: dict) -> None:
+    """Save tokens to file (atomic, mode 0600)."""
+    try:
+        _atomic_write_private(TOKEN_STORAGE_PATH, json.dumps(tokens, indent=2))
+        logger.info("Netatmo tokens saved to %s", TOKEN_STORAGE_PATH)
     except Exception as e:
-        print(f"Error saving Netatmo tokens: {e}")
+        logger.error("Error saving Netatmo tokens: %s", e)
 
 
 def get_netatmo_tokens() -> dict:
@@ -171,7 +198,7 @@ async def netatmo_auth_callback(
             )
 
             if response.status_code != 200:
-                print(f"Netatmo token error: {response.status_code} - {response.text}")
+                logger.warning("Netatmo token error: %s - %s", response.status_code, response.text)
                 raise HTTPException(
                     status_code=400,
                     detail=f"Failed to exchange code for tokens: {response.text}"
@@ -228,7 +255,7 @@ async def netatmo_auth_status():
         try:
             expiry = datetime.fromisoformat(expires_at)
             is_expired = expiry < datetime.utcnow()
-        except:
+        except (TypeError, ValueError):
             is_expired = True
     else:
         is_expired = True
