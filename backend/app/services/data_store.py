@@ -24,6 +24,14 @@ from app.models.orm import FloodEpisodeRow
 from app.db import get_session_factory
 from app.services import influx_client
 
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Max concurrent Hub'Eau / Hydroportail requests during river backfills.
+HUBEAU_CONCURRENCY = 3
+
 
 def _row_to_episode(row: FloodEpisodeRow) -> FloodEpisode:
     return FloodEpisode(
@@ -142,11 +150,9 @@ async def get_timeline_data(
     from app.config import get_settings
     settings = get_settings()
 
-    # Ensure naive datetimes
-    if start.tzinfo:
-        start = start.replace(tzinfo=None)
-    if end.tzinfo:
-        end = end.replace(tzinfo=None)
+    # Naive UTC datetimes (aware values are converted, not just stripped)
+    start = influx_client.to_naive_utc(start)
+    end = influx_client.to_naive_utc(end)
 
     # Resolution to timedelta
     resolution_map = {
@@ -157,14 +163,16 @@ async def get_timeline_data(
     }
     delta = resolution_map.get(resolution, timedelta(hours=1))
 
-    # Try to get data from InfluxDB first
-    river_data = await influx_client.query_all_stations_levels(start, end)
-    rainfall_data = await influx_client.query_rainfall(start, end)
-    risk_data = await influx_client.query_risk_scores(start, end)
+    # Try to get data from InfluxDB first (queries run concurrently)
+    river_data, rainfall_data, risk_data = await asyncio.gather(
+        influx_client.query_all_stations_levels(start, end),
+        influx_client.query_rainfall(start, end),
+        influx_client.query_risk_scores(start, end),
+    )
 
     # If no river data in InfluxDB, fetch from Hub'Eau and store
     if not river_data:
-        print("No river data in InfluxDB, fetching from Hub'Eau...")
+        logger.info("No river data in InfluxDB, fetching from Hub'Eau...")
         await _fetch_and_store_river_levels(start, end)
         river_data = await influx_client.query_all_stations_levels(start, end)
 
@@ -210,8 +218,7 @@ async def get_timeline_data(
 
 def _round_to_resolution(dt: datetime, delta: timedelta) -> datetime:
     """Round datetime to nearest resolution bucket."""
-    if dt.tzinfo:
-        dt = dt.replace(tzinfo=None)
+    dt = influx_client.to_naive_utc(dt)
 
     if delta >= timedelta(days=1):
         return dt.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -225,41 +232,68 @@ def _round_to_resolution(dt: datetime, delta: timedelta) -> datetime:
         return dt.replace(minute=minute, second=0, microsecond=0)
 
 
-async def _fetch_and_store_river_levels(start: datetime, end: datetime) -> int:
-    """Fetch river levels from Hub'Eau and store in InfluxDB."""
-    from app.services.collectors.hubeau import fetch_realtime_observations
+def _selected_stations(station_ids: Optional[list[str]]) -> list[dict]:
     from app.config import get_settings
 
-    settings = get_settings()
-    total_stored = 0
+    stations = get_settings().hubeau_stations
+    if not station_ids:
+        return list(stations)
+    return [s for s in stations if s["id"] in station_ids]
+
+
+def _level_dicts(station: dict, levels) -> list[dict]:
+    return [
+        {
+            "station_id": station["id"],
+            "station_name": station["name"],
+            "river": station["river"],
+            "height_m": lv.height_m,
+            "timestamp": lv.timestamp,
+            "flow_m3s": lv.flow_m3s,
+        }
+        for lv in levels
+    ]
+
+
+async def _fetch_and_store_river_levels(
+    start: datetime,
+    end: datetime,
+    station_ids: Optional[list[str]] = None,
+) -> int:
+    """Fetch river levels from Hub'Eau (realtime TR) and store in InfluxDB.
+
+    Stations are fetched concurrently (bounded by ``HUBEAU_CONCURRENCY``).
+
+    Args:
+        start: Start datetime (TR fetch goes from ``start`` to now)
+        end: End datetime (unused by the TR API, kept for symmetry)
+        station_ids: Optional subset of configured station IDs (default: all)
+    """
+    from app.services.collectors.hubeau import fetch_realtime_observations
 
     now = datetime.utcnow()
-    hours_back = max(1, int((now - start).total_seconds() / 3600))
+    hours_back = max(1, int((now - influx_client.to_naive_utc(start)).total_seconds() / 3600))
+    semaphore = asyncio.Semaphore(HUBEAU_CONCURRENCY)
 
-    for station in settings.hubeau_stations:
-        station_id = station["id"]
-        print(f"Fetching data for station {station_id}...")
+    async def _one(station: dict) -> int:
+        async with semaphore:
+            logger.info("Fetching realtime data for station %s...", station["id"])
+            levels = await fetch_realtime_observations(station["id"], hours_back)
+        if not levels:
+            return 0
+        written = await influx_client.write_river_levels_batch(_level_dicts(station, levels))
+        logger.info("  Stored %d points for %s", written, station["name"])
+        return written
 
-        levels = await fetch_realtime_observations(station_id, hours_back)
-
-        if levels:
-            # Convert to dict format for batch write
-            level_dicts = [
-                {
-                    "station_id": station_id,
-                    "station_name": station["name"],
-                    "river": station["river"],
-                    "height_m": lv.height_m,
-                    "timestamp": lv.timestamp,
-                    "flow_m3s": lv.flow_m3s,
-                }
-                for lv in levels
-            ]
-
-            written = await influx_client.write_river_levels_batch(level_dicts)
-            total_stored += written
-            print(f"  Stored {written} points for {station['name']}")
-
+    results = await asyncio.gather(
+        *(_one(s) for s in _selected_stations(station_ids)), return_exceptions=True
+    )
+    total_stored = 0
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning("Realtime river fetch failed: %s", r)
+        else:
+            total_stored += r
     return total_stored
 
 
@@ -275,54 +309,51 @@ async def _fetch_and_store_river_levels_elab(
     2. Hub'Eau obs_elab HIXnJ — daily max
     3. Hub'Eau obs_elab HIXM — monthly max (last resort)
 
+    Stations are processed concurrently (bounded by ``HUBEAU_CONCURRENCY``).
+
     Args:
         start: Start datetime
         end: End datetime
         station_ids: Optional list of station IDs to fetch (default: all configured)
     """
     from app.services.collectors.hubeau import fetch_historical_data, fetch_hydroportail_data
-    from app.config import get_settings
 
-    settings = get_settings()
-    total_stored = 0
+    semaphore = asyncio.Semaphore(HUBEAU_CONCURRENCY)
 
-    for station in settings.hubeau_stations:
+    async def _one(station: dict) -> int:
         station_id = station["id"]
-        if station_ids and station_id not in station_ids:
-            continue
+        async with semaphore:
+            # 1. Try Hydroportail (sub-hourly historical data)
+            levels = await fetch_hydroportail_data(station_id, start, end)
 
-        # 1. Try Hydroportail (sub-hourly historical data)
-        levels = await fetch_hydroportail_data(station_id, start, end)
+            # 2. Fallback: Hub'Eau obs_elab daily max (HIXnJ)
+            if not levels:
+                levels = await fetch_historical_data(station_id, start, end, granularity="daily_max")
 
-        # 2. Fallback: Hub'Eau obs_elab daily max (HIXnJ)
+            # 3. Last resort: monthly max (HIXM)
+            if not levels:
+                levels = await fetch_historical_data(station_id, start, end, granularity="monthly_max")
+                if levels:
+                    logger.info("  obs_elab: using monthly max (HIXM) for %s — %d points",
+                                station["name"], len(levels))
+
         if not levels:
-            levels = await fetch_historical_data(station_id, start, end, granularity="daily_max")
+            logger.info("  No data for %s (period may be too recent)", station["name"])
+            return 0
 
-        # 3. Last resort: monthly max (HIXM)
-        if not levels:
-            levels = await fetch_historical_data(station_id, start, end, granularity="monthly_max")
-            if levels:
-                print(f"  obs_elab: using monthly max (HIXM) for {station['name']} — {len(levels)} points")
+        written = await influx_client.write_river_levels_batch(_level_dicts(station, levels))
+        logger.info("  Stored %d points for %s", written, station["name"])
+        return written
 
-        if levels:
-            level_dicts = [
-                {
-                    "station_id": station_id,
-                    "station_name": station["name"],
-                    "river": station["river"],
-                    "height_m": lv.height_m,
-                    "timestamp": lv.timestamp,
-                    "flow_m3s": lv.flow_m3s,
-                }
-                for lv in levels
-            ]
-
-            written = await influx_client.write_river_levels_batch(level_dicts)
-            total_stored += written
-            print(f"  Stored {written} points for {station['name']}")
+    results = await asyncio.gather(
+        *(_one(s) for s in _selected_stations(station_ids)), return_exceptions=True
+    )
+    total_stored = 0
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning("Historical river fetch failed: %s", r)
         else:
-            print(f"  No data for {station['name']} (period may be too recent)")
-
+            total_stored += r
     return total_stored
 
 
@@ -475,11 +506,9 @@ async def get_multi_station_timeline(
     from app.config import get_settings
     settings = get_settings()
 
-    # Ensure naive datetimes
-    if start.tzinfo:
-        start = start.replace(tzinfo=None)
-    if end.tzinfo:
-        end = end.replace(tzinfo=None)
+    # Naive UTC datetimes (aware values are converted, not just stripped)
+    start = influx_client.to_naive_utc(start)
+    end = influx_client.to_naive_utc(end)
 
     # Try InfluxDB first
     all_data = await influx_client.query_all_stations_levels(start, end)
@@ -488,22 +517,25 @@ async def get_multi_station_timeline(
     need_fetch = False
     if not all_data:
         need_fetch = True
-        print("No data in InfluxDB, fetching from Hub'Eau...")
+        logger.info("No data in InfluxDB, fetching from Hub'Eau...")
     else:
         # Check coverage - do we have data for the full period?
         for station_id, levels in all_data.items():
+            if station_ids and station_id not in station_ids:
+                continue
             if levels:
                 first_ts = levels[0]["timestamp"]
-                if hasattr(first_ts, "replace"):
-                    first_ts = first_ts.replace(tzinfo=None)
+                if isinstance(first_ts, datetime):
+                    first_ts = influx_client.to_naive_utc(first_ts)
                 # If first data point is more than 1 hour after start, we have a gap
                 if first_ts > start + timedelta(hours=1):
                     need_fetch = True
-                    print(f"Gap detected for {station_id}: data starts at {first_ts}, requested {start}")
+                    logger.info("Gap detected for %s: data starts at %s, requested %s",
+                                station_id, first_ts, start)
                     break
 
     if need_fetch:
-        await _fetch_and_store_river_levels(start, end)
+        await _fetch_and_store_river_levels(start, end, station_ids)
         all_data = await influx_client.query_all_stations_levels(start, end)
 
     # Filter to requested stations
