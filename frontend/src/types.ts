@@ -44,16 +44,20 @@ export interface RainfallSummary {
   last_7d_mm: number
   forecast_24h_mm: number
   forecast_72h_mm: number
+  // Soil saturation from Open-Meteo (m3/m3)
+  soil_moisture: number | null
+  soil_saturation_factor: number  // 1.0 (normal) to 1.5 (saturated)
 }
 
+// Default values mirror backend RiskWeights (v3.2)
 export interface RiskWeights {
-  river: number     // 28% (v3.0 — reduced: level alone doesn't predict moulin flooding)
+  river: number     // 28% (level alone doesn't predict moulin flooding)
   rain_24h: number  // 10%
-  rain_72h: number  // 12%
+  rain_72h: number  // 13%
   rain_7d: number   // 5%
   tide: number      // 5%
   tide_phase: number // 5%
-  tendency: number   // 12%
+  tendency: number   // 13%
   momentum: number   // 8% (NEW: multi-station rising simultaneously)
   wind_west: number  // 3%
   soil_sat: number   // 5%
