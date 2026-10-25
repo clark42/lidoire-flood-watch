@@ -700,10 +700,14 @@ def ceil_hour(dt: datetime) -> datetime:
 LevelPoint = tuple[datetime, float]
 
 
-def _points_until(points: Sequence[LevelPoint], t: datetime) -> Sequence[LevelPoint]:
-    """Prefix of sorted ``points`` with timestamp <= t."""
-    idx = bisect.bisect_right(points, (t, float("inf")))
-    return points[:idx]
+def _index_after(points: Sequence[LevelPoint], t: datetime) -> int:
+    """Index of the first point with timestamp > t (O(log n), no copy)."""
+    return bisect.bisect_right(points, (t, float("inf")))
+
+
+def _index_from(points: Sequence[LevelPoint], t: datetime) -> int:
+    """Index of the first point with timestamp >= t."""
+    return bisect.bisect_left(points, (t, float("-inf")))
 
 
 def latest_level(
@@ -712,10 +716,10 @@ def latest_level(
     max_age_hours: float = 3.0,
 ) -> Optional[LevelPoint]:
     """Latest point at or before ``t`` and not older than ``max_age_hours``."""
-    past = _points_until(points, t)
-    if not past:
+    idx = _index_after(points, t)
+    if idx == 0:
         return None
-    last = past[-1]
+    last = points[idx - 1]
     if (t - last[0]).total_seconds() > max_age_hours * 3600:
         return None
     return last
@@ -734,9 +738,9 @@ def rate_cm_per_hour(
     NOTE: collectors/hubeau.py gets an equivalent ``rate_cm_per_hour``
     helper in parallel work; both can be deduplicated after merge.
     """
-    past = _points_until(points, t)
-    start = t - timedelta(hours=window_h)
-    window = [(ts, h) for ts, h in past if ts >= start]
+    end_idx = _index_after(points, t)
+    start_idx = _index_from(points, t - timedelta(hours=window_h))
+    window = points[start_idx:end_idx]
     if len(window) < 2:
         return 0.0
     span_h = (window[-1][0] - window[0][0]).total_seconds() / 3600
