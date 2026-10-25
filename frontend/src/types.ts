@@ -287,6 +287,9 @@ export interface RealtimeData {
   nowcast_rain?: NowcastRainData
 }
 
+// Ground-truth outcome at the mill (null on an episode = not labelled yet)
+export type EpisodeOutcome = 'flooded' | 'false_positive' | 'near_miss' | 'unknown'
+
 export interface FloodEpisode {
   id: number | null
   start_time: string
@@ -296,6 +299,36 @@ export interface FloodEpisode {
   description: string | null
   notes: string | null
   created_at: string | null
+  outcome?: EpisodeOutcome | null
+  observed_at?: string | null // observed peak time at the mill
+  water_height_cm?: number | null
+  outcome_source?: string | null // who/what labelled the episode
+}
+
+export interface EpisodeLabel {
+  key: string // peak date YYYY-MM-DD
+  peak_time: string
+  outcome: EpisodeOutcome
+  severity: number
+  water_height_cm: number | null
+  source: string
+  notes: string | null
+  flags: string[]
+  legacy_db_id: number | null
+  legacy_refs: string[]
+  legacy_stored_score: number | null
+}
+
+export interface EpisodeLabelSet {
+  version: number
+  updated_at: string
+  description: string
+  exhaustive: boolean
+  period_start: string | null
+  period_end: string | null
+  caveats: string[]
+  inconsistencies: string[]
+  episodes: EpisodeLabel[]
 }
 
 export interface EpisodeContext {

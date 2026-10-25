@@ -36,6 +36,9 @@ async def init_db():
 
     async with get_engine().begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent column additions on tables created by older versions
+        from app.services.data_store import migrate_episode_schema
+        await migrate_episode_schema(conn)
 
 
 async def close_db():

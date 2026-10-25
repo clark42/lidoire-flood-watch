@@ -17,6 +17,8 @@ import {
   Save,
   CheckCircle,
   XCircle,
+  HelpCircle,
+  Waves,
 } from 'lucide-react'
 import {
   getEpisodes,
@@ -26,15 +28,34 @@ import {
   confirmEpisode,
   analyzeExistingEpisode,
 } from '../api'
-import type { FloodEpisode, EpisodeAnalysis } from '../types'
+import type { FloodEpisode, EpisodeAnalysis, EpisodeOutcome } from '../types'
 
-type ConfirmStatus = 'pending' | 'confirmed' | 'rejected'
+// Ground truth comes from the structured `outcome` field (null = not labelled yet)
+const OUTCOME_OPTIONS: { value: EpisodeOutcome; label: string }[] = [
+  { value: 'flooded', label: 'Inonde' },
+  { value: 'near_miss', label: 'Presque (eau haute, pas inonde)' },
+  { value: 'false_positive', label: 'Faux positif' },
+  { value: 'unknown', label: 'Inconnu' },
+]
 
-function getConfirmStatus(notes?: string | null): ConfirmStatus {
-  if (!notes) return 'pending'
-  if (notes.includes('[CONFIRMED: FLOODED]')) return 'confirmed'
-  if (notes.includes('[CONFIRMED: FALSE POSITIVE]')) return 'rejected'
-  return 'pending'
+const OUTCOME_LABELS: Record<EpisodeOutcome, string> = {
+  flooded: 'Inonde',
+  near_miss: 'Presque',
+  false_positive: 'Faux positif',
+  unknown: 'Inconnu',
+}
+
+function isPending(ep: FloodEpisode): boolean {
+  return !ep.outcome
+}
+
+// Backend datetimes are naive UTC: parse them as UTC
+function parseApiDate(value: string): Date {
+  return new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`)
+}
+
+function toLocalInput(value?: string | null): string {
+  return value ? format(parseApiDate(value), "yyyy-MM-dd'T'HH:mm") : ''
 }
 
 export default function Episodes() {
@@ -49,6 +70,9 @@ export default function Episodes() {
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
   const [editingNotes, setEditingNotes] = useState<string>('')
   const [editingSeverity, setEditingSeverity] = useState<number>(3)
+  const [editingOutcome, setEditingOutcome] = useState<EpisodeOutcome | ''>('')
+  const [editingWaterHeight, setEditingWaterHeight] = useState<string>('')
+  const [editingObservedAt, setEditingObservedAt] = useState<string>('')
   const [isEditing, setIsEditing] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -74,11 +98,28 @@ export default function Episodes() {
     }
   }
 
+  const resetEditing = useCallback((ep: FloodEpisode) => {
+    setEditingNotes(ep.notes || '')
+    setEditingSeverity(ep.severity)
+    setEditingOutcome(ep.outcome || '')
+    setEditingWaterHeight(
+      ep.water_height_cm !== null && ep.water_height_cm !== undefined
+        ? ep.water_height_cm.toString()
+        : ''
+    )
+    setEditingObservedAt(toLocalInput(ep.observed_at))
+  }, [])
+
+  const replaceEpisode = (updated: FloodEpisode) => {
+    setEpisodes((prev) => prev.map((ep) => (ep.id === updated.id ? updated : ep)))
+    setSelectedEpisode(updated)
+    resetEditing(updated)
+  }
+
   const handleSelectEpisode = useCallback(
     async (ep: FloodEpisode) => {
       setSelectedEpisode(ep)
-      setEditingNotes(ep.notes || '')
-      setEditingSeverity(ep.severity)
+      resetEditing(ep)
       setIsEditing(false)
       setAnalyzeError(null)
 
@@ -97,7 +138,7 @@ export default function Episodes() {
         }
       }
     },
-    [setSearchParams]
+    [setSearchParams, resetEditing]
   )
 
   // Auto-select from URL ?id= on mount
@@ -110,22 +151,16 @@ export default function Episodes() {
     }
   }, [episodes, searchParams, selectedEpisode, handleSelectEpisode])
 
-  const handleConfirm = async (wasFlooded: boolean) => {
+  const handleConfirm = async (outcome: EpisodeOutcome) => {
     if (!selectedEpisode?.id) return
     setSaving(true)
     try {
-      const result = await confirmEpisode(
-        selectedEpisode.id,
-        wasFlooded,
-        editingSeverity,
-        editingNotes
-      )
-      // Update local state
-      setEpisodes((prev) =>
-        prev.map((ep) => (ep.id === selectedEpisode.id ? result.episode : ep))
-      )
-      setSelectedEpisode(result.episode)
-      setEditingNotes(result.episode.notes || '')
+      // Re-confirming replaces the outcome server-side (no notes prefixes)
+      const result = await confirmEpisode(selectedEpisode.id, outcome, {
+        severity: editingSeverity,
+        source: 'user',
+      })
+      replaceEpisode(result.episode)
       setIsEditing(false)
     } catch (err) {
       console.error('Error confirming episode:', err)
@@ -138,13 +173,24 @@ export default function Episodes() {
     if (!selectedEpisode?.id) return
     setSaving(true)
     try {
+      const outcome = editingOutcome || null
+      const outcomeChanged = outcome !== (selectedEpisode.outcome || null)
+      const waterHeight = editingWaterHeight.trim() === '' ? null : Number(editingWaterHeight)
+      const observedChanged = editingObservedAt !== toLocalInput(selectedEpisode.observed_at)
       const updated = await updateEpisode(selectedEpisode.id, {
         ...selectedEpisode,
         notes: editingNotes,
         severity: editingSeverity,
+        outcome,
+        outcome_source: outcomeChanged ? (outcome ? 'user' : null) : selectedEpisode.outcome_source,
+        water_height_cm: waterHeight !== null && Number.isFinite(waterHeight) ? waterHeight : null,
+        observed_at: observedChanged
+          ? editingObservedAt
+            ? new Date(editingObservedAt).toISOString()
+            : null
+          : selectedEpisode.observed_at,
       })
-      setEpisodes((prev) => prev.map((ep) => (ep.id === selectedEpisode.id ? updated : ep)))
-      setSelectedEpisode(updated)
+      replaceEpisode(updated)
       setIsEditing(false)
     } catch (err) {
       console.error('Error saving notes:', err)
@@ -175,17 +221,29 @@ export default function Episodes() {
     'bg-red-200 text-red-900 border-red-400',
   ]
 
-  const statusBadge = (status: ConfirmStatus) => {
-    if (status === 'confirmed')
+  const statusBadge = (outcome?: EpisodeOutcome | null) => {
+    if (outcome === 'flooded')
       return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700">
-          <CheckCircle className="w-3 h-3" /> Inonde
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-700">
+          <CheckCircle className="w-3 h-3" /> {OUTCOME_LABELS.flooded}
         </span>
       )
-    if (status === 'rejected')
+    if (outcome === 'near_miss')
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-orange-100 text-orange-700">
+          <Waves className="w-3 h-3" /> {OUTCOME_LABELS.near_miss}
+        </span>
+      )
+    if (outcome === 'false_positive')
       return (
         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-gray-100 text-gray-600">
-          <XCircle className="w-3 h-3" /> Faux positif
+          <XCircle className="w-3 h-3" /> {OUTCOME_LABELS.false_positive}
+        </span>
+      )
+    if (outcome === 'unknown')
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-600">
+          <HelpCircle className="w-3 h-3" /> {OUTCOME_LABELS.unknown}
         </span>
       )
     return (
@@ -202,7 +260,7 @@ export default function Episodes() {
         <div>
           <h2 className="text-xl font-bold">Episodes d'inondation</h2>
           <p className="text-sm text-gray-500 mt-1">
-            {episodes.length} episodes - {episodes.filter((e) => getConfirmStatus(e.notes) === 'pending').length} a valider
+            {episodes.length} episodes - {episodes.filter(isPending).length} a valider
           </p>
         </div>
         <button
@@ -231,7 +289,6 @@ export default function Episodes() {
           ) : (
             <div className="divide-y overflow-y-auto flex-1">
               {episodes.map((ep) => {
-                const status = getConfirmStatus(ep.notes)
                 const isSelected = selectedEpisode?.id === ep.id
                 return (
                   <div
@@ -248,7 +305,7 @@ export default function Episodes() {
                             locale: fr,
                           })}
                         </span>
-                        {statusBadge(status)}
+                        {statusBadge(ep.outcome)}
                       </div>
                       {ep.description && (
                         <p className="text-sm text-gray-500 truncate mt-0.5">{ep.description}</p>
@@ -321,14 +378,81 @@ export default function Episodes() {
                       { locale: fr }
                     )}
                   </h4>
-                  {statusBadge(getConfirmStatus(selectedEpisode.notes))}
+                  {statusBadge(selectedEpisode.outcome)}
                 </div>
                 <p className="text-sm text-gray-600">{selectedEpisode.description}</p>
+                {(selectedEpisode.water_height_cm != null ||
+                  selectedEpisode.observed_at ||
+                  selectedEpisode.outcome_source) && (
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">
+                    {selectedEpisode.water_height_cm != null && (
+                      <span>Hauteur d'eau : {selectedEpisode.water_height_cm} cm</span>
+                    )}
+                    {selectedEpisode.observed_at && (
+                      <span>
+                        Pic observe :{' '}
+                        {format(parseApiDate(selectedEpisode.observed_at), 'dd MMM yyyy HH:mm', {
+                          locale: fr,
+                        })}
+                      </span>
+                    )}
+                    {selectedEpisode.outcome_source && (
+                      <span>Source : {selectedEpisode.outcome_source}</span>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Severity edit */}
               {isEditing && (
                 <div className="bg-amber-50 rounded-lg p-4 space-y-3">
+                  <label className="block text-sm font-medium" htmlFor="episode-outcome">
+                    Resultat au moulin
+                  </label>
+                  <select
+                    id="episode-outcome"
+                    value={editingOutcome}
+                    onChange={(e) => setEditingOutcome(e.target.value as EpisodeOutcome | '')}
+                    className="w-full border rounded px-3 py-2 text-sm bg-white"
+                  >
+                    <option value="">A valider (non qualifie)</option>
+                    {OUTCOME_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-sm font-medium" htmlFor="episode-water-height">
+                        Hauteur d'eau (cm)
+                      </label>
+                      <input
+                        id="episode-water-height"
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={editingWaterHeight}
+                        onChange={(e) => setEditingWaterHeight(e.target.value)}
+                        className="w-full border rounded px-3 py-2 text-sm"
+                        placeholder="ex: 25"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium" htmlFor="episode-observed-at">
+                        Pic observe au moulin
+                      </label>
+                      <input
+                        id="episode-observed-at"
+                        type="datetime-local"
+                        value={editingObservedAt}
+                        onChange={(e) => setEditingObservedAt(e.target.value)}
+                        className="w-full border rounded px-3 py-2 text-sm"
+                      />
+                    </div>
+                  </div>
+
                   <label className="block text-sm font-medium">Severite reelle</label>
                   <input
                     type="range"
@@ -416,14 +540,14 @@ export default function Episodes() {
               )}
 
               {/* Confirmation buttons */}
-              {getConfirmStatus(selectedEpisode.notes) === 'pending' && (
+              {isPending(selectedEpisode) && (
                 <div className="border-t pt-4">
                   <p className="text-sm text-gray-600 mb-3">
                     Est-ce que le moulin a ete inonde a cette date ?
                   </p>
-                  <div className="flex gap-3">
+                  <div className="flex flex-wrap gap-3">
                     <button
-                      onClick={() => handleConfirm(true)}
+                      onClick={() => handleConfirm('flooded')}
                       disabled={saving}
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
                     >
@@ -431,7 +555,15 @@ export default function Episodes() {
                       Oui, inonde
                     </button>
                     <button
-                      onClick={() => handleConfirm(false)}
+                      onClick={() => handleConfirm('near_miss')}
+                      disabled={saving}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50"
+                    >
+                      <Waves className="w-4 h-4" />
+                      Presque
+                    </button>
+                    <button
+                      onClick={() => handleConfirm('false_positive')}
                       disabled={saving}
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50"
                     >
@@ -439,6 +571,21 @@ export default function Episodes() {
                       Non, faux positif
                     </button>
                   </div>
+                  <p className="text-xs text-gray-400 mt-2">
+                    Hauteur d'eau et heure du pic : bouton Editer.
+                  </p>
+                </div>
+              )}
+
+              {!isPending(selectedEpisode) && !isEditing && (
+                <div className="border-t pt-3 text-xs text-gray-500">
+                  Resultat errone ?{' '}
+                  <button
+                    onClick={() => setIsEditing(true)}
+                    className="text-blue-600 hover:underline"
+                  >
+                    Requalifier
+                  </button>
                 </div>
               )}
 
@@ -516,6 +663,7 @@ function AddEpisodeModal({
     severity: 3,
     description: '',
     notes: '',
+    outcome: '' as EpisodeOutcome | '',
   })
   const [saving, setSaving] = useState(false)
 
@@ -527,6 +675,8 @@ function AddEpisodeModal({
         ...formData,
         start_time: new Date(formData.start_time).toISOString(),
         peak_time: formData.peak_time ? new Date(formData.peak_time).toISOString() : null,
+        outcome: formData.outcome || null,
+        outcome_source: formData.outcome ? 'user' : null,
       })
     } finally {
       setSaving(false)
@@ -576,6 +726,27 @@ function AddEpisodeModal({
               <span>3 - Modere</span>
               <span>5 - Majeur</span>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1" htmlFor="new-episode-outcome">
+              Resultat au moulin
+            </label>
+            <select
+              id="new-episode-outcome"
+              value={formData.outcome}
+              onChange={(e) =>
+                setFormData({ ...formData, outcome: e.target.value as EpisodeOutcome | '' })
+              }
+              className="w-full border rounded px-3 py-2 bg-white"
+            >
+              <option value="">A valider (non qualifie)</option>
+              {OUTCOME_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div>

@@ -1,7 +1,8 @@
 """Flood episodes management endpoints."""
 
 import asyncio
-import json
+import inspect
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
@@ -10,7 +11,8 @@ from app.models.schemas import (
     FloodEpisode,
     FloodEpisodeCreate,
     EpisodeAnalysis,
-    EpisodeContext,
+    EpisodeLabelSet,
+    EpisodeOutcome,
 )
 from app.services.data_store import (
     get_all_episodes,
@@ -27,6 +29,9 @@ from app.services.episode_analyzer_v2 import (
 )
 from app.services.backfill import run_full_backfill
 from app.services.episode_detector import run_episode_detection
+from app.services.labels import load_label_set, strip_legacy_prefixes
+
+logger = logging.getLogger(__name__)
 
 
 # In-memory backfill job tracker
@@ -53,13 +58,19 @@ async def list_episodes(
     return episodes
 
 
-@router.get("/{episode_id}", response_model=FloodEpisode)
-async def get_episode(episode_id: int):
-    """Get a specific flood episode by ID."""
-    episode = await get_episode_by_id(episode_id)
-    if episode is None:
-        raise HTTPException(status_code=404, detail="Episode not found")
-    return episode
+@router.get("/labels", response_model=EpisodeLabelSet)
+async def get_episode_labels():
+    """
+    Reference ground truth of the annotated episodes.
+
+    Served from app/data/episodes_labels.json (single source of truth for
+    model evaluation), keyed by peak date rather than by EP number.
+    """
+    try:
+        return load_label_set()
+    except (OSError, ValueError) as e:
+        logger.error("Cannot load episode labels: %s", e)
+        raise HTTPException(status_code=500, detail="Episode labels unavailable")
 
 
 @router.post("", response_model=FloodEpisode)
@@ -72,28 +83,6 @@ async def create_flood_episode(episode: FloodEpisodeCreate):
     """
     created = await create_episode(episode)
     return created
-
-
-@router.put("/{episode_id}", response_model=FloodEpisode)
-async def update_flood_episode(episode_id: int, episode: FloodEpisodeCreate):
-    """Update an existing flood episode."""
-    existing = await get_episode_by_id(episode_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Episode not found")
-
-    updated = await update_episode(episode_id, episode)
-    return updated
-
-
-@router.delete("/{episode_id}")
-async def delete_flood_episode(episode_id: int):
-    """Delete a flood episode."""
-    existing = await get_episode_by_id(episode_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Episode not found")
-
-    await delete_episode(episode_id)
-    return {"status": "deleted", "id": episode_id}
 
 
 @router.post("/analyze", response_model=EpisodeAnalysis)
@@ -117,26 +106,6 @@ async def analyze_flood_episode(
         date=date,
         window_before=timedelta(days=window_before_days),
         window_after=timedelta(days=window_after_days),
-    )
-    return analysis
-
-
-@router.get("/analyze/{episode_id}", response_model=EpisodeAnalysis)
-async def analyze_existing_episode(episode_id: int):
-    """Analyze an existing recorded episode using v2 multi-station model."""
-    episode = await get_episode_by_id(episode_id)
-    if episode is None:
-        raise HTTPException(status_code=404, detail="Episode not found")
-
-    # Use peak_time if available, otherwise start_time
-    episode_date = episode.peak_time or episode.start_time
-
-    analysis = await analyze_episode_v2(
-        episode_date=episode_date,
-        severity=episode.severity,
-        description=episode.description or "",
-        hours_before=72,
-        hours_after=24,
     )
     return analysis
 
@@ -397,7 +366,7 @@ async def _run_backfill_task(
     except Exception as e:
         _backfill_status["error"] = str(e)
         _backfill_status["finished_at"] = datetime.utcnow().isoformat()
-        print(f"Backfill error: {e}")
+        logger.error("Backfill error: %s", e)
     finally:
         _backfill_status["running"] = False
 
@@ -478,6 +447,12 @@ async def backfill_status():
 async def detect_episodes_endpoint(
     start_date: Optional[datetime] = Query(None, description="Start date (default: 2022-11-01)"),
     end_date: Optional[datetime] = Query(None, description="End date (default: now)"),
+    threshold: Optional[float] = Query(
+        None,
+        ge=0,
+        le=100,
+        description="Risk score threshold (only if the detector supports it; else 400)",
+    ),
 ):
     """
     Detect potential flood episodes from backfilled data.
@@ -493,36 +468,84 @@ async def detect_episodes_endpoint(
 
     Example: POST /api/episodes/detect?start_date=2022-11-01
     """
-    results = await run_episode_detection(
-        start_date=start_date,
-        end_date=end_date,
-    )
+    kwargs: dict = {"start_date": start_date, "end_date": end_date}
+    if threshold is not None:
+        # Forward only if the detector accepts it: never silently ignore it
+        if "threshold" not in inspect.signature(run_episode_detection).parameters:
+            raise HTTPException(
+                status_code=400,
+                detail="threshold is not supported by the episode detector yet",
+            )
+        kwargs["threshold"] = threshold
+
+    results = await run_episode_detection(**kwargs)
 
     return results
+
+
+# ============================================================================
+# Routes with a path parameter. Keep them LAST: FastAPI matches in
+# declaration order and "/{episode_id}" would otherwise shadow static GET
+# routes such as /patterns or /station-extremes (returning 422).
+# ============================================================================
+
+
+@router.get("/analyze/{episode_id}", response_model=EpisodeAnalysis)
+async def analyze_existing_episode(episode_id: int):
+    """Analyze an existing recorded episode using v2 multi-station model."""
+    episode = await get_episode_by_id(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    # Use peak_time if available, otherwise start_time
+    episode_date = episode.peak_time or episode.start_time
+
+    analysis = await analyze_episode_v2(
+        episode_date=episode_date,
+        severity=episode.severity,
+        description=episode.description or "",
+        hours_before=72,
+        hours_after=24,
+    )
+    return analysis
 
 
 @router.post("/confirm/{episode_id}")
 async def confirm_detected_episode(
     episode_id: int,
-    was_flooded: bool = Query(..., description="Did actual flooding occur?"),
-    actual_severity: int = Query(None, ge=1, le=5, description="Actual flood severity"),
-    notes: str = Query(None, description="Additional notes"),
+    outcome: Optional[EpisodeOutcome] = Query(
+        None, description="Ground-truth outcome (flooded, false_positive, near_miss, unknown)"
+    ),
+    was_flooded: Optional[bool] = Query(
+        None, description="Legacy: true=flooded, false=false_positive (ignored if outcome is set)"
+    ),
+    actual_severity: Optional[int] = Query(None, ge=1, le=5, description="Actual flood severity"),
+    notes: Optional[str] = Query(None, description="Notes (replace existing notes when provided)"),
+    observed_at: Optional[datetime] = Query(None, description="Observed peak time at the mill"),
+    water_height_cm: Optional[float] = Query(None, ge=0, description="Observed water height (cm)"),
+    source: str = Query("user", max_length=100, description="Who/what labelled the episode"),
 ):
     """
-    Confirm or reject a detected/existing episode.
+    Set the ground-truth outcome of a detected/existing episode.
 
-    Use this to provide feedback on detected episodes:
-    - was_flooded=true: Confirms the flood occurred
-    - was_flooded=false: Marks as false positive (no actual flood)
+    The outcome is stored in a structured field: confirming again REPLACES the
+    previous outcome (e.g. flooded -> false_positive), it never stacks text
+    prefixes in notes. Legacy ``[CONFIRMED: ...]`` prefixes are stripped.
 
-    This feedback can be used to calibrate the risk model.
+    Fields not provided keep their current value, except water_height_cm which
+    is cleared when the outcome becomes false_positive.
     """
+    if outcome is None:
+        if was_flooded is None:
+            raise HTTPException(status_code=422, detail="Provide outcome or was_flooded")
+        outcome = EpisodeOutcome.FLOODED if was_flooded else EpisodeOutcome.FALSE_POSITIVE
+
     episode = await get_episode_by_id(episode_id)
     if episode is None:
         raise HTTPException(status_code=404, detail="Episode not found")
 
-    # Update episode with confirmation
-    from app.models.schemas import FloodEpisodeCreate
+    if water_height_cm is None and outcome != EpisodeOutcome.FALSE_POSITIVE:
+        water_height_cm = episode.water_height_cm
 
     update_data = FloodEpisodeCreate(
         start_time=episode.start_time,
@@ -530,12 +553,55 @@ async def confirm_detected_episode(
         end_time=episode.end_time,
         severity=actual_severity if actual_severity else episode.severity,
         description=episode.description,
-        notes=f"[CONFIRMED: {'FLOODED' if was_flooded else 'FALSE POSITIVE'}] {notes or ''}\n{episode.notes or ''}".strip(),
+        notes=strip_legacy_prefixes(notes if notes is not None else episode.notes),
+        outcome=outcome,
+        observed_at=observed_at if observed_at is not None else episode.observed_at,
+        water_height_cm=water_height_cm,
+        outcome_source=source,
     )
 
     updated = await update_episode(episode_id, update_data)
 
+    if outcome == EpisodeOutcome.FLOODED:
+        status = "confirmed"
+    elif outcome == EpisodeOutcome.FALSE_POSITIVE:
+        status = "rejected"
+    else:
+        status = outcome.value
+
     return {
-        "status": "confirmed" if was_flooded else "rejected",
+        "status": status,
+        "outcome": outcome.value,
         "episode": updated,
     }
+
+
+@router.get("/{episode_id}", response_model=FloodEpisode)
+async def get_episode(episode_id: int):
+    """Get a specific flood episode by ID."""
+    episode = await get_episode_by_id(episode_id)
+    if episode is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    return episode
+
+
+@router.put("/{episode_id}", response_model=FloodEpisode)
+async def update_flood_episode(episode_id: int, episode: FloodEpisodeCreate):
+    """Update an existing flood episode."""
+    existing = await get_episode_by_id(episode_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    updated = await update_episode(episode_id, episode)
+    return updated
+
+
+@router.delete("/{episode_id}")
+async def delete_flood_episode(episode_id: int):
+    """Delete a flood episode."""
+    existing = await get_episode_by_id(episode_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    await delete_episode(episode_id)
+    return {"status": "deleted", "id": episode_id}

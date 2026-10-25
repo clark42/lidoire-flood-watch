@@ -243,6 +243,22 @@ class RiskScore(BaseModel):
 
 
 # Flood episodes
+class EpisodeOutcome(str, Enum):
+    """Ground-truth outcome of an episode at the mill.
+
+    - flooded: water entered the mill (confirmed flood)
+    - false_positive: alert/detection but nothing notable happened at the mill
+    - near_miss: water rose markedly at the mill but did not flood it
+    - unknown: labelled, but the outcome could not be established
+
+    A null outcome on an episode means "not labelled yet" (pending review).
+    """
+    FLOODED = "flooded"
+    FALSE_POSITIVE = "false_positive"
+    NEAR_MISS = "near_miss"
+    UNKNOWN = "unknown"
+
+
 class FloodEpisode(BaseModel):
     """Historical flood episode record."""
     id: Optional[int] = None
@@ -253,16 +269,72 @@ class FloodEpisode(BaseModel):
     description: Optional[str] = None
     notes: Optional[str] = None
     created_at: Optional[datetime] = None
+    # Structured ground truth (null outcome = not labelled yet)
+    outcome: Optional[EpisodeOutcome] = None
+    observed_at: Optional[datetime] = Field(
+        None, description="Observed peak time at the mill"
+    )
+    water_height_cm: Optional[float] = Field(
+        None, ge=0, description="Observed water height inside the mill (cm)"
+    )
+    outcome_source: Optional[str] = Field(
+        None, max_length=100, description="Who/what set the outcome"
+    )
 
 
 class FloodEpisodeCreate(BaseModel):
-    """Schema for creating a flood episode."""
+    """Schema for creating/updating a flood episode.
+
+    On update, ground-truth fields (outcome, observed_at, water_height_cm,
+    outcome_source) are only changed when explicitly present in the payload,
+    so legacy clients that omit them do not wipe existing labels.
+    """
     start_time: datetime
     peak_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     severity: int = Field(..., ge=1, le=5)
     description: Optional[str] = None
     notes: Optional[str] = None
+    outcome: Optional[EpisodeOutcome] = None
+    observed_at: Optional[datetime] = None
+    water_height_cm: Optional[float] = Field(None, ge=0)
+    outcome_source: Optional[str] = Field(None, max_length=100)
+
+
+class EpisodeLabel(BaseModel):
+    """One annotated reference episode (from app/data/episodes_labels.json)."""
+    key: str = Field(..., description="Stable key: peak date YYYY-MM-DD")
+    peak_time: datetime = Field(..., description="Approximate peak time (naive, UTC assumed)")
+    outcome: EpisodeOutcome
+    severity: int = Field(..., ge=1, le=5)
+    water_height_cm: Optional[float] = Field(None, ge=0)
+    source: str = Field(..., description="Who/what labelled the episode")
+    notes: Optional[str] = None
+    flags: list[str] = Field(default_factory=list, description="Data quality caveats")
+    legacy_db_id: Optional[int] = Field(
+        None, description="Id used in validate_model.py / analyze_episodes.py"
+    )
+    legacy_refs: list[str] = Field(
+        default_factory=list, description="Other names used in code/docstrings"
+    )
+    legacy_stored_score: Optional[float] = Field(
+        None, description="Stored risk score at peak per validate_model.py (not ground truth)"
+    )
+
+
+class EpisodeLabelSet(BaseModel):
+    """Versioned set of reference episode labels."""
+    version: int
+    updated_at: str
+    description: str
+    exhaustive: bool = Field(
+        False, description="True only if every flood in the period is labelled"
+    )
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    caveats: list[str] = []
+    inconsistencies: list[str] = []
+    episodes: list[EpisodeLabel]
 
 
 class EpisodeContext(BaseModel):
