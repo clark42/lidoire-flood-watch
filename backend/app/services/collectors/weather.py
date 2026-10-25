@@ -726,6 +726,56 @@ async def get_current_wind() -> dict:
     }
 
 
+async def fetch_past_hourly_rain(lat: float, lon: float, past_days: int = 7) -> dict[int, float]:
+    """
+    Fetch past observed hourly precipitation from Open-Meteo.
+
+    Uses the standard forecast endpoint with past_days parameter, which
+    provides observed data for the recent past (no multi-day lag).
+
+    Returns:
+        Dict mapping hour_offset (negative int, e.g. -1 = 1h ago) to precipitation_mm.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                OPEN_METEO_CURRENT,
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "hourly": "precipitation",
+                    "past_days": past_days,
+                    "forecast_days": 0,
+                    "timezone": "UTC",
+                },
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            hourly = data.get("hourly", {})
+            times = hourly.get("time", [])
+            precip = hourly.get("precipitation", [])
+
+            now = datetime.utcnow()
+            result: dict[int, float] = {}
+
+            for i, time_str in enumerate(times):
+                if i >= len(precip):
+                    break
+                ts = datetime.fromisoformat(time_str)
+                hour_offset = int((ts - now).total_seconds() / 3600)
+                p = precip[i] or 0
+                if -(past_days * 24) <= hour_offset < 0:
+                    result[hour_offset] = p
+
+            return result
+
+    except Exception as e:
+        print(f"Error fetching past hourly rain from Open-Meteo: {e}")
+        return {}
+
+
 async def get_past_rainfall_sums(lat: float, lon: float) -> dict:
     """
     Get past rainfall sums from Open-Meteo forecast API (past_days parameter).
@@ -1009,4 +1059,89 @@ async def fetch_and_store_soil_historical(start: datetime, end: datetime) -> int
 
     except Exception as e:
         print(f"Error fetching historical soil data from Open-Meteo: {e}")
+        return 0
+
+
+async def fetch_and_store_wind_historical(start: datetime, end: datetime) -> int:
+    """Fetch historical wind data from Open-Meteo and store in InfluxDB.
+
+    Uses the forecast API for recent data (< 90 days) or the archive API for older dates.
+    Stores to measurement 'wind' with tag location=moulin.
+    """
+    import math
+    from app.services import influx_client
+
+    settings = get_settings()
+    lat = settings.moulin_lat
+    lon = settings.moulin_lon
+
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
+
+    days_ago = (datetime.utcnow() - start).days
+    url = OPEN_METEO_HISTORICAL if days_ago > 90 else OPEN_METEO_CURRENT
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "hourly": "wind_speed_10m,wind_direction_10m",
+                    "start_date": start_str,
+                    "end_date": end_str,
+                    "timezone": "UTC",
+                },
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            hourly = data.get("hourly", {})
+            times = hourly.get("time", [])
+            speeds = hourly.get("wind_speed_10m", [])
+            directions = hourly.get("wind_direction_10m", [])
+
+            if not times:
+                print(f"No wind data from Open-Meteo for {start_str} -> {end_str}")
+                return 0
+
+            stored = 0
+            for i, time_str in enumerate(times):
+                speed = speeds[i] if i < len(speeds) else None
+                direction = directions[i] if i < len(directions) else None
+
+                if speed is None:
+                    continue
+
+                # Calculate westerly component
+                westerly = 0.0
+                if direction is not None:
+                    dir_rad = math.radians(direction)
+                    westerly = max(0, -speed * math.sin(dir_rad))
+
+                fields = {
+                    "speed_kmh": round(speed, 1),
+                    "direction_deg": round(direction, 0) if direction is not None else 0,
+                    "westerly_kmh": round(westerly, 1),
+                }
+
+                try:
+                    ts = datetime.fromisoformat(time_str)
+                    await influx_client.write_point(
+                        measurement="wind",
+                        tags={"location": "moulin"},
+                        fields=fields,
+                        timestamp=ts,
+                    )
+                    stored += 1
+                except (ValueError, Exception):
+                    continue
+
+            print(f"Stored {stored} wind timeline points for {start_str} -> {end_str}")
+            return stored
+
+    except Exception as e:
+        print(f"Error fetching historical wind data from Open-Meteo: {e}")
         return 0

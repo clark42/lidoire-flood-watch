@@ -445,16 +445,22 @@ async def get_basin_rainfall() -> dict:
         except Exception as e:
             print(f"Error fetching historical rainfall: {e}")
 
-    # Fallback: fetch Open-Meteo past rainfall when InfluxDB data is incomplete.
-    # Detect incomplete data: 72h == 24h means only one 24h chunk was found.
+    # Fallback: always fetch Open-Meteo past rainfall to supplement Netatmo
+    # 72h/7d data. Netatmo only provides 24h counters; InfluxDB often has
+    # insufficient history, causing 72h == 24h. Open-Meteo observed data
+    # (past_days=7) fills the gap reliably.
     open_meteo_fallback = None
-    if lidoire_cities and historical_rainfall:
-        # Check first station to see if data looks incomplete
-        sample = next(iter(historical_rainfall.values()), {})
-        r24 = sample.get("rain_24h_mm")
-        r72 = sample.get("rain_72h_mm")
-        r7d = sample.get("rain_7d_mm")
-        if r24 is not None and (r72 is None or r72 == r24 or r7d is None or r7d == r72):
+    if lidoire_cities:
+        needs_fallback = True
+        if historical_rainfall:
+            sample = next(iter(historical_rainfall.values()), {})
+            r24 = sample.get("rain_24h_mm")
+            r72 = sample.get("rain_72h_mm")
+            r7d = sample.get("rain_7d_mm")
+            # Data looks complete if 72h and 7d differ from 24h
+            if r24 is not None and r72 is not None and r72 != r24 and r7d is not None and r7d != r72:
+                needs_fallback = False
+        if needs_fallback:
             try:
                 from app.services.collectors.weather import get_past_rainfall_sums
                 open_meteo_fallback = await get_past_rainfall_sums(

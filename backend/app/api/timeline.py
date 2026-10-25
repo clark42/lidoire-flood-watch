@@ -5,9 +5,6 @@ from typing import Optional
 from fastapi import APIRouter, Query
 
 from app.models.schemas import (
-    TimelineData,
-    TimelinePoint,
-    FloodEpisode,
     AvailableSources,
     RiverStationInfo,
     RainfallStationInfo,
@@ -15,7 +12,6 @@ from app.models.schemas import (
     TimelineSeries,
     TimelineDataPoint,
 )
-from app.services.data_store import get_timeline_data, get_episodes_in_range
 from app.services.influx_client import (
     query_rainfall_by_station,
     query_river_levels_multi_station,
@@ -312,6 +308,33 @@ async def _ensure_soil_data(start: datetime, end: datetime) -> None:
         print(f"Soil data backfill failed: {e_soil}")
 
 
+async def _ensure_wind_data(start: datetime, end: datetime) -> None:
+    """Check if InfluxDB has wind data for the period; if not, backfill from Open-Meteo."""
+    from app.services.influx_client import query_wind_timeline
+
+    s = start.replace(tzinfo=None) if start.tzinfo else start
+    e = end.replace(tzinfo=None) if end.tzinfo else end
+
+    existing = await query_wind_timeline(s, e, resolution="6h")
+    data_points = existing.get("speed_kmh", [])
+
+    period_hours = (e - s).total_seconds() / 3600
+    expected_min_points = max(2, int(period_hours / 12))
+
+    if len(data_points) >= expected_min_points:
+        return
+
+    print(f"Insufficient wind data ({len(data_points)} points, need ~{expected_min_points}) "
+          f"for {s} -> {e}, backfilling from Open-Meteo...")
+
+    try:
+        from app.services.collectors.weather import fetch_and_store_wind_historical
+        stored = await fetch_and_store_wind_historical(s, e)
+        print(f"Wind backfill completed: {stored} points stored")
+    except Exception as e_wind:
+        print(f"Wind data backfill failed: {e_wind}")
+
+
 router = APIRouter()
 
 # Station configurations
@@ -334,132 +357,6 @@ RAINFALL_STATIONS = {
     "netatmo-lidoire:Lamothe-Montravel": {"name": "Lamothe-Montravel", "position": "aval", "color": "#14532d"},
     "netatmo-lidoire:Les Salles-de-Castillon": {"name": "Les Salles-de-Castillon", "position": "aval", "color": "#052e16"},
 }
-
-
-@router.get("", response_model=TimelineData)
-async def get_timeline(
-    start: Optional[datetime] = Query(None, description="Start datetime (default: 7 days ago)"),
-    end: Optional[datetime] = Query(None, description="End datetime (default: now)"),
-    resolution: str = Query("1h", description="Data resolution: 15m, 1h, 6h, 1d"),
-):
-    """
-    Get timeline data for visualization.
-
-    Returns time-series data for:
-    - Tide height
-    - River level (Dordogne at Libourne)
-    - Rainfall (hourly)
-    - Risk score
-    - Video water level index
-
-    Also includes flood episodes that occurred in the time range.
-    """
-    now = datetime.utcnow()
-
-    if end is None:
-        end = now
-    if start is None:
-        start = end - timedelta(days=7)
-
-    # Validate resolution
-    valid_resolutions = ["15m", "1h", "6h", "1d"]
-    if resolution not in valid_resolutions:
-        resolution = "1h"
-
-    # Fetch timeline data from storage
-    points = await get_timeline_data(start, end, resolution)
-
-    # Fetch episodes in range
-    episodes = await get_episodes_in_range(start, end)
-
-    return TimelineData(
-        start=start,
-        end=end,
-        resolution=resolution,
-        points=points,
-        episodes=episodes,
-    )
-
-
-@router.get("/stations")
-async def get_multi_station_timeline(
-    start: Optional[datetime] = Query(None, description="Start datetime (default: 48h ago)"),
-    end: Optional[datetime] = Query(None, description="End datetime (default: now)"),
-    station_ids: Optional[str] = Query(None, description="Comma-separated station IDs (default: all)"),
-):
-    """
-    Get timeline data for multiple hydrometric stations.
-
-    Data is read from InfluxDB. If not present, it's fetched from Hub'Eau
-    and stored for future requests.
-
-    Returns time-series height data for each requested station.
-    Useful for comparing water levels across the Dordogne, Isle, and Dronne rivers.
-    """
-    from app.services.data_store import get_multi_station_timeline as get_data
-
-    now = datetime.utcnow()
-
-    if end is None:
-        end = now
-    if start is None:
-        start = end - timedelta(hours=48)
-
-    # Parse station IDs
-    requested_ids = None
-    if station_ids:
-        requested_ids = [s.strip() for s in station_ids.split(",")]
-
-    # Get data from InfluxDB (with cache-through pattern)
-    stations_data = await get_data(start, end, requested_ids)
-
-    return {
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "stations": stations_data,
-    }
-
-
-@router.get("/compare")
-async def compare_periods(
-    period1_start: datetime = Query(..., description="First period start"),
-    period1_end: datetime = Query(..., description="First period end"),
-    period2_start: datetime = Query(..., description="Second period start"),
-    period2_end: datetime = Query(..., description="Second period end"),
-):
-    """Compare two time periods for analysis."""
-    # Fetch data for both periods
-    data1 = await get_timeline_data(period1_start, period1_end, "1h")
-    data2 = await get_timeline_data(period2_start, period2_end, "1h")
-
-    # Calculate summary statistics for comparison
-    def summarize(points: list[TimelinePoint]) -> dict:
-        if not points:
-            return {}
-        river_levels = [p.river_level_m for p in points if p.river_level_m is not None]
-        rainfall = [p.rainfall_mm_h for p in points if p.rainfall_mm_h is not None]
-        risk_scores = [p.risk_score for p in points if p.risk_score is not None]
-
-        return {
-            "river_level_max": max(river_levels) if river_levels else None,
-            "river_level_avg": sum(river_levels) / len(river_levels) if river_levels else None,
-            "rainfall_total": sum(rainfall) if rainfall else 0,
-            "risk_score_max": max(risk_scores) if risk_scores else None,
-            "risk_score_avg": sum(risk_scores) / len(risk_scores) if risk_scores else None,
-        }
-
-    return {
-        "period1": {
-            "start": period1_start,
-            "end": period1_end,
-            "summary": summarize(data1),
-        },
-        "period2": {
-            "start": period2_start,
-            "end": period2_end,
-            "summary": summarize(data2),
-        },
-    }
 
 
 @router.get("/sources", response_model=AvailableSources)
@@ -501,62 +398,6 @@ async def get_available_sources():
         has_wind=True,
         has_soil=True,
     )
-
-
-@router.get("/rainfall")
-async def get_rainfall_timeline(
-    start: Optional[datetime] = Query(None, description="Start datetime (default: 48h ago)"),
-    end: Optional[datetime] = Query(None, description="End datetime (default: now)"),
-    cities: Optional[str] = Query(None, description="Comma-separated city names"),
-    sources: Optional[str] = Query(None, description="Comma-separated sources (default: netatmo-lidoire)"),
-    resolution: str = Query("1h", description="Data resolution: 15m, 1h, 6h"),
-):
-    """
-    Get rainfall timeline data by station.
-
-    Returns time-series rainfall data grouped by source:city.
-    """
-    now = datetime.utcnow()
-
-    if end is None:
-        end = now
-    if start is None:
-        start = end - timedelta(hours=48)
-
-    # Parse filters
-    city_list = [c.strip() for c in cities.split(",")] if cities else None
-    source_list = [s.strip() for s in sources.split(",")] if sources else ["netatmo-lidoire"]
-
-    # Query InfluxDB
-    data = await query_rainfall_by_station(
-        start=start,
-        end=end,
-        sources=source_list,
-        cities=city_list,
-        resolution=resolution,
-    )
-
-    # Build response with station info
-    series = {}
-    for source_city, points in data.items():
-        info = RAINFALL_STATIONS.get(source_city, {"name": source_city, "position": "unknown", "color": "#6b7280"})
-        series[source_city] = {
-            "name": info["name"],
-            "position": info["position"],
-            "color": info["color"],
-            "unit": "mm/h",
-            "data": [
-                {"timestamp": p["timestamp"].isoformat(), "value": p["value"]}
-                for p in points
-            ],
-        }
-
-    return {
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-        "resolution": resolution,
-        "series": series,
-    }
 
 
 @router.get("/unified", response_model=UnifiedTimelineData)
@@ -724,8 +565,8 @@ async def get_unified_timeline(
                     ],
                 )
 
-        # Cumulative rainfall series: running total across all requested sources
-        # Use 1h sum regardless of display resolution for accurate accumulation
+        # Cumulative rainfall series: running total using max across sources per timestamp
+        # (avoids double-counting when multiple sources measure the same area)
         cumul_data = await query_rainfall_by_station(
             start=start, end=end,
             sources=list(sources_set) if sources_set else None,
@@ -733,12 +574,12 @@ async def get_unified_timeline(
             resolution="1h",
             agg_fn="sum",
         )
-        # Merge all sources into a single time-sorted list, then compute running sum
+        # Take max value across sources at each timestamp (not sum)
         all_hourly: dict[str, float] = {}
         for _sc, pts in cumul_data.items():
             for p in pts:
                 ts_key = p["timestamp"].isoformat() if hasattr(p["timestamp"], "isoformat") else str(p["timestamp"])
-                all_hourly[ts_key] = all_hourly.get(ts_key, 0) + (p["value"] or 0)
+                all_hourly[ts_key] = max(all_hourly.get(ts_key, 0), p["value"] or 0)
 
         if all_hourly:
             sorted_ts = sorted(all_hourly.keys())
@@ -868,6 +709,8 @@ async def get_unified_timeline(
 
     # Query wind data if requested
     if include_wind:
+        await _ensure_wind_data(start, end)
+
         wind_data = await query_wind_timeline(
             start=start,
             end=end,

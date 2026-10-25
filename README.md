@@ -252,7 +252,6 @@ MOULIN_LON=0.0015091
 ### Timeline
 - `GET /api/timeline/unified` : Timeline multi-sources (river, rain, tide, risk, soil, wind, forecast)
 - `GET /api/timeline/sources` : Sources disponibles (stations, types)
-- `GET /api/timeline/rainfall` : Timeline pluviometrique detaillee
 
 ### Risque
 - `GET /api/risk` : Score de risque actuel
