@@ -207,25 +207,21 @@ def _calculate_episode_context(
     def _strip_tz(dt: datetime) -> datetime:
         return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
-    # Calculate rainfall sums
-    rain_24h = sum(
-        r.precipitation_mm_h for r in rainfall
-        if ep_date - timedelta(hours=24) <= _strip_tz(r.timestamp) <= ep_date
-    )
-    rain_48h = sum(
-        r.precipitation_mm_h for r in rainfall
-        if ep_date - timedelta(hours=48) <= _strip_tz(r.timestamp) <= ep_date
-    )
-    rain_72h = sum(
-        r.precipitation_mm_h for r in rainfall
-        if ep_date - timedelta(hours=72) <= _strip_tz(r.timestamp) <= ep_date
-    )
+    # Rainfall sums: mean per hour across sources, then sum (same rule as
+    # the risk model), only hours before the episode date
+    from app.services.risk_core import aggregate_hourly_rain, rain_window_sum, to_utc_naive
 
-    # Find max Dordogne level — prefer Pessac (non-tidal) over Libourne
-    # Libourne is tidally modulated; its peaks reflect tide, not flood
-    pessac_levels = river_data.get("P555001001", [])
-    libourne_levels = river_data.get("P577001001", [])
-    dordogne_levels = pessac_levels or libourne_levels
+    rain_hourly = aggregate_hourly_rain(
+        (to_utc_naive(r.timestamp), r.precipitation_mm_h, getattr(r, "source", ""))
+        for r in rainfall
+    )
+    rain_24h = rain_window_sum(rain_hourly, ep_date, 24)
+    rain_48h = rain_window_sum(rain_hourly, ep_date, 48)
+    rain_72h = rain_window_sum(rain_hourly, ep_date, 72)
+
+    # Max Dordogne level = Pessac (primary, non-tidal). Libourne is never
+    # used: it is tidally modulated, its peaks reflect tide, not flood.
+    dordogne_levels = river_data.get(settings.hubeau_primary_station, [])
     max_dordogne = max(
         (lv.height_m for lv in dordogne_levels),
         default=0.0,
@@ -307,13 +303,15 @@ def _identify_flood_criteria(
 
     # Check other stations
     for station_id, level in max_levels.items():
-        if station_id == "P577001001":
-            continue  # Already checked Libourne
+        if station_id == settings.hubeau_primary_station:
+            continue  # Already checked as "Dordogne" (Pessac)
 
         station_config = next(
             (s for s in settings.hubeau_stations if s["id"] == station_id),
             None,
         )
+        if station_config and station_config.get("weight", 0) <= 0:
+            continue  # Libourne: tidal, excluded
         if station_config:
             thresholds = station_config.get("thresholds", {})
             if level.height_m > thresholds.get("orange", 4.0):

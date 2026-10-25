@@ -1,19 +1,17 @@
 """Risk scoring endpoints.
 
-Uses the v3.2 multi-station risk model (risk_v2) for all calculations.
+All scores come from the single v3.3 scoring core (risk_core.compute_risk).
+Reads never persist anything: the hourly scheduler job stores the realtime
+score.
 """
 
-import asyncio
 import logging
 from fastapi import APIRouter, HTTPException, Query
 
 from app.models.schemas import RiskScore
-from app.services.risk_v2 import calculate_risk_score_v2, calculate_risk_from_values
+from app.services.risk_core import MODEL_VERSION
+from app.services.risk_v2 import compute_current_risk, calculate_risk_from_values
 from app.services.forecast import get_risk_forecast_v2
-from app.services.collectors.tide import get_current_tide_data
-from app.services.collectors.hubeau import get_multi_station_data
-from app.services.collectors.weather import get_rainfall_summary, get_soil_wind_cached
-from app.services.collectors.meteo_agricole import get_meteo_agricole_cached
 
 logger = logging.getLogger(__name__)
 
@@ -22,51 +20,9 @@ router = APIRouter()
 
 @router.get("", response_model=RiskScore)
 async def get_current_risk():
-    """Get current risk score and breakdown using multi-station v3.2 model."""
+    """Get current risk score and breakdown (same inputs as /api/realtime)."""
     try:
-        tide_data, rainfall_data, stations_data, soil_wind_data, meteo_agricole_data = (
-            await asyncio.gather(
-                get_current_tide_data(),
-                get_rainfall_summary(),
-                get_multi_station_data(),
-                get_soil_wind_cached(),
-                get_meteo_agricole_cached(),
-            )
-        )
-
-        # Determine soil saturation factor (same logic as realtime.py)
-        soil_sat_factor = rainfall_data.soil_saturation_factor
-
-        moisture_deep = soil_wind_data.get("moisture_deep", 0)
-        if moisture_deep and moisture_deep > 0.30:
-            soil_sat_factor = min(1.5, soil_sat_factor + 0.15)
-        elif moisture_deep and moisture_deep > 0.25:
-            soil_sat_factor = min(1.5, soil_sat_factor + 0.05)
-
-        et0 = soil_wind_data.get("et0_mm")
-        if et0 is not None and et0 < 1.0:
-            soil_sat_factor = min(1.5, soil_sat_factor + 0.05)
-
-        if meteo_agricole_data:
-            surplus = meteo_agricole_data.surplus_deficit_30d_pct
-            if surplus is not None:
-                if surplus > 20:
-                    soil_sat_factor = min(1.5, soil_sat_factor + 0.1)
-                elif surplus < -20:
-                    soil_sat_factor = max(1.0, soil_sat_factor - 0.1)
-
-        westerly_wind = soil_wind_data.get("westerly_wind_kmh", 0.0)
-        if meteo_agricole_data and meteo_agricole_data.wind_gust_kmh > 0:
-            westerly_wind = max(westerly_wind, meteo_agricole_data.wind_gust_kmh * 0.7)
-
-        risk = await calculate_risk_score_v2(
-            stations_data=stations_data,
-            tide=tide_data,
-            rainfall=rainfall_data,
-            westerly_wind_kmh=westerly_wind,
-            soil_saturation_factor=soil_sat_factor,
-        )
-
+        risk, _ = await compute_current_risk(store=False)
         return risk
 
     except Exception as e:
@@ -161,7 +117,7 @@ async def simulate_risk(
     rain_24h_mm: float = Query(..., ge=0, description="Pluie 24h simulee en mm"),
     rain_72h_mm: float = Query(..., ge=0, description="Pluie 72h simulee en mm"),
     rain_7d_mm: float = Query(0, ge=0, description="Pluie 7 jours simulee en mm"),
-    dordogne_level_m: float = Query(..., ge=0, description="Niveau Dordogne simule en m"),
+    dordogne_level_m: float = Query(..., ge=0, description="Niveau Dordogne (Pessac) simule en m"),
     tide_coefficient: int = Query(..., ge=20, le=120, description="Coefficient de maree simule"),
     hours_to_high_tide: float = Query(0, description="Heures avant pleine mer"),
     westerly_wind_kmh: float = Query(0, ge=0, description="Vent d'ouest en km/h"),
@@ -170,10 +126,11 @@ async def simulate_risk(
     n_rising_stations: int = Query(0, ge=0, le=7, description="Nombre de stations en hausse"),
 ):
     """
-    Simulate risk score with custom values using v3.2 multi-station model.
+    Simulate risk score with custom values (v3.3 model, nothing is stored).
 
-    Useful for understanding how different factors affect risk,
-    testing threshold configurations, training and educational purposes.
+    Every input is used: the Dordogne level is scored as a single aggregate
+    station with the Pessac thresholds, the rising-station count drives
+    momentum/conjunction/dampener.
     """
     try:
         risk = await calculate_risk_from_values(
@@ -184,7 +141,9 @@ async def simulate_risk(
             hours_to_high_tide=hours_to_high_tide,
             rate_cm_per_hour=rate_cm_per_hour,
             n_rising_stations=n_rising_stations,
-            n_total_stations=6,
+            rain_7d_mm=rain_7d_mm,
+            westerly_wind_kmh=westerly_wind_kmh,
+            soil_saturation_factor=soil_saturation,
         )
 
         return {
@@ -201,7 +160,7 @@ async def simulate_risk(
                 "n_rising_stations": n_rising_stations,
             },
             "risk": risk,
-            "model_version": "v3.2",
+            "model_version": f"v{MODEL_VERSION}",
         }
 
     except Exception as e:

@@ -175,6 +175,36 @@ class Settings(BaseSettings):
     risk_dordogne_level_red: float = 4.5     # (was 5.0)
     risk_tide_coef_high: int = 85  # (was 90)
 
+    # Risk model v3.3 parameters (single source for app/services/risk_core.py).
+    # Weights are the v3.2 calibration (14 annotated episodes) - unchanged.
+    risk_weights: dict[str, float] = {
+        "river": 0.28,
+        "rain_24h": 0.10,
+        "rain_72h": 0.13,
+        "rain_7d": 0.05,
+        "tide": 0.05,
+        "tide_phase": 0.05,
+        "tendency": 0.13,
+        "momentum": 0.08,
+        "wind_west": 0.03,
+        "soil_sat": 0.05,
+        "video": 0.05,
+    }
+    risk_rain_7d_yellow: float = 60.0   # mm
+    risk_rain_7d_orange: float = 100.0
+    risk_rain_7d_red: float = 150.0
+    risk_tide_coef_low: int = 70        # Coefficient mapped to the "yellow" step
+    risk_tide_coef_max: int = 110       # Coefficient mapped to the "red" step
+    risk_tide_default_coef: int = 70    # Used when tide data is valid but has no coefficient
+    # Score (0-100) -> level boundaries
+    risk_level_yellow: float = 15.0
+    risk_level_orange: float = 35.0
+    risk_level_red: float = 55.0
+    # Max age of the last river level point (<= t) used to score a station
+    risk_level_max_age_hours: float = 3.0
+    # Window for the rate of change (cm/h) regression, points <= t only
+    risk_rate_window_hours: float = 3.0
+
     # Frontend
     frontend_url: str = "http://localhost:3000"
 

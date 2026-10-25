@@ -1,22 +1,30 @@
 """Episode detection service.
 
 Analyzes backfilled historical data to detect potential flood episodes
-based on the v2.5 risk model thresholds.
+based on the risk model level thresholds.
 
 Detection criteria:
-- Risk score >= 55 (RED level) for at least 2 consecutive hours
-- OR risk score >= 35 (ORANGE level) for at least 6 consecutive hours
-- OR maximum river level exceeds station red thresholds
+- Risk score >= 55 (RED level) for at least 2 consecutive HOURS
+- OR risk score >= 35 (ORANGE level) for at least 6 consecutive HOURS
+- OR river level exceeds a (non-tidal) station red threshold
 
-Episodes are merged if they're within 24h of each other.
+Durations are measured in hours, not samples: a run of consecutive samples
+(no gap larger than 1.5 x the series step) lasts (last - first) + step, so a
+6-hourly backfill sample counts as 6h. Libourne (weight 0, tidal) is
+excluded. Episodes are merged if they're within 24h of each other.
 """
 
+import logging
+import statistics
 from datetime import datetime, timedelta
 from typing import Optional
 from dataclasses import dataclass, asdict
 
 from app.config import get_settings
 from app.services import influx_client
+from app.services.risk_core import score_to_level, to_utc_naive
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -45,10 +53,72 @@ class DetectedEpisode:
         }
 
 
-# Risk level thresholds (v2.5 calibration)
+# Risk level thresholds (v2.5 calibration, unchanged in v3.3)
 RISK_RED_THRESHOLD = 55
 RISK_ORANGE_THRESHOLD = 35
 RISK_YELLOW_THRESHOLD = 15
+
+
+def _series_step_hours(timestamps: list[datetime]) -> float:
+    """Nominal sampling step (hours) of a sorted series: median spacing."""
+    diffs = [
+        (b - a).total_seconds() / 3600
+        for a, b in zip(timestamps, timestamps[1:])
+        if b > a
+    ]
+    return statistics.median(diffs) if diffs else 1.0
+
+
+def longest_run_hours(
+    samples: list[tuple[datetime, float]],
+    threshold: float,
+    step_hours: Optional[float] = None,
+) -> float:
+    """Longest run (hours) of CONSECUTIVE samples with value >= threshold.
+
+    Samples are (timestamp, value) sorted by time. Two samples are
+    consecutive when their gap is <= 1.5 x step. A run lasts
+    (last - first) + step hours.
+    """
+    if not samples:
+        return 0.0
+    if step_hours is None:
+        step_hours = _series_step_hours([ts for ts, _ in samples])
+    max_gap_h = 1.5 * step_hours
+
+    best = 0.0
+    run_start: Optional[datetime] = None
+    prev: Optional[datetime] = None
+    for ts, value in samples:
+        above = value >= threshold
+        contiguous = prev is not None and (ts - prev).total_seconds() / 3600 <= max_gap_h
+        if above:
+            if run_start is None or not contiguous:
+                run_start = ts
+            best = max(best, (ts - run_start).total_seconds() / 3600 + step_hours)
+        else:
+            run_start = None
+        prev = ts
+    return best
+
+
+def hourly_rain_total(rows: list[dict], start: datetime, end: datetime) -> float:
+    """Total rain (mm) over [start, end]: mean per hour across sources, then sum."""
+    from app.services.risk_v2 import rain_hourly_from_records
+
+    s = to_utc_naive(start)
+    e = to_utc_naive(end)
+    hourly = rain_hourly_from_records(rows)
+    # Hour buckets (hour_end - 1h, hour_end] overlapping [start, end]
+    return sum(
+        mm for hour_end, mm in hourly.items()
+        if hour_end > s and hour_end - timedelta(hours=1) < e
+    )
+
+
+def _active_station_ids() -> set[str]:
+    """Stations with weight > 0 (Libourne, tidal, excluded)."""
+    return {s["id"] for s in get_settings().hubeau_stations if s.get("weight", 0) > 0}
 
 
 async def detect_episodes_from_risk_scores(
@@ -71,32 +141,32 @@ async def detect_episodes_from_risk_scores(
     Returns:
         List of detected episodes
     """
-    print(f"\n--- Detecting episodes from risk scores ---")
-    print(f"Period: {start_date.date()} -> {end_date.date()}")
+    logger.info("Detecting episodes from risk scores: %s -> %s", start_date.date(), end_date.date())
 
-    # Query risk scores from InfluxDB
+    # One row per timestamp (current model version preferred over legacy)
     risk_scores = await influx_client.query_risk_scores(start_date, end_date)
+    risk_scores = [rs for rs in risk_scores if rs.get("score") is not None]
 
     if not risk_scores:
-        print("No risk score data found")
+        logger.info("No risk score data found")
         return []
 
-    print(f"Found {len(risk_scores)} risk score records")
+    logger.info("Found %d risk score records", len(risk_scores))
 
-    # Sort by timestamp
+    for rs in risk_scores:
+        rs["timestamp"] = to_utc_naive(rs["timestamp"])
     risk_scores.sort(key=lambda x: x["timestamp"])
+    step_hours = _series_step_hours([rs["timestamp"] for rs in risk_scores])
 
     # Find periods where risk exceeds thresholds
     episodes_raw = []
     current_episode = None
 
     for rs in risk_scores:
-        score = rs.get("score")
-        level = rs.get("level", "green")
+        score = rs["score"]
+        # Level derived from the score (legacy points may lack the level)
+        level = score_to_level(score).value
         ts = rs["timestamp"]
-
-        if score is None:
-            continue
 
         # Check if this point should be part of an episode
         is_significant = score >= RISK_ORANGE_THRESHOLD
@@ -135,11 +205,17 @@ async def detect_episodes_from_risk_scores(
     # Filter episodes by duration criteria
     filtered_episodes = []
     for ep in episodes_raw:
-        duration_hours = (ep["end"] - ep["start"]).total_seconds() / 3600
+        duration_hours = (ep["end"] - ep["start"]).total_seconds() / 3600 + step_hours
 
-        # Count hours at each level
-        red_hours = sum(1 for _, s, _ in ep["scores"] if s >= RISK_RED_THRESHOLD)
-        orange_hours = sum(1 for _, s, _ in ep["scores"] if s >= RISK_ORANGE_THRESHOLD)
+        # Longest CONSECUTIVE run, in hours (not a count of samples).
+        # Use every sample of the episode span (including sub-threshold ones)
+        # so a dip below the threshold breaks the run.
+        span = [
+            (rs["timestamp"], rs["score"]) for rs in risk_scores
+            if ep["start"] <= rs["timestamp"] <= ep["end"]
+        ]
+        red_hours = longest_run_hours(span, RISK_RED_THRESHOLD, step_hours)
+        orange_hours = longest_run_hours(span, RISK_ORANGE_THRESHOLD, step_hours)
 
         # Check if episode meets criteria
         if red_hours >= min_red_hours or orange_hours >= min_orange_hours:
@@ -150,7 +226,7 @@ async def detect_episodes_from_risk_scores(
                 "orange_hours": orange_hours,
             })
 
-    print(f"Found {len(filtered_episodes)} significant episodes")
+    logger.info("Found %d significant episodes", len(filtered_episodes))
 
     # Enrich episodes with context data
     enriched_episodes = []
@@ -171,7 +247,7 @@ async def detect_episodes_from_river_levels(
 
     Looks for periods where any station exceeds its red threshold.
     """
-    print(f"\n--- Detecting episodes from river levels ---")
+    logger.info("Detecting episodes from river levels")
 
     settings = get_settings()
     episodes_raw = []
@@ -180,12 +256,14 @@ async def detect_episodes_from_river_levels(
     all_levels = await influx_client.query_all_stations_levels(start_date, end_date)
 
     if not all_levels:
-        print("No river level data found")
+        logger.info("No river level data found")
         return []
 
     # Check each station for threshold exceedances
     for station in settings.hubeau_stations:
         station_id = station["id"]
+        if station.get("weight", 0) <= 0:
+            continue  # Libourne: tidal oscillation masks the flood signal
         thresholds = station.get("thresholds", {})
         red_threshold = thresholds.get("red", 999)  # Default high to avoid false positives
 
@@ -197,7 +275,7 @@ async def detect_episodes_from_river_levels(
         current_episode = None
         for lv in levels:
             height = lv.get("height_m")
-            ts = lv["timestamp"]
+            ts = to_utc_naive(lv["timestamp"])
 
             if height is None:
                 continue
@@ -228,7 +306,7 @@ async def detect_episodes_from_river_levels(
         if current_episode is not None:
             episodes_raw.append(current_episode)
 
-    print(f"Found {len(episodes_raw)} river threshold exceedances")
+    logger.info("Found %d river threshold exceedances", len(episodes_raw))
 
     # Convert to DetectedEpisode format
     episodes = []
@@ -268,19 +346,19 @@ async def _enrich_episode(ep: dict) -> Optional[DetectedEpisode]:
 
     # Get river levels
     river_data = await influx_client.query_all_stations_levels(context_start, context_end)
+    active_ids = _active_station_ids()
     max_levels = {}
     for station_id, levels in river_data.items():
+        if station_id not in active_ids:
+            continue  # Libourne excluded (tidal)
         if levels:
             max_height = max(lv.get("height_m", 0) or 0 for lv in levels)
             if max_height > 0:
                 max_levels[station_id] = max_height
 
-    # Get rainfall
+    # Get rainfall: mean per hour across sources, then sum over hours
     rainfall_data = await influx_client.query_rainfall(context_start, end)
-    total_rain = 0
-    for rp in rainfall_data:
-        if rp.get("precipitation_mm_h"):
-            total_rain += rp["precipitation_mm_h"]
+    total_rain = hourly_rain_total(rainfall_data, context_start, end)
 
     # Get tide coefficients
     tide_data = await influx_client.query_tides("BORDEAUX", context_start, context_end)

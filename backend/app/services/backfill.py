@@ -6,10 +6,12 @@ Fetches historical data from all sources since November 2022:
 - Tides from Open-Meteo Marine (hourly)
 - Soil moisture from Open-Meteo (hourly)
 
-Then recalculates risk scores using the v2.5 model.
+Then recalculates risk scores with the current model (risk_core, v3.3):
+features at each step only use observed points at or before that step.
 """
 
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -21,6 +23,8 @@ from app.services.collectors.weather import (
     fetch_and_store_soil_historical,
 )
 from app.services.collectors.tide import fetch_and_store_tides_range
+
+logger = logging.getLogger(__name__)
 
 
 def _update_progress(step: str):
@@ -201,22 +205,22 @@ async def recalculate_risk_scores(
     end_date: datetime,
 ) -> int:
     """
-    Recalculate risk scores using v2.5 model for the backfilled period.
+    Recalculate risk scores with the current model for the backfilled period.
 
-    Uses the existing backfill_risk_scores function from risk_v2.py which:
-    - Queries all non-tidal stations
-    - Computes weighted average river level
-    - Calculates rainfall cumulative (24h, 72h)
-    - Finds tide coefficient and phase
-    - Calculates risk score for each time step
+    Uses risk_v2.backfill_risk_scores which, for each time step:
+    - builds features from non-tidal stations (latest level <= t, max age
+      3h; rate by regression on points <= t), hourly rain windows ending
+      at t (mean per hour across sources), tide predictions;
+    - calls risk_core.compute_risk;
+    - stores the score tagged with model_version (re-runs overwrite).
     """
     from app.services.risk_v2 import backfill_risk_scores
 
-    print("\n--- Recalculating risk scores ---")
+    logger.info("Recalculating risk scores %s -> %s", start_date, end_date)
 
     total = await backfill_risk_scores(start_date, end_date)
 
-    print(f"Total risk scores calculated: {total}")
+    logger.info("Total risk scores stored: %d", total)
     return total
 
 
@@ -286,7 +290,7 @@ async def run_full_backfill(
 
     # 5. Recalculate risk scores
     if not skip_risk:
-        _update_progress("risk: recalculating v2.5 scores (slowest step)...")
+        _update_progress("risk: recalculating v3.3 scores (slowest step)...")
         results["risk_scores"] = await recalculate_risk_scores(start_date, end_date)
 
     _update_progress("done")
