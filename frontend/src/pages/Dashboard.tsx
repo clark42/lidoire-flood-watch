@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { format } from 'date-fns'
 import { fr } from 'date-fns/locale'
@@ -47,6 +47,7 @@ import SoilConditionsPanel from '../components/SoilConditionsPanel'
 import NowcastRainChart from '../components/NowcastRainChart'
 import InfoTooltip from '../components/InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
+import { formatAge, parseApiDate } from '../utils/time'
 
 const RISK_BG_COLORS: Record<RiskLevel, string> = {
   green: 'bg-green-50 border-green-200',
@@ -61,6 +62,25 @@ function TendencyIcon({ tendency }: { tendency: string | null }) {
   return <Minus className="w-4 h-4 text-gray-400" />
 }
 
+const POLL_INTERVAL_MS = 60_000
+// Data older than this is flagged as stale (backend cache or collector failure)
+const STALE_AFTER_MS = 15 * 60_000
+const PESSAC_STATION_ID = 'P555001001'
+
+const SECONDARY_SOURCE_LABELS = {
+  netatmo: 'Netatmo',
+  infoclimat: 'Infoclimat',
+  sources: 'Statut des sources',
+  basin: 'Pluie bassin',
+  episodes: 'Episodes',
+} as const
+
+type SecondarySource = keyof typeof SECONDARY_SOURCE_LABELS
+
+function errorMessage(reason: unknown): string {
+  return reason instanceof Error ? reason.message : 'Erreur de chargement'
+}
+
 export default function Dashboard() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [data, setData] = useState<RealtimeData | null>(null)
@@ -70,10 +90,14 @@ export default function Dashboard() {
   const [selectedStation, setSelectedStation] = useState<string | null>(null)
   const [breakdownExpanded, setBreakdownExpanded] = useState(false)
   const [loading, setLoading] = useState(true)
+  // Error of the last /realtime fetch (null when it succeeded)
   const [error, setError] = useState<string | null>(null)
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
+  const [lastFailureAt, setLastFailureAt] = useState<Date | null>(null)
+  const [failedSecondary, setFailedSecondary] = useState<SecondarySource[]>([])
   const [basinRainfall, setBasinRainfall] = useState<BasinRainfallData | null>(null)
   const [episodes, setEpisodes] = useState<FloodEpisode[]>([])
+  // Wall clock used to refresh the displayed data age
+  const [now, setNow] = useState(() => Date.now())
 
   // TimeMachine state — initialized from URL ?tm= param
   const tmParam = searchParams.get('tm')
@@ -83,6 +107,13 @@ export default function Dashboard() {
   )
   const [timeMachineLoading, setTimeMachineLoading] = useState(false)
 
+  // Refs used by the polling loop (avoid stale closures and overlapping polls)
+  const inFlightRef = useRef(false)
+  const timeMachineActiveRef = useRef(timeMachineActive)
+  useEffect(() => {
+    timeMachineActiveRef.current = timeMachineActive
+  }, [timeMachineActive])
+
   // Sparkline accumulation
   const [sparklineData, setSparklineData] = useState<{
     river: { t: number; v: number }[]
@@ -91,7 +122,10 @@ export default function Dashboard() {
     risk: { t: number; v: number }[]
   }>({ river: [], tide: [], rain: [], risk: [] })
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
+    // In-flight guard: a slow backend must not stack overlapping polls
+    if (inFlightRef.current) return
+    inFlightRef.current = true
     try {
       setLoading(true)
 
@@ -112,52 +146,71 @@ export default function Dashboard() {
         getEpisodesList(),
       ])
 
+      // TimeMachine may have been enabled while this poll was in flight:
+      // never overwrite historical data with live data.
+      if (timeMachineActiveRef.current) return
+
       if (realtimeResult.status === 'fulfilled') {
         const d = realtimeResult.value
         setData(d)
-        // Set default selected station to primary
-        if (d.stations && !selectedStation) {
-          setSelectedStation(d.stations.primary_station_id)
+        setError(null)
+        setLastFailureAt(null)
+        // Set default selected station to primary (keep the user's choice)
+        const primaryId = d.stations?.primary_station_id
+        if (primaryId) {
+          setSelectedStation(prev => prev ?? primaryId)
         }
 
         // Accumulate sparkline data
-        const now = Date.now()
+        const t = Date.now()
+        const pessac = d.stations?.stations.find(s => s.station_id === PESSAC_STATION_ID)
         setSparklineData(prev => ({
-          river: [...prev.river, { t: now, v: d.river.current.height_m }].slice(-60),
-          tide: [...prev.tide, { t: now, v: d.tide.current_coefficient || 0 }].slice(-60),
-          rain: [...prev.rain, { t: now, v: d.rainfall.last_24h_mm }].slice(-60),
-          risk: [...prev.risk, { t: now, v: d.risk.score }].slice(-60),
+          // "Dordogne" reference is Pessac (Hub'Eau), not Libourne (tidal)
+          river: pessac
+            ? [...prev.river, { t, v: pessac.current_level.height_m }].slice(-60)
+            : prev.river,
+          tide: [...prev.tide, { t, v: d.tide.current_coefficient || 0 }].slice(-60),
+          rain: [...prev.rain, { t, v: d.rainfall.last_24h_mm }].slice(-60),
+          risk: [...prev.risk, { t, v: d.risk.score }].slice(-60),
         }))
+      } else {
+        setError(errorMessage(realtimeResult.reason))
+        setLastFailureAt(new Date())
       }
-      if (netatmoResult.status === 'fulfilled') setNetatmo(netatmoResult.value)
-      if (infoclimatResult.status === 'fulfilled') setInfoclimat(infoclimatResult.value)
-      if (sourcesResult.status === 'fulfilled') setSources(sourcesResult.value.sources)
-      if (basinResult.status === 'fulfilled') setBasinRainfall(basinResult.value)
-      if (episodesResult.status === 'fulfilled') setEpisodes(episodesResult.value)
 
-      setLastUpdate(new Date())
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erreur de chargement')
+      const failed: SecondarySource[] = []
+      if (netatmoResult.status === 'fulfilled') setNetatmo(netatmoResult.value)
+      else failed.push('netatmo')
+      if (infoclimatResult.status === 'fulfilled') setInfoclimat(infoclimatResult.value)
+      else failed.push('infoclimat')
+      if (sourcesResult.status === 'fulfilled') setSources(sourcesResult.value.sources)
+      else failed.push('sources')
+      if (basinResult.status === 'fulfilled') setBasinRainfall(basinResult.value)
+      else failed.push('basin')
+      if (episodesResult.status === 'fulfilled') setEpisodes(episodesResult.value)
+      else failed.push('episodes')
+      setFailedSecondary(failed)
     } finally {
+      inFlightRef.current = false
       setLoading(false)
     }
-  }
+  }, [])
 
   const handleTimeMachineToggle = useCallback(() => {
     if (timeMachineActive) {
-      // Return to live — remove ?tm from URL
+      // Return to live — remove ?tm from URL; the polling effect refetches
+      timeMachineActiveRef.current = false
       setTimeMachineActive(false)
       setTimeMachineDate(null)
       setSearchParams((prev) => {
         prev.delete('tm')
         return prev
       }, { replace: true })
-      fetchData() // Refresh live data
     } else {
+      timeMachineActiveRef.current = true
       setTimeMachineActive(true)
     }
-  }, [timeMachineActive])
+  }, [timeMachineActive, setSearchParams])
 
   const handleTimeMachineDateChange = useCallback(async (date: Date) => {
     setTimeMachineDate(date)
@@ -167,15 +220,16 @@ export default function Dashboard() {
     try {
       const result = await getRealtimeDataAt(date.toISOString())
       setData(result)
-      if (result.stations && !selectedStation) {
-        setSelectedStation(result.stations.primary_station_id)
+      const primaryId = result.stations?.primary_station_id
+      if (primaryId) {
+        setSelectedStation(prev => prev ?? primaryId)
       }
     } catch (err) {
       console.error('TimeMachine error:', err)
     } finally {
       setTimeMachineLoading(false)
     }
-  }, [selectedStation, setSearchParams])
+  }, [setSearchParams])
 
   // On mount: if ?tm= is present, load TimeMachine data
   useEffect(() => {
@@ -185,13 +239,40 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Live polling, paused while the tab is hidden or TimeMachine is active
   useEffect(() => {
-    if (!timeMachineActive) {
+    if (timeMachineActive) return
+
+    let interval: ReturnType<typeof setInterval> | null = null
+    const start = () => {
+      if (interval) return
       fetchData()
-      const interval = setInterval(fetchData, 60000)
-      return () => clearInterval(interval)
+      interval = setInterval(fetchData, POLL_INTERVAL_MS)
     }
-  }, [timeMachineActive])
+    const stop = () => {
+      if (interval) {
+        clearInterval(interval)
+        interval = null
+      }
+    }
+    const onVisibilityChange = () => {
+      if (document.hidden) stop()
+      else start()
+    }
+
+    if (!document.hidden) start()
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      stop()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [timeMachineActive, fetchData])
+
+  // Refresh the displayed data age
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(tick)
+  }, [])
 
   if (loading && !data) {
     return (
@@ -207,7 +288,7 @@ export default function Dashboard() {
         <AlertTriangle className="w-12 h-12 text-red-500 mx-auto mb-4" />
         <p className="text-red-700">{error}</p>
         <button
-          onClick={fetchData}
+          onClick={() => fetchData()}
           className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
         >
           Reessayer
@@ -220,9 +301,57 @@ export default function Dashboard() {
 
   const riskLevel = data.risk.level
   const stations = data.stations?.stations || []
+  const pessacStation = stations.find(s => s.station_id === PESSAC_STATION_ID)
+
+  // Freshness is based on the backend data timestamp, not on the fetch time
+  const dataDate = parseApiDate(data.timestamp)
+  const dataAgeMs = dataDate ? now - dataDate.getTime() : null
+  const isStale = !timeMachineActive && (
+    error !== null || (dataAgeMs !== null && dataAgeMs > STALE_AFTER_MS)
+  )
 
   return (
     <div className="space-y-6">
+      {/* Stale / fetch error banner (live mode only) */}
+      {isStale && (
+        <div
+          role="alert"
+          className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3"
+        >
+          <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 text-sm text-red-800">
+            <p className="font-medium">
+              Donnees non actualisees
+              {dataDate ? ` — derniere mesure ${formatAge(dataDate, now)}` : ''}
+            </p>
+            {error && (
+              <p className="mt-1">
+                Echec du chargement temps reel
+                {lastFailureAt ? ` (${format(lastFailureAt, 'HH:mm:ss', { locale: fr })})` : ''}
+                {' '}: {error}. Les valeurs affichees peuvent etre perimees.
+              </p>
+            )}
+          </div>
+          <button
+            onClick={() => fetchData()}
+            disabled={loading}
+            className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+          >
+            Reessayer
+          </button>
+        </div>
+      )}
+
+      {/* Secondary sources failures (non blocking) */}
+      {!timeMachineActive && failedSecondary.length > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-2 text-sm text-yellow-800 flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-yellow-600 flex-shrink-0" />
+          <span>
+            Sources indisponibles : {failedSecondary.map(k => SECONDARY_SOURCE_LABELS[k]).join(', ')}
+          </span>
+        </div>
+      )}
+
       {/* TimeMachine Banner */}
       <TimeMachineBanner
         active={timeMachineActive}
@@ -294,8 +423,8 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricSparkline
           title="Dordogne"
-          value={`${(stations.find(s => s.station_id === 'P555001001')?.current_level.height_m || 0).toFixed(2)} m`}
-          subtitle={stations.find(s => s.station_id === 'P555001001')?.tendency}
+          value={pessacStation ? `${pessacStation.current_level.height_m.toFixed(2)} m` : '- m'}
+          subtitle={pessacStation ? `Pessac · ${pessacStation.tendency}` : 'Pessac indisponible'}
           data={sparklineData.river}
           color="#0891b2"
           icon={<Waves className="w-4 h-4" />}
@@ -517,11 +646,12 @@ export default function Dashboard() {
           <span>
             {timeMachineActive && timeMachineDate
               ? `Mode TimeMachine - ${format(timeMachineDate, 'dd/MM/yyyy HH:mm', { locale: fr })}`
-              : `Derniere mise a jour : ${lastUpdate ? format(lastUpdate, 'dd/MM/yyyy HH:mm:ss', { locale: fr }) : '-'}`}
+              : `Donnees du : ${dataDate ? `${format(dataDate, 'dd/MM/yyyy HH:mm:ss', { locale: fr })} (${formatAge(dataDate, now)})` : '-'}`}
           </span>
+          {isStale && <span className="text-red-600 font-medium">perimees</span>}
         </div>
         <button
-          onClick={fetchData}
+          onClick={() => fetchData()}
           disabled={loading || timeMachineActive}
           className="flex items-center gap-2 px-3 py-1 rounded hover:bg-gray-100 disabled:opacity-50"
         >
