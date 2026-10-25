@@ -12,13 +12,17 @@ API Documentation:
 - IP restriction on API key
 """
 
-import httpx
+import logging
+import math
 from datetime import datetime, timedelta
 from typing import Optional
-import math
+
+import httpx
 
 from app.config import get_settings
 from app.models.schemas import RainfallObservation
+
+logger = logging.getLogger(__name__)
 
 
 # Infoclimat API base URL
@@ -92,11 +96,11 @@ async def fetch_stations_list() -> list[dict]:
                     })
 
             _stations_cache = stations
-            print(f"Infoclimat: loaded {len(stations)} stations")
+            logger.info(f"Infoclimat: loaded {len(stations)} stations")
             return stations
 
     except Exception as e:
-        print(f"Error fetching Infoclimat stations list: {e}")
+        logger.warning(f"Error fetching Infoclimat stations list: {e}")
         return []
 
 
@@ -147,7 +151,7 @@ async def fetch_station_observations(
     api_key = settings.infoclimat_api_key
 
     if not api_key:
-        print("Infoclimat API key not configured")
+        logger.info("Infoclimat API key not configured")
         return {}
 
     # Build request URL
@@ -177,7 +181,7 @@ async def fetch_station_observations(
             )
 
             if response.status_code == 403:
-                print(f"Infoclimat API: Access denied (IP not authorized)")
+                logger.warning(f"Infoclimat API: Access denied (IP not authorized)")
                 return {}
 
             response.raise_for_status()
@@ -186,10 +190,10 @@ async def fetch_station_observations(
             return data
 
     except httpx.HTTPStatusError as e:
-        print(f"Infoclimat API error: {e.response.status_code}")
+        logger.warning(f"Infoclimat API error: {e.response.status_code}")
         return {}
     except Exception as e:
-        print(f"Error fetching Infoclimat observations: {e}")
+        logger.warning(f"Error fetching Infoclimat observations: {e}")
         return {}
 
 
@@ -279,11 +283,20 @@ async def get_basin_rainfall_infoclimat() -> dict:
             continue
 
         # Station data can be a list of observations or a dict keyed by timestamp
+        # Sorted chronologically: the "most recent pluie_24h" scan below relies on it
+        # (API ordering is not guaranteed). ISO / "YYYY-MM-DD HH:MM:SS" UTC strings
+        # sort lexicographically.
         observations_list: list[dict] = []
         if isinstance(station_obs, list):
-            observations_list = [o for o in station_obs if isinstance(o, dict)]
+            observations_list = sorted(
+                (o for o in station_obs if isinstance(o, dict)),
+                key=lambda o: str(o.get("dh_utc") or ""),
+            )
         elif isinstance(station_obs, dict):
-            observations_list = [o for o in station_obs.values() if isinstance(o, dict)]
+            observations_list = [
+                o for _, o in sorted(station_obs.items(), key=lambda kv: str(kv[0]))
+                if isinstance(o, dict)
+            ]
         else:
             continue
 
@@ -359,31 +372,30 @@ async def get_basin_rainfall_infoclimat() -> dict:
 
 
 async def store_rainfall_to_influx(data: dict) -> int:
-    """Store Infoclimat rainfall data to InfluxDB."""
+    """Store Infoclimat rainfall data to InfluxDB.
+
+    Only the 24h counter is known here, so the snapshot is written WITHOUT a
+    precipitation_mm_h field (it used to be a fake 0.0 that diluted the hourly
+    "infoclimat" series filled by the pluie_1h backfill).
+    """
     from app.services import influx_client
 
     stored = 0
     timestamp = datetime.utcnow()
 
-    # Store basin average
-    success = await influx_client.write_rainfall(
-        source="infoclimat",
-        precipitation_mm_h=0,
-        timestamp=timestamp,
-        precipitation_mm_24h=data.get("rain_24h_avg_mm", 0),
-        station_city="basin_average",
-    )
-    if success:
-        stored += 1
+    rows = [("basin_average", data.get("rain_24h_avg_mm", 0))]
+    rows += [(station.get("station_name"), station.get("rain_24h_mm", 0))
+             for station in data.get("stations", [])]
 
-    # Store per-station data
-    for station in data.get("stations", []):
-        success = await influx_client.write_rainfall(
-            source="infoclimat",
-            precipitation_mm_h=0,
+    for city, rain_24h in rows:
+        tags = {"source": "infoclimat"}
+        if city:
+            tags["city"] = str(city)
+        success = await influx_client.write_point(
+            measurement="rainfall",
+            tags=tags,
+            fields={"precipitation_mm_24h": float(rain_24h or 0)},
             timestamp=timestamp,
-            precipitation_mm_24h=station.get("rain_24h_mm", 0),
-            station_city=station.get("station_name"),
         )
         if success:
             stored += 1
@@ -451,7 +463,7 @@ async def fetch_and_store_infoclimat_historical_range(
 
     settings = get_settings()
     if not settings.infoclimat_api_key:
-        print("Infoclimat: API key not configured, skipping historical backfill")
+        logger.info("Infoclimat: API key not configured, skipping historical backfill")
         return 0
 
     # Find nearby stations
@@ -461,7 +473,7 @@ async def fetch_and_store_infoclimat_historical_range(
         radius_km=40,
     )
     if not stations:
-        print("Infoclimat: no stations found nearby")
+        logger.info("Infoclimat: no stations found nearby")
         return 0
 
     station_ids = [s["id"] for s in stations[:5] if s.get("id")]
@@ -476,13 +488,13 @@ async def fetch_and_store_infoclimat_historical_range(
     while chunk_start < end:
         chunk_end = min(chunk_start + timedelta(days=7), end)
 
-        print(f"Infoclimat: fetching {chunk_start.date()} -> {chunk_end.date()} "
+        logger.info(f"Infoclimat: fetching {chunk_start.date()} -> {chunk_end.date()} "
               f"for {len(station_ids)} stations...")
 
         data = await fetch_station_observations(station_ids, chunk_start, chunk_end)
 
         if not data:
-            print(f"  No data returned (API may be IP-restricted)")
+            logger.info(f"  No data returned (API may be IP-restricted)")
             break  # Don't retry other chunks if IP-restricted
 
         # Parse hourly observations from each station
@@ -534,7 +546,7 @@ async def fetch_and_store_infoclimat_historical_range(
                     continue
 
             if stored:
-                print(f"  {station_name}: {stored} hourly points")
+                logger.info(f"  {station_name}: {stored} hourly points")
             total_stored += stored
 
         chunk_start = chunk_end
