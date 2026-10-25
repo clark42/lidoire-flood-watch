@@ -108,7 +108,10 @@ export default function ForecastPanel({
     fetchData()
 
     if (autoRefresh) {
-      const interval = setInterval(fetchData, refreshInterval)
+      // Skip refreshes while the tab is hidden
+      const interval = setInterval(() => {
+        if (!document.hidden) fetchData()
+      }, refreshInterval)
       return () => clearInterval(interval)
     }
   }, [fetchData, autoRefresh, refreshInterval])

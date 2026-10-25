@@ -128,25 +128,25 @@ export async function simulateRisk(params: {
   dordogne_level_m: number
   tide_coefficient: number
   hours_to_high_tide: number
-}): Promise<any> {
+}): Promise<unknown> {
   const searchParams = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {
     searchParams.set(key, value.toString())
   })
 
-  return fetchJson<any>(`${API_BASE}/risk/simulate?${searchParams}`, {
+  return fetchJson<unknown>(`${API_BASE}/risk/simulate?${searchParams}`, {
     method: 'POST',
   })
 }
 
 // Status
-export async function getStatus(): Promise<any> {
-  return fetchJson<any>(`${API_BASE}/status`)
+export async function getStatus(): Promise<unknown> {
+  return fetchJson<unknown>(`${API_BASE}/status`)
 }
 
 // Sources detail (exhaustive config)
-export async function getSourcesDetail(): Promise<any> {
-  return fetchJson<any>(`${API_BASE}/sources-detail`)
+export async function getSourcesDetail(): Promise<unknown> {
+  return fetchJson<unknown>(`${API_BASE}/sources-detail`)
 }
 
 // Stations
