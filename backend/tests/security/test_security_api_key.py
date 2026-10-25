@@ -128,7 +128,16 @@ def test_security_warn_if_api_key_missing(make_settings, caplog):
 def test_security_no_warning_when_key_set(make_settings, caplog):
     with caplog.at_level(logging.WARNING, logger="app.api.deps"):
         assert warn_if_api_key_missing(make_settings(api_key=TEST_API_KEY)) is True
-    assert not any("API_KEY is not set" in r.getMessage() for r in caplog.records)
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("weak", ["change-me", "k3y-tooSmall"])
+def test_security_weak_api_key_is_warned(make_settings, caplog, weak):
+    with caplog.at_level(logging.WARNING, logger="app.api.deps"):
+        assert warn_if_api_key_missing(make_settings(api_key=weak)) is True
+    assert any("API_KEY is weak" in r.getMessage() for r in caplog.records)
+    # The key itself is never logged
+    assert all(weak not in r.getMessage() for r in caplog.records)
 
 
 def test_security_api_key_loaded_from_env(monkeypatch, make_settings):

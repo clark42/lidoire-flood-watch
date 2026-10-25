@@ -29,6 +29,10 @@ API_KEY_HEADER_NAME = "X-API-Key"
 # Methods that never change server state and therefore need no API key.
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# Startup sanity checks on the configured key (warning only).
+PLACEHOLDER_API_KEY = "change-me"
+MIN_API_KEY_LENGTH = 16
+
 # auto_error=False: missing header is handled below (safe methods / dev mode).
 # Declared as a security scheme so Swagger UI shows an "Authorize" button.
 api_key_header = APIKeyHeader(
@@ -86,6 +90,12 @@ def warn_if_api_key_missing(settings: Settings | None = None) -> bool:
     """
     settings = settings or get_settings()
     if settings.api_key:
+        if settings.api_key == PLACEHOLDER_API_KEY or len(settings.api_key) < MIN_API_KEY_LENGTH:
+            logger.warning(
+                "API_KEY is weak (placeholder or shorter than %d chars): "
+                "generate one with `openssl rand -hex 32`.",
+                MIN_API_KEY_LENGTH,
+            )
         return True
     logger.warning(
         "API_KEY is not set: write endpoints (POST/PUT/PATCH/DELETE /api/*) are "
