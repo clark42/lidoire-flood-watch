@@ -1,19 +1,94 @@
 """Status and health check endpoints."""
 
+import asyncio
+import logging
+import time
 from datetime import datetime
+from typing import Awaitable, Callable
+
+import httpx
 from fastapi import APIRouter
 
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Each dependency check must answer within this budget (checks run in parallel).
+HEALTH_CHECK_TIMEOUT_S = 2.0
+
+
+async def _check_influxdb() -> None:
+    """InfluxDB 2.x /health must answer 200 with status 'pass'."""
+    settings = get_settings()
+    url = settings.influxdb_url.rstrip("/") + "/health"
+    async with httpx.AsyncClient(timeout=HEALTH_CHECK_TIMEOUT_S) as client:
+        resp = await client.get(url)
+    resp.raise_for_status()
+    status = resp.json().get("status")
+    if status != "pass":
+        raise RuntimeError(f"influxdb health status={status!r}")
+
+
+async def _check_postgres() -> None:
+    from sqlalchemy import text
+    from app.db import get_engine
+
+    async with get_engine().connect() as conn:
+        await conn.execute(text("SELECT 1"))
+
+
+async def _check_redis() -> None:
+    from app.services.cache import get_redis
+
+    if not await get_redis().ping():
+        raise RuntimeError("redis ping returned false")
+
+
+async def _run_check(name: str, check: Callable[[], Awaitable[None]]) -> dict:
+    """Run one check with a timeout; never raises."""
+    started = time.perf_counter()
+    try:
+        await asyncio.wait_for(check(), timeout=HEALTH_CHECK_TIMEOUT_S)
+        status, error = "connected", None
+    except asyncio.TimeoutError:
+        status, error = "timeout", f"no answer within {HEALTH_CHECK_TIMEOUT_S}s"
+    except Exception as e:
+        # Only the exception type: messages may contain connection strings.
+        status, error = "error", type(e).__name__
+        logger.warning("Health check %s failed: %r", name, e)
+    result = {"status": status, "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
+    if error:
+        result["error"] = error
+    return result
+
+
+async def check_dependencies() -> dict[str, dict]:
+    """Check InfluxDB, PostgreSQL and Redis concurrently."""
+    checks = {
+        "influxdb": _check_influxdb,
+        "database": _check_postgres,
+        "redis": _check_redis,
+    }
+    results = await asyncio.gather(*(_run_check(n, c) for n, c in checks.items()))
+    return dict(zip(checks, results))
 
 
 @router.get("/status")
 async def get_status():
-    """Get API status and health information."""
+    """Get API status and health information.
+
+    ``services.database`` / ``services.influxdb`` / ``services.redis`` are real
+    checks ("connected" | "error" | "timeout"); details (latency, error type)
+    are under ``services.checks``. Overall status is "degraded" when any
+    dependency is not connected.
+    """
     settings = get_settings()
+    checks = await check_dependencies()
+    healthy = all(c["status"] == "connected" for c in checks.values())
     return {
-        "status": "healthy",
+        "status": "healthy" if healthy else "degraded",
         "timestamp": datetime.utcnow().isoformat(),
         "version": "1.0.0",
         "location": {
@@ -22,8 +97,10 @@ async def get_status():
             "name": "Moulin de la Lidoire",
         },
         "services": {
-            "database": "connected",  # TODO: actual check
-            "influxdb": "connected",   # TODO: actual check
+            "database": checks["database"]["status"],
+            "influxdb": checks["influxdb"]["status"],
+            "redis": checks["redis"]["status"],
+            "checks": checks,
             "collectors": {
                 "tide": "running",
                 "vigicrues": "running",
