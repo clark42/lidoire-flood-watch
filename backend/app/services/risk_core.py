@@ -32,7 +32,7 @@ points at or before ``t`` for observed series (no future leakage).
 from __future__ import annotations
 
 import bisect
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Iterable, Mapping, Optional, Sequence

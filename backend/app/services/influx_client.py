@@ -243,21 +243,29 @@ async def write_risk_score(
     level: str,
     timestamp: datetime,
     factors: Optional[dict] = None,
+    model_version: Optional[str] = None,
 ) -> bool:
-    """Write risk score to InfluxDB."""
+    """Write risk score to InfluxDB.
+
+    Series key = measurement + ``model_version`` tag only: ``level`` is a
+    FIELD, so re-running a backfill with the same model version overwrites
+    the points instead of creating a parallel series. Legacy points (before
+    v3.3) carry ``level`` as a tag and no ``model_version``; readers below
+    handle both.
+    """
     settings = get_settings()
 
     try:
-        point = (
-            Point("risk_score")
-            .tag("level", level)
-            .field("score", score)
-            .time(timestamp, WritePrecision.S)
-        )
+        point = Point("risk_score").field("score", float(score)).field("level", str(level))
+        if model_version:
+            point = point.tag("model_version", str(model_version))
+        point = point.time(timestamp, WritePrecision.S)
 
         if factors:
             for key, value in factors.items():
-                if isinstance(value, (int, float)):
+                if isinstance(value, bool):
+                    point = point.field(f"factor_{key}", 1.0 if value else 0.0)
+                elif isinstance(value, (int, float)):
                     point = point.field(f"factor_{key}", float(value))
 
         get_write_api().write(
@@ -513,33 +521,96 @@ async def query_all_stations_rainfall_cumulative(
     return results
 
 
+LEGACY_RISK_VERSION = "legacy"
+
+
+def _risk_version_rank(version: Optional[str], preferred: Optional[str]) -> tuple:
+    """Sort key: preferred version first, then newest numeric version, legacy last."""
+    if version and version == preferred:
+        return (0, ())
+    if not version or version == LEGACY_RISK_VERSION:
+        return (2, ())
+    try:
+        parts = tuple(-int(x) for x in version.split("."))
+    except ValueError:
+        parts = ()
+    return (1, parts)
+
+
+def _current_risk_model_version() -> Optional[str]:
+    try:
+        from app.services.risk_core import MODEL_VERSION
+        return MODEL_VERSION
+    except Exception:
+        return None
+
+
+def select_risk_rows_by_version(
+    rows: list[dict],
+    preferred_version: Optional[str] = None,
+) -> list[dict]:
+    """Keep one row per timestamp, preferring ``preferred_version``.
+
+    Rows have "timestamp" and "model_version" (None for legacy points).
+    """
+    best: dict = {}
+    for row in rows:
+        ts = row["timestamp"]
+        rank = _risk_version_rank(row.get("model_version"), preferred_version)
+        if ts not in best or rank < best[ts][0]:
+            best[ts] = (rank, row)
+    return [best[ts][1] for ts in sorted(best)]
+
+
+def _risk_rows_from_tables(tables) -> list[dict]:
+    """Rows from a pivoted risk_score query (one record per point)."""
+    results = []
+    for table in tables:
+        for record in table.records:
+            values = record.values
+            score = values.get("score")
+            if score is None:
+                continue
+            row = {
+                "timestamp": record.get_time(),
+                "score": score,
+                "level": values.get("level"),
+                "model_version": values.get("model_version"),
+            }
+            for key, value in values.items():
+                if isinstance(key, str) and key.startswith("factor_"):
+                    row[key] = value
+            results.append(row)
+    return results
+
+
 async def query_risk_scores(
     start: datetime,
     end: datetime,
+    model_version: Optional[str] = None,
 ) -> list[dict]:
-    """Query risk scores from InfluxDB."""
+    """Query risk scores from InfluxDB, one row per timestamp.
+
+    Returns dicts with timestamp, score, level, model_version and factor_*
+    fields. Reads both v3.3+ points (level field, model_version tag) and
+    legacy points (level tag). When several model versions exist for the
+    same timestamp, ``model_version`` (default: current model) wins, then
+    the newest version, then legacy points.
+    """
     settings = get_settings()
+    preferred = model_version or _current_risk_model_version()
 
     query = f'''
     from(bucket: "{settings.influxdb_bucket}")
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
         |> filter(fn: (r) => r._measurement == "risk_score")
+        |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
         |> sort(columns: ["_time"])
     '''
 
     try:
         tables = get_query_api().query(query, org=settings.influxdb_org)
-        results = []
-
-        for table in tables:
-            for record in table.records:
-                results.append({
-                    "timestamp": record.get_time(),
-                    "score": record.get_value() if record.get_field() == "score" else None,
-                    "level": record.values.get("level"),
-                })
-
-        return results
+        return select_risk_rows_by_version(_risk_rows_from_tables(tables), preferred)
     except Exception as e:
         print(f"Error querying risk scores from InfluxDB: {e}")
         return []
@@ -752,15 +823,25 @@ async def query_risk_scores_timeline(
     start: datetime,
     end: datetime,
     resolution: str = "1h",
+    model_version: Optional[str] = None,
 ) -> list[dict]:
-    """Query risk scores with aggregation for timeline display."""
+    """Query risk scores with aggregation for timeline display.
+
+    Aggregates per model version (legacy points, split by their level tag,
+    are merged into one "legacy" series) and keeps, for each window, the
+    value of the preferred version (default: current model), else the
+    newest one.
+    """
     settings = get_settings()
+    preferred = model_version or _current_risk_model_version()
 
     query = f'''
     from(bucket: "{settings.influxdb_bucket}")
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
         |> filter(fn: (r) => r._measurement == "risk_score")
         |> filter(fn: (r) => r._field == "score")
+        |> map(fn: (r) => ({{r with model_version: if exists r.model_version then r.model_version else "{LEGACY_RISK_VERSION}"}}))
+        |> group(columns: ["model_version"])
         |> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)
         |> sort(columns: ["_time"])
     '''
@@ -774,9 +855,13 @@ async def query_risk_scores_timeline(
                 results.append({
                     "timestamp": record.get_time(),
                     "value": record.get_value(),
+                    "model_version": record.values.get("model_version"),
                 })
 
-        return results
+        return [
+            {"timestamp": r["timestamp"], "value": r["value"]}
+            for r in select_risk_rows_by_version(results, preferred)
+        ]
     except Exception as e:
         print(f"Error querying risk scores timeline from InfluxDB: {e}")
         return []
