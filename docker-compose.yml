@@ -1,3 +1,30 @@
+# Lidoire Flood Watch - home deployment.
+#
+# Security defaults:
+# - published ports are bound to ${BIND_ADDRESS} (default 127.0.0.1): set
+#   BIND_ADDRESS=0.0.0.0 (or a LAN IP) in .env only if the dashboard must be
+#   reachable from other machines, and then set API_KEY.
+# - Postgres / InfluxDB / Redis are NOT published: they are only reachable on
+#   the internal network.
+# - credentials come from .env (see .env.example); required ones fail fast.
+#
+# Local development: create a docker-compose.override.yml (git-ignored),
+# docker compose merges it automatically. Example:
+#
+#   services:
+#     backend:
+#       # live reload with the source bind-mounted
+#       command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+#       volumes:
+#         - ./backend:/app
+#         - backend_data:/app/data
+#     postgres:
+#       ports: ["127.0.0.1:5532:5432"]
+#     influxdb:
+#       ports: ["127.0.0.1:8186:8086"]
+#     redis:
+#       ports: ["127.0.0.1:6479:6379"]
+
 services:
   # Backend API
   backend:
@@ -5,16 +32,21 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8100:8000"
+      - "${BIND_ADDRESS:-127.0.0.1}:8100:8000"
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/lidoire_flood
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-lidoire_flood}
       - INFLUXDB_URL=http://influxdb:8086
-      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-lidoire-flood-watch-token}
-      - INFLUXDB_ORG=lidoire
-      - INFLUXDB_BUCKET=flood_data
-      - REDIS_URL=redis://redis:6379
+      # Bucket-scoped token for the backend (falls back to the admin token)
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-${INFLUXDB_ADMIN_TOKEN:?INFLUXDB_ADMIN_TOKEN must be set in .env}}
+      - INFLUXDB_READ_TOKEN=${INFLUXDB_READ_TOKEN:-}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-lidoire}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-flood_data}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}@redis:6379/0
+      - API_KEY=${API_KEY:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3100,http://localhost:5173}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3100}
       - MOULIN_LAT=44.8759811
       - MOULIN_LON=0.0015091
       - CAMERA_RTSP_URL=${CAMERA_RTSP_URL:-}
@@ -25,70 +57,94 @@ services:
       - NETATMO_ACCESS_TOKEN=${NETATMO_ACCESS_TOKEN:-}
       # Infoclimat API
       - INFOCLIMAT_API_KEY=${INFOCLIMAT_API_KEY:-}
+      # Init-only secrets loaded by env_file: blank them for the backend
+      - INFLUXDB_ADMIN_TOKEN=
+      - INFLUXDB_ADMIN_PASSWORD=
     depends_on:
-      - postgres
-      - influxdb
-      - redis
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    # Source code is baked into the image (no bind-mount); see the dev override above
     volumes:
-      - ./backend:/app
       - backend_data:/app/data
+    security_opt:
+      - no-new-privileges:true
     networks:
       - lidoire-network
 
-  # Frontend
+  # Frontend (nginx, non-root, listens on 8080 inside the container)
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "3100:80"
+      - "${BIND_ADDRESS:-127.0.0.1}:3100:8080"
     depends_on:
       - backend
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     networks:
       - lidoire-network
 
-  # PostgreSQL database
+  # PostgreSQL database (internal only)
   postgres:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=lidoire_flood
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      - POSTGRES_DB=${POSTGRES_DB:-lidoire_flood}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5532:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
     networks:
       - lidoire-network
 
-  # InfluxDB for time-series data
+  # InfluxDB for time-series data (internal only)
   influxdb:
     image: influxdb:2.7-alpine
     environment:
+      # DOCKER_INFLUXDB_INIT_* are only used on the very first start (empty volume)
       - DOCKER_INFLUXDB_INIT_MODE=setup
-      - DOCKER_INFLUXDB_INIT_USERNAME=admin
-      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword
-      - DOCKER_INFLUXDB_INIT_ORG=lidoire
-      - DOCKER_INFLUXDB_INIT_BUCKET=flood_data
-      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-lidoire-flood-watch-token}
+      - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUXDB_ADMIN_USER:-admin}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_ADMIN_PASSWORD:?INFLUXDB_ADMIN_PASSWORD must be set in .env}
+      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-lidoire}
+      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-flood_data}
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_ADMIN_TOKEN:?INFLUXDB_ADMIN_TOKEN must be set in .env}
     volumes:
       - influxdb_data:/var/lib/influxdb2
-    ports:
-      - "8186:8086"
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
     networks:
       - lidoire-network
 
-  # Redis for caching
+  # Redis for caching (internal only, password protected)
   redis:
     image: redis:7-alpine
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+    # The password is read from the environment inside the container
+    command: ["sh", "-c", "exec redis-server --requirepass \"$${REDIS_PASSWORD}\""]
     volumes:
       - redis_data:/data
-    ports:
-      - "6479:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
     networks:
       - lidoire-network
