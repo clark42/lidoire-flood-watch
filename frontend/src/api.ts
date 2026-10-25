@@ -4,6 +4,8 @@ import type {
   RealtimeData,
   FloodEpisode,
   EpisodeAnalysis,
+  EpisodeLabelSet,
+  EpisodeOutcome,
   RiskScore,
   MultiStationData,
   NetatmoData,
@@ -213,17 +215,33 @@ export async function deleteEpisode(id: number): Promise<void> {
   }
 }
 
-// Confirm or reject episode (for model calibration)
+// Set the ground-truth outcome of an episode (re-confirming replaces it)
+export interface ConfirmEpisodeOptions {
+  severity?: number
+  notes?: string // replaces existing notes when provided
+  observedAt?: string | null // ISO datetime of the observed peak at the mill
+  waterHeightCm?: number | null
+  source?: string
+}
+
 export async function confirmEpisode(
   id: number,
-  wasFlooded: boolean,
-  actualSeverity?: number,
-  notes?: string
-): Promise<{ status: string; episode: FloodEpisode }> {
-  const params = new URLSearchParams({ was_flooded: wasFlooded.toString() })
-  if (actualSeverity) params.set('actual_severity', actualSeverity.toString())
-  if (notes) params.set('notes', notes)
+  outcome: EpisodeOutcome,
+  options: ConfirmEpisodeOptions = {}
+): Promise<{ status: string; outcome: EpisodeOutcome; episode: FloodEpisode }> {
+  const params = new URLSearchParams({ outcome })
+  if (options.severity) params.set('actual_severity', options.severity.toString())
+  if (options.notes !== undefined) params.set('notes', options.notes)
+  if (options.observedAt) params.set('observed_at', options.observedAt)
+  if (options.waterHeightCm !== undefined && options.waterHeightCm !== null)
+    params.set('water_height_cm', options.waterHeightCm.toString())
+  if (options.source) params.set('source', options.source)
   return fetchJson(`${API_BASE}/episodes/confirm/${id}?${params}`, {
     method: 'POST',
   })
+}
+
+// Reference labels of the annotated episodes (ground truth for evaluation)
+export async function getEpisodeLabels(): Promise<EpisodeLabelSet> {
+  return fetchJson<EpisodeLabelSet>(`${API_BASE}/episodes/labels`)
 }
