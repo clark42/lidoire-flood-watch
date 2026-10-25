@@ -55,10 +55,16 @@ _last_hourly_write: dict[tuple[str, str], datetime] = {}
 
 _SAFE_SOURCE_RE = re.compile(r"^[a-z0-9-]+$")
 
+# Netatmo city spellings -> config spelling (settings.lidoire_netatmo_priority).
+# Accent / case / punctuation variants of the config names ('Saint-Remy',
+# 'saint rémy') are folded automatically by canonical_city(); list here only
+# spellings that folding cannot recognise.
+NETATMO_CITY_ALIASES: dict[str, str] = {}
+
 
 def _utcnow() -> datetime:
     """Naive UTC now (module-level so tests can freeze time)."""
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _to_naive_utc(dt: datetime) -> datetime:
@@ -70,6 +76,33 @@ def _to_naive_utc(dt: datetime) -> datetime:
 def _utc_from_epoch(ts: int | float) -> datetime:
     """Epoch seconds -> naive UTC (datetime.fromtimestamp alone gives local time)."""
     return datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
+
+
+def _fold_city(name: str) -> str:
+    """Comparison key: no accents, lower case, letters and digits only."""
+    stripped = unicodedata.normalize("NFD", name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]", "", stripped.lower())
+
+
+def canonical_city(city: Optional[str]) -> Optional[str]:
+    """Config spelling of a Lidoire Netatmo city, or ``city`` unchanged.
+
+    Used for the ``city`` tag of every ``netatmo-lidoire`` point (live and
+    historical backfill), so one station is one InfluxDB series whatever
+    spelling Netatmo returns. Readers (timeline) also accept legacy tags.
+    """
+    if not city:
+        return city
+    settings = get_settings()
+    lookup = {_fold_city(c["city"]): c["city"] for c in settings.lidoire_netatmo_priority}
+    for alias, canonical in NETATMO_CITY_ALIASES.items():
+        lookup.setdefault(_fold_city(alias), canonical)
+    return lookup.get(_fold_city(city), city)
+
+
+def _legacy_city_tags(canonical: str, raw: Optional[str]) -> list[str]:
+    """Tag values older points of ``canonical`` may carry (raw Netatmo name)."""
+    return [raw] if raw and raw != canonical else []
 
 
 def _get_stored_tokens() -> dict:
@@ -95,7 +128,7 @@ def _valid_access_token(tokens: dict) -> Optional[str]:
     if tokens.get("access_token") and tokens.get("expires_at"):
         try:
             expiry = datetime.fromisoformat(tokens["expires_at"])
-            if expiry > datetime.utcnow() + timedelta(minutes=5):
+            if expiry > _utcnow() + timedelta(minutes=5):
                 return tokens["access_token"]
         except (TypeError, ValueError):
             pass
@@ -219,7 +252,7 @@ async def fetch_public_stations_data(
     """
     global _stations_cache, _stations_cache_expiry
 
-    now = datetime.utcnow()
+    now = _utcnow()
 
     # Check cache
     cache_key = f"{lat:.3f},{lon:.3f},{radius_km}"
@@ -308,7 +341,7 @@ def _parse_station_data(station: dict, ref_lat: float, ref_lon: float) -> Option
                     "rain_60min_mm": module_data.get("rain_60min", 0) or 0,
                     "rain_24h_mm": module_data.get("rain_24h", 0) or 0,
                     "rain_live_mm": module_data.get("rain_live", 0) or 0,
-                    "timestamp": _utc_from_epoch(rain_timeutc) if rain_timeutc else datetime.utcnow(),
+                    "timestamp": _utc_from_epoch(rain_timeutc) if rain_timeutc else _utcnow(),
                 }
 
             # Temperature/humidity modules have res structure
@@ -366,14 +399,16 @@ def _match_priority_station(station: dict, priority_stations: list[dict]) -> dic
     """Check if a station matches a priority Lidoire station.
 
     Uses both name matching AND distance validation to avoid false positives.
-    A station must be within 15km of the expected location to match.
+    A station must be within 15km of the expected location to match. Names
+    are compared accent/case/punctuation-insensitively ('Saint-Remy' matches
+    'Saint-Rémy').
     """
-    city = station.get("city", "").lower()
+    city = _fold_city(station.get("city") or "")
     station_lat = station.get("lat", 0)
     station_lon = station.get("lon", 0)
 
     for priority in priority_stations:
-        priority_city = priority["city"].lower()
+        priority_city = _fold_city(priority["city"])
 
         # Name matching - must be a good match
         name_match = False
@@ -426,11 +461,16 @@ def consecutive_daily_coverage(
     return covered
 
 
-async def _query_daily_coverage(cities: list[str], source: str = "netatmo-lidoire") -> dict[str, int]:
+async def _query_daily_coverage(
+    cities: list[str],
+    source: str = "netatmo-lidoire",
+    aliases: Optional[dict[str, list[str]]] = None,
+) -> dict[str, int]:
     """Per-city consecutive 24h coverage of precipitation_mm_24h samples (one query).
 
     Cities are filtered in Python (never interpolated into Flux: they come from
-    the Netatmo API).
+    the Netatmo API). Samples tagged with an alias of a city (legacy spelling,
+    see ``aliases``) count for that city.
     """
     from app.services import influx_client
 
@@ -438,7 +478,7 @@ async def _query_daily_coverage(cities: list[str], source: str = "netatmo-lidoir
         raise ValueError(f"invalid rainfall source: {source!r}")
 
     settings = get_settings()
-    now = datetime.utcnow()
+    now = _utcnow()
     start = now - timedelta(days=7, hours=4)
     stop = now + timedelta(minutes=5)
     query = f'''
@@ -449,29 +489,39 @@ async def _query_daily_coverage(cities: list[str], source: str = "netatmo-lidoir
         |> filter(fn: (r) => r._field == "precipitation_mm_24h")
         |> keep(columns: ["_time", "city"])
     '''
-    wanted = set(cities)
+    tag_to_city = {c: c for c in cities}
+    for city, names in (aliases or {}).items():
+        for name in names:
+            tag_to_city.setdefault(name, city)
     by_city: dict[str, list[datetime]] = {c: [] for c in cities}
-    tables = influx_client.get_query_api().query(query, org=settings.influxdb_org)
+    tables = await influx_client._run_query(query)
     for table in tables:
         for record in table.records:
-            city = record.values.get("city")
-            if city in wanted:
+            city = tag_to_city.get(record.values.get("city"))
+            if city is not None:
                 ts = record.get_time()
                 if ts is not None:
                     by_city[city].append(_to_naive_utc(ts))
     return {c: consecutive_daily_coverage(ts_list, now) for c, ts_list in by_city.items()}
 
 
-async def _get_lidoire_history(cities: list[str]) -> tuple[dict, dict, Optional[dict]]:
+async def _get_lidoire_history(
+    cities: list[str],
+    aliases: Optional[dict[str, list[str]]] = None,
+) -> tuple[dict, dict, Optional[dict]]:
     """InfluxDB cumulative rain, coverage and Open-Meteo fallback, cached 15 min.
+
+    ``cities`` are canonical (config) names; ``aliases`` lists legacy tag
+    values merged into each of them.
 
     Returns (historical_rainfall, coverage, open_meteo_fallback).
     """
     global _history_cache
 
     settings = get_settings()
-    key = tuple(sorted(cities))
-    now = datetime.utcnow()
+    aliases = aliases or {}
+    key = (tuple(sorted(cities)), tuple(sorted((c, tuple(a)) for c, a in aliases.items())))
+    now = _utcnow()
     if (_history_cache.get("key") == key and _history_cache.get("expires")
             and _history_cache["expires"] > now):
         return _history_cache["historical"], _history_cache["coverage"], _history_cache["fallback"]
@@ -481,14 +531,14 @@ async def _get_lidoire_history(cities: list[str]) -> tuple[dict, dict, Optional[
     historical_rainfall: dict = {}
     try:
         historical_rainfall = await influx_client.query_all_stations_rainfall_cumulative(
-            cities, source="netatmo-lidoire"
+            cities, source="netatmo-lidoire", aliases=aliases
         )
     except Exception as e:
         logger.warning("Error fetching historical rainfall: %s", e)
 
     coverage: dict[str, int] = {}
     try:
-        coverage = await _query_daily_coverage(cities, source="netatmo-lidoire")
+        coverage = await _query_daily_coverage(cities, source="netatmo-lidoire", aliases=aliases)
     except Exception as e:
         logger.warning("Error querying Netatmo rainfall coverage: %s", e)
 
@@ -595,19 +645,28 @@ async def get_basin_rainfall() -> dict:
     lidoire_stations = []
     other_stations = []
 
-    # First pass: identify Lidoire stations
-    lidoire_cities = []
+    # First pass: identify Lidoire stations. InfluxDB city tags use the config
+    # spelling (priority["city"]); older points may carry the raw Netatmo name.
+    lidoire_cities: list[str] = []
+    lidoire_aliases: dict[str, list[str]] = {}
     for s in stations:
         priority = _match_priority_station(s, priority_stations)
         if priority:
-            lidoire_cities.append(s.get("city"))
+            canonical = priority["city"]
+            if canonical not in lidoire_cities:
+                lidoire_cities.append(canonical)
+            for legacy in _legacy_city_tags(canonical, s.get("city")):
+                if legacy not in lidoire_aliases.setdefault(canonical, []):
+                    lidoire_aliases[canonical].append(legacy)
 
     # Historical cumulatives (InfluxDB), coverage and Open-Meteo fallback
     historical_rainfall: dict = {}
     coverage: dict[str, int] = {}
     open_meteo_fallback: Optional[dict] = None
     if lidoire_cities:
-        historical_rainfall, coverage, open_meteo_fallback = await _get_lidoire_history(lidoire_cities)
+        historical_rainfall, coverage, open_meteo_fallback = await _get_lidoire_history(
+            lidoire_cities, lidoire_aliases
+        )
 
     for s in stations:
         city = s.get("city")
@@ -624,8 +683,10 @@ async def get_basin_rainfall() -> dict:
         if priority:
             station_data["is_lidoire"] = True
             station_data["position"] = priority.get("position", "unknown")
+            # Config spelling, used as the InfluxDB city tag
+            station_data["config_city"] = priority["city"]
             # Add historical data from InfluxDB
-            hist = historical_rainfall.get(city, {})
+            hist = historical_rainfall.get(priority["city"], {})
             rain_72h = hist.get("rain_72h_mm")
             rain_7d = hist.get("rain_7d_mm")
 
@@ -643,7 +704,7 @@ async def get_basin_rainfall() -> dict:
                 # Delta = rain that fell between 24h ago and 72h/7d ago
                 delta_72h = max(0, om_72h - om_24h)
                 delta_7d = max(0, om_7d - om_24h)
-                city_coverage = coverage.get(city, 0)
+                city_coverage = coverage.get(priority["city"], 0)
                 incomplete_72h = rain_72h is None or city_coverage < 3
                 incomplete_7d = rain_7d is None or city_coverage < 7
                 if incomplete_72h:
@@ -664,7 +725,7 @@ async def get_basin_rainfall() -> dict:
 
     return {
         "available": True,
-        "timestamp": datetime.utcnow(),
+        "timestamp": _utcnow(),
         "stations_count": len(stations),
         "rain_1h_avg_mm": round(avg_rain_1h, 1),
         "rain_24h_avg_mm": round(avg_rain_24h, 1),
@@ -700,7 +761,7 @@ def hourly_slot(
     return slot
 
 
-async def _write_station_rain(
+def _station_rain_points(
     source: str,
     city: Optional[str],
     rain_1h_mm: Optional[float],
@@ -708,8 +769,8 @@ async def _write_station_rain(
     now: datetime,
     lat: Optional[float] = None,
     lon: Optional[float] = None,
-) -> int:
-    """Write one Netatmo station (or the basin average) to InfluxDB.
+) -> tuple[list, Optional[tuple[tuple[str, str], datetime]]]:
+    """InfluxDB points for one Netatmo station (or the basin average).
 
     Rain over-count fix: Netatmo's rain_60min is a *sliding* 60 min total.
     Writing it every 15 min as precipitation_mm_h made every hour counted ~4x
@@ -722,10 +783,12 @@ async def _write_station_rain(
       precipitation_mm_h: ``precipitation_mm_24h`` (sampled at 24h boundaries
       for 72h/7d cumulatives) and ``rain_60min_mm`` (latest sliding value, for
       display only — never sum it).
+
+    Returns the points and the ``(series key, slot)`` to mark as written once
+    the points are stored (None when no hourly point is due).
     """
     from app.services import influx_client
 
-    stored = 0
     tags = {"source": source}
     if city:
         tags["city"] = str(city)
@@ -738,57 +801,60 @@ async def _write_station_rain(
         fields["lat"] = float(lat)
     if lon is not None:
         fields["lon"] = float(lon)
-    if await influx_client.write_point(
-        measurement="rainfall", tags=tags, fields=fields, timestamp=now,
-    ):
-        stored += 1
+    points = [influx_client.make_point("rainfall", tags, fields, now)]
 
     key = (source, str(city))
     slot = hourly_slot(now, _last_hourly_write.get(key))
+    pending = None
     if slot is not None:
-        if await influx_client.write_rainfall(
+        points.append(influx_client.make_rainfall_point(
             source=source,
             precipitation_mm_h=rain_1h_mm or 0,
             timestamp=slot,
             station_city=city,
             lat=lat,
             lon=lon,
-        ):
-            _last_hourly_write[key] = slot
-            stored += 1
+        ))
+        pending = (key, slot)
 
-    return stored
+    return points, pending
 
 
 async def store_rainfall_to_influx(basin_data: dict) -> int:
-    """Store Netatmo rainfall data to InfluxDB (see _write_station_rain)."""
-    stored = 0
-    now = _utcnow()
+    """Store Netatmo rainfall data to InfluxDB in ONE batched write.
 
-    # Basin average
-    stored += await _write_station_rain(
-        source="netatmo",
-        city="basin_average",
-        rain_1h_mm=basin_data.get("rain_1h_avg_mm", 0),
-        rain_24h_mm=basin_data.get("rain_24h_avg_mm", 0),
-        now=now,
-    )
+    See _station_rain_points for the point layout. ``netatmo-lidoire`` city
+    tags use the config spelling (canonical_city).
+    """
+    from app.services import influx_client
+
+    now = _utcnow()
+    batches = [
+        # Basin average
+        _station_rain_points(
+            source="netatmo",
+            city="basin_average",
+            rain_1h_mm=basin_data.get("rain_1h_avg_mm", 0),
+            rain_24h_mm=basin_data.get("rain_24h_avg_mm", 0),
+            now=now,
+        ),
+    ]
 
     # Lidoire stations
     for station in basin_data.get("lidoire_stations", []):
-        stored += await _write_station_rain(
+        batches.append(_station_rain_points(
             source="netatmo-lidoire",
-            city=station.get("city"),
+            city=station.get("config_city") or canonical_city(station.get("city")),
             rain_1h_mm=station.get("rain_1h_mm"),
             rain_24h_mm=station.get("rain_24h_mm"),
             now=now,
             lat=station.get("lat"),
             lon=station.get("lon"),
-        )
+        ))
 
     # Other nearby stations (top 5)
     for station in basin_data.get("stations", [])[:5]:
-        stored += await _write_station_rain(
+        batches.append(_station_rain_points(
             source="netatmo",
             city=station.get("city"),
             rain_1h_mm=station.get("rain_1h_mm"),
@@ -796,7 +862,15 @@ async def store_rainfall_to_influx(basin_data: dict) -> int:
             now=now,
             lat=station.get("lat"),
             lon=station.get("lon"),
-        )
+        ))
+
+    points = [p for station_points, _ in batches for p in station_points]
+    stored = await influx_client.write_points_batch(points)
+    if points and stored == len(points):
+        for _, pending in batches:
+            if pending is not None:
+                key, slot = pending
+                _last_hourly_write[key] = slot
 
     return stored
 
@@ -848,12 +922,13 @@ async def _discover_lidoire_device_ids() -> dict[str, dict]:
                     "device_id": device_id,
                     "rain_module_id": rain_module_id,
                     "city": city,
+                    "config_city": priority["city"],
                     "lat": s.get("lat"),
                     "lon": s.get("lon"),
                 }
 
-    logger.info(f"Netatmo: discovered {len(_lidoire_device_cache)} Lidoire stations with device IDs: "
-          f"{list(_lidoire_device_cache.keys())}")
+    logger.info("Netatmo: discovered %d Lidoire stations with device IDs: %s",
+                len(_lidoire_device_cache), list(_lidoire_device_cache.keys()))
     return _lidoire_device_cache
 
 
@@ -983,20 +1058,19 @@ async def fetch_and_store_netatmo_historical_range(
             logger.info(f"  No historical data for {city}")
             continue
 
-        # Store to InfluxDB — normalize city name (strip accents) for consistent tags
-        normalized_city = _normalize(city)
-        stored = 0
-        for p in points:
-            success = await influx_client.write_rainfall(
+        # Store to InfluxDB under the config spelling (same tag as live writes)
+        tag_city = info.get("config_city") or canonical_city(city)
+        stored = await influx_client.write_points_batch([
+            influx_client.make_rainfall_point(
                 source="netatmo-lidoire",
                 precipitation_mm_h=p["rain_mm"],
                 timestamp=p["timestamp"],
-                station_city=normalized_city,
+                station_city=tag_city,
                 lat=info.get("lat"),
                 lon=info.get("lon"),
             )
-            if success:
-                stored += 1
+            for p in points
+        ])
 
         logger.info(f"  Stored {stored}/{len(points)} points for {city}")
         total_stored += stored
@@ -1023,7 +1097,7 @@ async def get_rainfall_observations() -> list[RainfallObservation]:
     # Create an observation from the basin average
     observations.append(
         RainfallObservation(
-            timestamp=basin_data.get("timestamp", datetime.utcnow()),
+            timestamp=basin_data.get("timestamp", _utcnow()),
             source="netatmo",
             precipitation_mm_h=basin_data.get("rain_1h_avg_mm", 0),
             precipitation_mm_24h=basin_data.get("rain_24h_avg_mm", 0),
@@ -1035,7 +1109,7 @@ async def get_rainfall_observations() -> list[RainfallObservation]:
     for station in basin_data.get("stations", []):
         observations.append(
             RainfallObservation(
-                timestamp=basin_data.get("timestamp", datetime.utcnow()),
+                timestamp=basin_data.get("timestamp", _utcnow()),
                 source=f"netatmo-{station.get('city', 'unknown')}",
                 precipitation_mm_h=station.get("rain_1h_mm") or 0,
                 precipitation_mm_24h=station.get("rain_24h_mm") or 0,

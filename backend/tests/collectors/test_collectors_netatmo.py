@@ -31,16 +31,21 @@ def influx_writes(monkeypatch):
 
     points, hourly = [], []
 
-    async def fake_write_point(measurement, tags, fields, timestamp):
-        points.append({"measurement": measurement, "tags": tags, "fields": fields, "timestamp": timestamp})
-        return True
+    async def fake_write_points_batch(batch, chunk_size=5000):
+        # One batched write per collection; split snapshots / hourly points
+        for point in batch:
+            d = influx_client.point_as_dict(point)
+            if "precipitation_mm_h" in d["fields"]:
+                hourly.append({
+                    "station_city": d["tags"].get("city"),
+                    "timestamp": d["timestamp"],
+                    "precipitation_mm_h": d["fields"]["precipitation_mm_h"],
+                })
+            else:
+                points.append(d)
+        return len(batch)
 
-    async def fake_write_rainfall(**kwargs):
-        hourly.append(kwargs)
-        return True
-
-    monkeypatch.setattr(influx_client, "write_point", fake_write_point)
-    monkeypatch.setattr(influx_client, "write_rainfall", fake_write_rainfall)
+    monkeypatch.setattr(influx_client, "write_points_batch", fake_write_points_batch)
     monkeypatch.setattr(netatmo, "_last_hourly_write", {})
     return points, hourly
 
@@ -121,7 +126,7 @@ def token_store(monkeypatch):
     store = {"tokens": {
         "access_token": "old-access",
         "refresh_token": "rt-1",
-        "expires_at": (datetime.utcnow() - timedelta(minutes=1)).isoformat(),
+        "expires_at": (netatmo._utcnow() - timedelta(minutes=1)).isoformat(),
     }}
 
     def fake_get():
@@ -131,7 +136,7 @@ def token_store(monkeypatch):
         store["tokens"] = {
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "expires_at": (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat(),
+            "expires_at": (netatmo._utcnow() + timedelta(seconds=expires_in)).isoformat(),
         }
 
     monkeypatch.setattr(netatmo, "_get_stored_tokens", fake_get)
@@ -162,7 +167,7 @@ async def test_concurrent_refresh_hits_netatmo_once(token_store):
 
 @respx.mock
 async def test_valid_token_no_refresh(token_store):
-    token_store["tokens"]["expires_at"] = (datetime.utcnow() + timedelta(hours=1)).isoformat()
+    token_store["tokens"]["expires_at"] = (netatmo._utcnow() + timedelta(hours=1)).isoformat()
     route = respx.post(netatmo.NETATMO_AUTH_URL).mock(return_value=httpx.Response(500))
     assert await netatmo._get_access_token() == "old-access"
     assert route.call_count == 0

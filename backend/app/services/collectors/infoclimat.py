@@ -14,7 +14,7 @@ API Documentation:
 
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -23,6 +23,11 @@ from app.config import get_settings
 from app.models.schemas import RainfallObservation
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # Infoclimat API base URL
@@ -207,7 +212,7 @@ async def get_basin_rainfall_infoclimat() -> dict:
     global _observations_cache, _cache_expiry
 
     settings = get_settings()
-    now = datetime.utcnow()
+    now = _utcnow()
 
     # Check cache
     if _cache_expiry and _cache_expiry > now and _observations_cache:
@@ -380,27 +385,25 @@ async def store_rainfall_to_influx(data: dict) -> int:
     """
     from app.services import influx_client
 
-    stored = 0
-    timestamp = datetime.utcnow()
+    timestamp = _utcnow()
 
     rows = [("basin_average", data.get("rain_24h_avg_mm", 0))]
     rows += [(station.get("station_name"), station.get("rain_24h_mm", 0))
              for station in data.get("stations", [])]
 
+    points = []
     for city, rain_24h in rows:
         tags = {"source": "infoclimat"}
         if city:
             tags["city"] = str(city)
-        success = await influx_client.write_point(
+        points.append(influx_client.make_point(
             measurement="rainfall",
             tags=tags,
             fields={"precipitation_mm_24h": float(rain_24h or 0)},
             timestamp=timestamp,
-        )
-        if success:
-            stored += 1
+        ))
 
-    return stored
+    return await influx_client.write_points_batch(points)
 
 
 async def get_rainfall_observations_infoclimat() -> list[RainfallObservation]:
@@ -420,7 +423,7 @@ async def get_rainfall_observations_infoclimat() -> list[RainfallObservation]:
     # Add basin average
     observations.append(
         RainfallObservation(
-            timestamp=datetime.utcnow(),
+            timestamp=_utcnow(),
             source="infoclimat",
             precipitation_mm_h=0,  # Hourly not available in summary
             precipitation_mm_24h=data.get("rain_24h_avg_mm", 0),
@@ -432,7 +435,7 @@ async def get_rainfall_observations_infoclimat() -> list[RainfallObservation]:
     for station in data.get("stations", []):
         observations.append(
             RainfallObservation(
-                timestamp=datetime.utcnow(),
+                timestamp=_utcnow(),
                 source=f"infoclimat-{station.get('station_name', 'unknown')}",
                 precipitation_mm_h=0,
                 precipitation_mm_24h=station.get("rain_24h_mm", 0),
@@ -519,7 +522,7 @@ async def fetch_and_store_infoclimat_historical_range(
             elif isinstance(station_obs, list):
                 observations_list = [o for o in station_obs if isinstance(o, dict)]
 
-            stored = 0
+            points = []
             for obs in observations_list:
                 try:
                     # Parse timestamp
@@ -534,17 +537,16 @@ async def fetch_and_store_infoclimat_historical_range(
                         continue
                     rain_val = float(rain_1h) if rain_1h else 0.0
 
-                    success = await influx_client.write_rainfall(
+                    points.append(influx_client.make_rainfall_point(
                         source="infoclimat",
                         precipitation_mm_h=rain_val,
                         timestamp=ts,
                         station_city=station_name,
-                    )
-                    if success:
-                        stored += 1
-                except (ValueError, TypeError, KeyError) as e:
+                    ))
+                except (ValueError, TypeError, KeyError):
                     continue
 
+            stored = await influx_client.write_points_batch(points) if points else 0
             if stored:
                 logger.info(f"  {station_name}: {stored} hourly points")
             total_stored += stored
