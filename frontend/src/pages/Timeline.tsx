@@ -29,6 +29,15 @@ import TimelineSourceSelector from '../components/TimelineSourceSelector'
 
 type Resolution = '15m' | '1h' | '6h' | '12h' | '1d'
 
+// Rain source ids follow the backend config city names (settings.lidoire_netatmo_priority)
+const DEFAULT_RAIN_SOURCE = 'netatmo-lidoire:Saint-Rémy'
+
+// Old ids (misspelled city names) that may still be in bookmarked URLs
+const LEGACY_RAIN_SOURCE_IDS: Record<string, string> = {
+  'netatmo-lidoire:Saint-Remy': 'netatmo-lidoire:Saint-Rémy',
+  "netatmo-lidoire:Saint-Antoine-sur-l'Isle": 'netatmo-lidoire:Saint-Antoine-de-Breuilh',
+}
+
 export default function Timeline() {
   const [searchParams, setSearchParams] = useSearchParams()
   const isInitialMount = useRef(true)
@@ -44,7 +53,9 @@ export default function Timeline() {
     () => parseParamList('rivers', ['P555001001'])
   )
   const [selectedRainfallStations, setSelectedRainfallStations] = useState<string[]>(
-    () => parseParamList('rain', ['netatmo-lidoire:Saint-Remy'])
+    () => Array.from(new Set(
+      parseParamList('rain', [DEFAULT_RAIN_SOURCE]).map(id => LEGACY_RAIN_SOURCE_IDS[id] ?? id)
+    ))
   )
   const [tideEnabled, setTideEnabled] = useState(() => searchParams.get('tide') !== '0')
   const [riskEnabled, setRiskEnabled] = useState(() => searchParams.get('risk') !== '0')
