@@ -244,7 +244,10 @@ export async function updateEpisode(
 
 // Delete episode
 export async function deleteEpisode(id: number): Promise<void> {
-  const response = await fetch(`${API_BASE}/episodes/${id}`, { method: 'DELETE' })
+  const response = await fetch(`${API_BASE}/episodes/${id}`, {
+    method: 'DELETE',
+    headers: authHeaders('DELETE'),
+  })
   if (!response.ok) {
     throw new Error(`API error: ${response.status} ${response.statusText}`)
   }

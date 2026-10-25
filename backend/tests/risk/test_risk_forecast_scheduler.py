@@ -1,6 +1,6 @@
 """Forecast fixes (calibration, UTC, no rain re-injection) and scheduler."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -22,9 +22,11 @@ from risk_scenario import build_scenario
 T0 = datetime(2024, 2, 10, 12, 0)
 
 
-def test_risk_forecast_naive_paris_to_utc():
-    assert forecast_ts_to_utc(datetime(2024, 2, 10, 13, 0)) == datetime(2024, 2, 10, 12, 0)   # CET
-    assert forecast_ts_to_utc(datetime(2024, 7, 10, 14, 0)) == datetime(2024, 7, 10, 12, 0)   # CEST
+def test_risk_forecast_naive_utc_and_aware_to_utc():
+    # fetch_open_meteo_forecast() returns naive UTC timestamps (timezone=UTC)
+    assert forecast_ts_to_utc(datetime(2024, 2, 10, 12, 0)) == datetime(2024, 2, 10, 12, 0)
+    paris = timezone(timedelta(hours=2))
+    assert forecast_ts_to_utc(datetime(2024, 7, 10, 14, 0, tzinfo=paris)) == datetime(2024, 7, 10, 12, 0)
 
 
 def test_risk_forecast_calibration_capped_and_window_only():

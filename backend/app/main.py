@@ -12,6 +12,7 @@ from app.api import router as api_router
 from app.api.deps import API_KEY_HEADER_NAME, warn_if_api_key_missing
 from app.services.scheduler import start_scheduler, stop_scheduler
 from app.db import init_db, close_db
+from app.services.cache import close_redis
 
 # Application loggers (uvicorn configures only its own "uvicorn.*" loggers).
 logging.basicConfig(
@@ -45,6 +46,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     await stop_scheduler()
+    await close_redis()
     await close_db()
     logger.info("Lidoire Flood Watch API stopped.")
 
@@ -64,6 +66,7 @@ def configure_cors(app: FastAPI, settings: Settings) -> list[str]:
         allow_credentials=False,
         allow_methods=CORS_ALLOW_METHODS,
         allow_headers=CORS_ALLOW_HEADERS,
+        expose_headers=["X-Backfill-Pending"],
     )
     return origins
 

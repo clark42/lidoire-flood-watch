@@ -33,7 +33,6 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Mapping, Optional, Sequence
-from zoneinfo import ZoneInfo
 
 from app.config import get_settings
 from app.models.schemas import RainfallSummary, RiskLevel, TideForecast
@@ -52,9 +51,9 @@ from app.services.risk_core import (
 
 logger = logging.getLogger(__name__)
 
-# fetch_open_meteo_forecast() requests timezone=Europe/Paris and returns
-# naive local timestamps; aware timestamps are converted as-is.
-NAIVE_FORECAST_TZ = ZoneInfo("Europe/Paris")
+# fetch_open_meteo_forecast() requests timezone=UTC and returns naive UTC
+# timestamps; aware timestamps are converted as-is.
+NAIVE_FORECAST_TZ = timezone.utc
 
 # Hydrological response parameters (calibrated from Feb 2024 flood)
 RAIN_TO_LEVEL_COEF = 0.008      # m of river rise per mm of rain (after runoff)
@@ -70,10 +69,9 @@ CALIBRATION_MIN_FACTOR = 1.0 / 3.0
 
 
 async def _get_redis_client():
-    """Get Redis client (lazy initialization)."""
-    import redis.asyncio as redis
-    settings = get_settings()
-    return redis.from_url(settings.redis_url, decode_responses=True)
+    """Shared Redis client (see app.services.cache); never close it here."""
+    from app.services.cache import get_redis
+    return get_redis()
 
 
 async def _get_cached_forecast(hours: int) -> Optional[dict]:
@@ -81,7 +79,6 @@ async def _get_cached_forecast(hours: int) -> Optional[dict]:
     try:
         client = await _get_redis_client()
         cached = await client.get(f"forecast:{hours}")
-        await client.aclose()
         if cached:
             data = json.loads(cached)
             generated_at = to_utc_naive(datetime.fromisoformat(data.get("generated_at", "2000-01-01")))
@@ -102,7 +99,6 @@ async def _set_cached_forecast(hours: int, data: dict) -> None:
             json.dumps(data, default=str),
             ex=30 * 60,
         )
-        await client.aclose()
     except Exception as e:
         logger.warning("Redis cache write error: %s", e)
 
@@ -112,7 +108,7 @@ def _iso_utc(dt: datetime) -> str:
 
 
 def forecast_ts_to_utc(ts: datetime) -> datetime:
-    """Forecast timestamp -> naive UTC (naive input = Europe/Paris)."""
+    """Forecast timestamp -> naive UTC (naive input = UTC)."""
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=NAIVE_FORECAST_TZ)
     return ts.astimezone(timezone.utc).replace(tzinfo=None)
@@ -587,6 +583,5 @@ async def invalidate_forecast_cache() -> None:
         keys = await client.keys("forecast:*")
         if keys:
             await client.delete(*keys)
-        await client.aclose()
     except Exception as e:
         logger.warning("Redis cache invalidate error: %s", e)

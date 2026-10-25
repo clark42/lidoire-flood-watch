@@ -126,6 +126,7 @@ async def detect_episodes_from_risk_scores(
     end_date: datetime,
     min_red_hours: int = 2,
     min_orange_hours: int = 6,
+    threshold: float = RISK_ORANGE_THRESHOLD,
     merge_gap_hours: int = 24,
 ) -> list[DetectedEpisode]:
     """
@@ -169,7 +170,7 @@ async def detect_episodes_from_risk_scores(
         ts = rs["timestamp"]
 
         # Check if this point should be part of an episode
-        is_significant = score >= RISK_ORANGE_THRESHOLD
+        is_significant = score >= threshold
 
         if is_significant:
             if current_episode is None:
@@ -491,9 +492,12 @@ def _generate_description(
 async def run_episode_detection(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    threshold: float = RISK_ORANGE_THRESHOLD,
 ) -> dict:
     """
     Run full episode detection on the backfilled data.
+
+    ``threshold`` is the risk score above which a point belongs to an episode.
 
     Returns summary with all detected episodes for user validation.
     """
@@ -508,7 +512,7 @@ async def run_episode_detection(
     print(f"{'='*60}")
 
     # Detect from risk scores
-    risk_episodes = await detect_episodes_from_risk_scores(start_date, end_date)
+    risk_episodes = await detect_episodes_from_risk_scores(start_date, end_date, threshold=threshold)
 
     # Detect from river thresholds
     river_episodes = await detect_episodes_from_river_levels(start_date, end_date)

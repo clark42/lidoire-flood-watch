@@ -41,6 +41,8 @@ docker-compose.override.yml
 *.db
 *.sqlite3
 data/
+# Tracked reference data (episode labels)
+!backend/app/data/
 
 # Logs
 logs/

@@ -516,21 +516,6 @@ async def store_rainfall(observations: list[RainfallObservation]) -> int:
     return stored
 
 
-async def store_risk_score(
-    score: float,
-    level: str,
-    timestamp: datetime,
-    factors: Optional[dict] = None,
-) -> bool:
-    """Store a risk score in InfluxDB."""
-    return await influx_client.write_risk_score(
-        score=score,
-        level=level,
-        timestamp=timestamp,
-        factors=factors,
-    )
-
-
 async def get_historical_tides(start: datetime, end: datetime) -> list[TideData]:
     """Get historical tide data from InfluxDB."""
     data = await influx_client.query_tides("LIBOURNE", start, end)

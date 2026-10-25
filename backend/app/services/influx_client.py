@@ -394,11 +394,7 @@ async def write_risk_score(
                 elif isinstance(value, (int, float)):
                     point = point.field(f"factor_{key}", float(value))
 
-        get_write_api().write(
-            bucket=settings.influxdb_bucket,
-            org=settings.influxdb_org,
-            record=point,
-        )
+        await _run_write(point)
         return True
     except Exception as e:
         print(f"Error writing risk score to InfluxDB: {e}")
@@ -837,7 +833,7 @@ async def query_risk_scores(
     '''
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         return select_risk_rows_by_version(_risk_rows_from_tables(tables), preferred)
     except Exception as e:
         print(f"Error querying risk scores from InfluxDB: {e}")
@@ -1225,7 +1221,7 @@ async def query_risk_scores_timeline(
     '''
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         results = []
 
         for table in tables:
