@@ -17,7 +17,7 @@ Cache-through design (``/unified``):
 import asyncio
 import logging
 import unicodedata
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -44,6 +44,12 @@ from app.services.influx_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 
 router = APIRouter()
 
@@ -179,7 +185,7 @@ def resolve_time_range(
     now: Optional[datetime] = None,
 ) -> tuple[datetime, datetime]:
     """Default, normalise (naive UTC) and bound the requested period."""
-    now = now or datetime.utcnow()
+    now = now or _utcnow()
     end = to_naive_utc(end) if end is not None else now
     start = to_naive_utc(start) if start is not None else end - timedelta(hours=DEFAULT_RANGE_HOURS)
 
@@ -295,7 +301,7 @@ async def _ensure_river_data(start: datetime, end: datetime, station_ids: list[s
     if coverage is None:
         return None  # InfluxDB error: neither backfill nor cache
 
-    now = datetime.utcnow()
+    now = _utcnow()
     thirty_days_ago = now - timedelta(days=30)
     # TR (5-15 min) and Hydroportail (sub-hourly) both give >= 1 point / 2h.
     expected = _expected_points(s, e, 2, 4)
@@ -412,7 +418,7 @@ async def _ensure_netatmo_rainfall(start: datetime, end: datetime, cities: list[
     ``cities`` are canonical config city names.
     """
     s, e = to_naive_utc(start), to_naive_utc(end)
-    now = datetime.utcnow()
+    now = _utcnow()
     tasks: list[asyncio.Task] = []
 
     # Current collection (independent short-lived negative cache)
@@ -512,7 +518,7 @@ async def _ensure_risk_data(
     computes on complete inputs.
     """
     s, e = to_naive_utc(start), to_naive_utc(end)
-    now = datetime.utcnow()
+    now = _utcnow()
 
     # Don't backfill future periods
     if s > now:

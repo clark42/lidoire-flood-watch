@@ -12,6 +12,7 @@ Data is scraped every 6 hours (daily forecasts, stable data).
 Uses InfluxDB cache-through to avoid unnecessary scraping.
 """
 
+import logging
 import re
 import httpx
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,13 @@ from typing import Optional
 
 from app.config import get_settings
 from app.models.schemas import MeteoAgricoleData, NowcastRainData
+
+logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # Cache (6h for daily agricultural data)
@@ -111,7 +119,7 @@ async def fetch_meteo_agricole() -> Optional[MeteoAgricoleData]:
                     rain_7d += avg
 
         return MeteoAgricoleData(
-            timestamp=datetime.utcnow(),
+            timestamp=_utcnow(),
             commune="Castillon-la-Bataille",
             rain_min_mm=round(rain_min, 1),
             rain_max_mm=round(rain_max, 1),
@@ -127,10 +135,10 @@ async def fetch_meteo_agricole() -> Optional[MeteoAgricoleData]:
         )
 
     except ImportError:
-        print("Meteo Agricole: beautifulsoup4 not installed, skipping")
+        logger.warning("Meteo Agricole: beautifulsoup4 not installed, skipping")
         return None
     except Exception as e:
-        print(f"Error scraping Meteo Agricole: {e}")
+        logger.warning("Error scraping Meteo Agricole: %s", e)
         return None
 
 
@@ -143,7 +151,7 @@ async def get_meteo_agricole_cached() -> Optional[MeteoAgricoleData]:
     """
     global _cache, _cache_expiry
 
-    now = datetime.utcnow()
+    now = _utcnow()
 
     # Check in-memory cache first (faster than InfluxDB)
     if _cache_expiry and _cache_expiry > now and _cache:
@@ -156,7 +164,7 @@ async def get_meteo_agricole_cached() -> Optional[MeteoAgricoleData]:
         "meteo_agricole", "castillon", max_age_hours=CACHE_DURATION_HOURS
     )
     if cached and "rain_min_mm" in cached:
-        print("meteo_agricole: from InfluxDB cache")
+        logger.info("meteo_agricole: from InfluxDB cache")
         data = MeteoAgricoleData(
             timestamp=cached.get("_time", now),
             commune="Castillon-la-Bataille",
@@ -177,7 +185,7 @@ async def get_meteo_agricole_cached() -> Optional[MeteoAgricoleData]:
         return data
 
     # Scrape from website
-    print("meteo_agricole: scraping from lameteoagricole.net")
+    logger.info("meteo_agricole: scraping from lameteoagricole.net")
     data = await fetch_meteo_agricole()
     if not data:
         return None
@@ -209,7 +217,7 @@ async def get_meteo_agricole_cached() -> Optional[MeteoAgricoleData]:
             timestamp=now,
         )
     except Exception as e:
-        print(f"Error storing meteo_agricole to InfluxDB: {e}")
+        logger.warning("Error storing meteo_agricole to InfluxDB: %s", e)
 
     # Update memory cache
     _cache = data
@@ -296,7 +304,7 @@ async def fetch_nowcast_rain() -> Optional[NowcastRainData]:
                 break
 
         if not labels or not data_values:
-            print("nowcast_rain: could not parse Chart.js data from page")
+            logger.warning("nowcast_rain: could not parse Chart.js data from page")
             return None
 
         # Align lengths
@@ -318,7 +326,7 @@ async def fetch_nowcast_rain() -> Optional[NowcastRainData]:
         rain_minutes = sum(1 for v in data_values if v > 0)
 
         return NowcastRainData(
-            timestamp=datetime.utcnow(),
+            timestamp=_utcnow(),
             commune="Belves-de-Castillon",
             total_60min_mm=total_60min_mm,
             max_intensity_mm=max_intensity_mm,
@@ -327,10 +335,10 @@ async def fetch_nowcast_rain() -> Optional[NowcastRainData]:
         )
 
     except ImportError:
-        print("nowcast_rain: beautifulsoup4 not installed, skipping")
+        logger.warning("nowcast_rain: beautifulsoup4 not installed, skipping")
         return None
     except Exception as e:
-        print(f"Error scraping nowcast rain: {e}")
+        logger.warning("Error scraping nowcast rain: %s", e)
         return None
 
 
@@ -343,7 +351,7 @@ async def get_nowcast_rain_cached() -> Optional[NowcastRainData]:
     """
     global _nowcast_cache, _nowcast_cache_expiry
 
-    now = datetime.utcnow()
+    now = _utcnow()
 
     # In-memory cache
     if _nowcast_cache_expiry and _nowcast_cache_expiry > now and _nowcast_cache:
@@ -367,7 +375,7 @@ async def get_nowcast_rain_cached() -> Optional[NowcastRainData]:
             )
             age_minutes = (now - ct).total_seconds() / 60
             if age_minutes < NOWCAST_CACHE_MINUTES:
-                print("nowcast_rain: from InfluxDB cache")
+                logger.info("nowcast_rain: from InfluxDB cache")
                 data = NowcastRainData(
                     timestamp=cache_time,
                     commune="Belves-de-Castillon",
@@ -381,7 +389,7 @@ async def get_nowcast_rain_cached() -> Optional[NowcastRainData]:
                 return data
 
     # Scrape from website
-    print("nowcast_rain: scraping from lameteoagricole.net")
+    logger.info("nowcast_rain: scraping from lameteoagricole.net")
     data = await fetch_nowcast_rain()
     if not data:
         return None
@@ -399,7 +407,7 @@ async def get_nowcast_rain_cached() -> Optional[NowcastRainData]:
             timestamp=now,
         )
     except Exception as e:
-        print(f"Error storing nowcast_rain to InfluxDB: {e}")
+        logger.warning("Error storing nowcast_rain to InfluxDB: %s", e)
 
     # Update memory cache
     _nowcast_cache = data
