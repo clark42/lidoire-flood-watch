@@ -19,16 +19,51 @@ import type {
 
 const API_BASE = '/api'
 
+// API key for mutating endpoints, stored per browser
+export const API_KEY_STORAGE_KEY = 'lfw_api_key'
+
+export function getApiKey(): string | null {
+  try {
+    return window.localStorage.getItem(API_KEY_STORAGE_KEY)
+  } catch {
+    // localStorage unavailable (private mode, blocked storage)
+    return null
+  }
+}
+
+export function setApiKey(key: string | null): void {
+  try {
+    if (key) window.localStorage.setItem(API_KEY_STORAGE_KEY, key)
+    else window.localStorage.removeItem(API_KEY_STORAGE_KEY)
+  } catch {
+    // localStorage unavailable: nothing to persist
+  }
+}
+
+/** Headers to add to a request: X-API-Key on every non-GET method. */
+export function authHeaders(method: string = 'GET'): Record<string, string> {
+  const upper = method.toUpperCase()
+  if (upper === 'GET' || upper === 'HEAD') return {}
+  const key = getApiKey()
+  return key ? { 'X-API-Key': key } : {}
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...options,
     cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
+      ...authHeaders(options?.method),
       ...options?.headers,
     },
   })
 
+  if (response.status === 401 || response.status === 403) {
+    throw new Error(
+      `API error: ${response.status} - cle API manquante ou invalide (voir Configuration)`
+    )
+  }
   if (!response.ok) {
     throw new Error(`API error: ${response.status} ${response.statusText}`)
   }
@@ -95,25 +130,25 @@ export async function simulateRisk(params: {
   dordogne_level_m: number
   tide_coefficient: number
   hours_to_high_tide: number
-}): Promise<any> {
+}): Promise<unknown> {
   const searchParams = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {
     searchParams.set(key, value.toString())
   })
 
-  return fetchJson<any>(`${API_BASE}/risk/simulate?${searchParams}`, {
+  return fetchJson<unknown>(`${API_BASE}/risk/simulate?${searchParams}`, {
     method: 'POST',
   })
 }
 
 // Status
-export async function getStatus(): Promise<any> {
-  return fetchJson<any>(`${API_BASE}/status`)
+export async function getStatus(): Promise<unknown> {
+  return fetchJson<unknown>(`${API_BASE}/status`)
 }
 
 // Sources detail (exhaustive config)
-export async function getSourcesDetail(): Promise<any> {
-  return fetchJson<any>(`${API_BASE}/sources-detail`)
+export async function getSourcesDetail(): Promise<unknown> {
+  return fetchJson<unknown>(`${API_BASE}/sources-detail`)
 }
 
 // Stations

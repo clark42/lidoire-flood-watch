@@ -81,11 +81,12 @@ function formatRawValue(
       return factors.tide_coefficient_raw != null
         ? `${factors.tide_coefficient_raw}`
         : '-'
-    case 'tide_phase':
+    case 'tide_phase': {
       if (factors.tide_hours_to_high == null) return '-'
       const hours = Math.abs(factors.tide_hours_to_high)
       if (hours < 1) return 'PM'
       return `PM${factors.tide_hours_to_high > 0 ? '-' : '+'}${hours.toFixed(0)}h`
+    }
     case 'tendency':
       return factors.tendency_rate_cm_h != null
         ? `${factors.tendency_rate_cm_h > 0 ? '+' : ''}${factors.tendency_rate_cm_h.toFixed(1)} cm/h`
