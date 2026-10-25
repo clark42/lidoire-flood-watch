@@ -1,33 +1,72 @@
 """Risk forecast service.
 
-Generates hourly risk predictions for the next 7 days based on:
-- Hourly rainfall forecast from Open-Meteo (AROME/ARPEGE models)
-- Tide predictions (coefficients and high/low times)
-- Projected river levels from upstream stations with propagation delays
-- Current soil moisture and saturation factor
-- Momentum (multi-station rising pattern)
+Generates hourly risk predictions for the next hours (default 7 days):
+for each hour it BUILDS risk features (projected station levels, rain
+windows, tide, soil, wind) and calls the single scoring function
+``risk_core.compute_risk`` - there is no forecast-specific score formula.
 
-The forecast is cached in Redis (30 min TTL) since weather forecasts
-update approximately every 6 hours but we want fresh data for users.
+Inputs:
+- the realtime inputs shared with /api/realtime (stations, tide, fused rain,
+  soil saturation, westerly wind), so H+0 equals the realtime score;
+- past observed hourly rain (Open-Meteo, UTC) calibrated on the realtime
+  multi-source rain, window by window (factor capped to [1/3, 3]);
+- hourly rain forecast (Open-Meteo AROME/ARPEGE + ECMWF), converted to UTC;
+- tide predictions.
 
-v1.0 (Jan 2026): Initial implementation based on Feb 2024 calibration.
-v2.0 (Jan 2026): Updated to v3.0 model weights with momentum/dampener.
+Conventions: all datetimes are naive UTC. Hourly rain is keyed by the END
+of its hour; the H+0 past windows are strictly before t0 and rain-driven
+river rise only uses rain falling after t0 (rain before t0 is already in
+the current levels and in their trend).
+
+The forecast is cached in Redis (30 min TTL).
+
+v1.0 (Jan 2026): initial implementation (Feb 2024 calibration).
+v2.0 (Jan 2026): v3.0 model weights with momentum/dampener.
+v3.3 (Oct 2026): uses risk_core; timezone, calibration, rain re-injection
+and H+0 consistency fixes.
 """
+
+from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
-from typing import Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Mapping, Optional, Sequence
+from zoneinfo import ZoneInfo
 
 from app.config import get_settings
-from app.models.schemas import (
-    RiskLevel,
-    TideType,
-    WeatherForecast,
+from app.models.schemas import RainfallSummary, RiskLevel, TideForecast
+from app.services import risk_core
+from app.services.risk_core import (
+    MODEL_VERSION,
+    RISING_RATE_CM_H,
+    RiskFeatures,
+    StationFeature,
+    compute_risk,
+    floor_hour,
+    rain_window_sum,
+    score_to_level,
+    to_utc_naive,
 )
-from app.services.risk_v2 import _normalize_score, _score_to_level
 
 logger = logging.getLogger(__name__)
+
+# fetch_open_meteo_forecast() requests timezone=Europe/Paris and returns
+# naive local timestamps; aware timestamps are converted as-is.
+NAIVE_FORECAST_TZ = ZoneInfo("Europe/Paris")
+
+# Hydrological response parameters (calibrated from Feb 2024 flood)
+RAIN_TO_LEVEL_COEF = 0.008      # m of river rise per mm of rain (after runoff)
+RAIN_RESPONSE_DELAY_H = 18      # Hours for rain to affect river level
+RAIN_RESPONSE_DURATION_H = 36   # Hours over which rain effect persists
+TREND_EXTRAPOLATION_MAX_H = 12  # Current trend extrapolated at most 12h
+MAX_RISE_M = 2.0                # Maximum realistic rise (Feb 2024: ~+1.5 m at Pessac)
+MOMENTUM_DECAY_H = 48           # Linear decay of the current rising count
+
+# Past-rain calibration on realtime multi-source rain
+CALIBRATION_MAX_FACTOR = 3.0
+CALIBRATION_MIN_FACTOR = 1.0 / 3.0
 
 
 async def _get_redis_client():
@@ -45,8 +84,7 @@ async def _get_cached_forecast(hours: int) -> Optional[dict]:
         await client.aclose()
         if cached:
             data = json.loads(cached)
-            # Check if still fresh (30 min)
-            generated_at = datetime.fromisoformat(data.get("generated_at", "2000-01-01"))
+            generated_at = to_utc_naive(datetime.fromisoformat(data.get("generated_at", "2000-01-01")))
             age_minutes = (datetime.utcnow() - generated_at).total_seconds() / 60
             if age_minutes < 30:
                 return data
@@ -62,482 +100,277 @@ async def _set_cached_forecast(hours: int, data: dict) -> None:
         await client.set(
             f"forecast:{hours}",
             json.dumps(data, default=str),
-            ex=30 * 60,  # 30 min TTL
+            ex=30 * 60,
         )
         await client.aclose()
     except Exception as e:
         logger.warning("Redis cache write error: %s", e)
 
 
+def _iso_utc(dt: datetime) -> str:
+    return dt.replace(tzinfo=timezone.utc).isoformat()
 
-async def get_risk_forecast_v2(hours: int = 168) -> dict:
+
+def forecast_ts_to_utc(ts: datetime) -> datetime:
+    """Forecast timestamp -> naive UTC (naive input = Europe/Paris)."""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=NAIVE_FORECAST_TZ)
+    return ts.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def westerly_component(speed_kmh: Optional[float], direction_deg: Optional[float]) -> Optional[float]:
+    """Westerly wind component (km/h), same formula as the weather collector."""
+    import math
+
+    if speed_kmh is None or direction_deg is None:
+        return None
+    return max(0.0, speed_kmh * math.cos(math.radians(270) - math.radians(direction_deg)))
+
+
+# ---------------------------------------------------------------------------
+# Pure forecast core
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ForecastInputs:
+    """Everything the forecast needs, already fetched (naive UTC)."""
+
+    t0: datetime
+    stations: tuple[StationFeature, ...]
+    primary_station_id: str
+    station_delays: Mapping[str, float]
+    # Hourly rain keyed by hour END: past (<= floor(t0)) and future (> floor(t0))
+    rain_hourly: Mapping[datetime, float]
+    # Realtime (fused) rain summary: H+0 rain windows and calibration target
+    observed_rain: Optional[RainfallSummary] = None
+    tide_highs: Sequence[tuple[datetime, Optional[int]]] = ()
+    tide_fallback_coefficient: Optional[int] = None
+    tide_reliable: bool = True
+    soil_saturation_factor: Optional[float] = None
+    westerly_wind_kmh: Optional[float] = None
+    westerly_wind_hourly: Mapping[datetime, float] = field(default_factory=dict)
+
+
+def calibrate_past_rain(
+    rain_hourly: Mapping[datetime, float],
+    t0: datetime,
+    observed: Optional[RainfallSummary],
+) -> tuple[dict[datetime, float], dict]:
+    """Scale past hourly rain so window sums match realtime multi-source rain.
+
+    Windows (anchored at floor(t0), hour-end keys): (t0-24h, t0],
+    (t0-72h, t0-24h], (t0-168h, t0-72h]. Each window gets its own factor,
+    capped to [1/3, 3], applied only to that window. When the model has no
+    rain in a window but observations do, the observed amount is spread
+    uniformly over the window.
     """
-    Generate detailed risk forecast for the next hours (default: 7 days).
+    out = dict(rain_hourly)
+    info: dict = {}
+    if observed is None:
+        return out, info
 
-    Uses:
-    - Open-Meteo hourly precipitation forecast (AROME/ARPEGE)
-    - Tide predictions with coefficients
-    - Upstream station levels with propagation delays
-    - Current soil moisture for saturation factor
-    - Multi-station momentum (v3.0)
+    base = floor_hour(t0)
+    windows = [
+        ("24h", 0, 24, observed.last_24h_mm),
+        ("72h", 24, 72, max(0.0, observed.last_72h_mm - observed.last_24h_mm)),
+        ("7d", 72, 168, max(0.0, observed.last_7d_mm - observed.last_72h_mm)),
+    ]
+    for name, k_from, k_to, target in windows:
+        keys = [base - timedelta(hours=k) for k in range(k_from, k_to)]
+        model_sum = sum(out.get(k, 0.0) for k in keys)
+        if model_sum > 0.1:
+            factor = min(CALIBRATION_MAX_FACTOR, max(CALIBRATION_MIN_FACTOR, target / model_sum))
+            if abs(factor - 1.0) > 1e-9:
+                for k in keys:
+                    if k in out:
+                        out[k] *= factor
+            info[name] = {"factor": round(factor, 3), "model_mm": round(model_sum, 1), "observed_mm": round(target, 1)}
+        elif target > 1.0:
+            per_hour = target / len(keys)
+            for k in keys:
+                out[k] = out.get(k, 0.0) + per_hour
+            info[name] = {"injected_mm": round(target, 1)}
+    return out, info
 
-    Returns:
-        dict with:
-        - generated_at: timestamp
-        - hours_ahead: int
-        - forecasts: list of hourly predictions
-        - max_risk: highest score in forecast
-        - critical_periods: list of ORANGE/RED periods
-        - summary: text summary of upcoming risk
-    """
-    # Check cache first
-    cached = await _get_cached_forecast(hours)
-    if cached:
-        logger.info("forecast: from Redis cache")
-        return cached
 
-    from app.services.collectors.tide import get_current_tide_data
-    from app.services.collectors.weather import (
-        fetch_open_meteo_forecast,
-        fetch_past_hourly_rain,
-        fetch_soil_and_wind,
-        get_rainfall_summary,
+def _rain_after_t0(rain_hourly: Mapping[datetime, float], base: datetime, k_from: int, k_to: int) -> float:
+    """Rain of hours ending at base+k for k in [max(1,k_from), k_to] (post-t0 only)."""
+    return sum(
+        rain_hourly.get(base + timedelta(hours=k), 0.0)
+        for k in range(max(1, k_from), k_to + 1)
     )
-    from app.services.collectors.hubeau import get_multi_station_data
-    from app.services.risk_v2 import (
-        _calculate_momentum_score,
-        _calculate_conjunction_multiplier,
-        _calculate_stability_dampener,
+
+
+def _rain_driven_rising(rain_mm: float) -> int:
+    """Rising stations expected from rain that reached the rivers."""
+    if rain_mm >= 40:
+        return 5
+    if rain_mm >= 25:
+        return 4
+    if rain_mm >= 15:
+        return 3
+    if rain_mm >= 8:
+        return 2
+    if rain_mm >= 3:
+        return 1
+    return 0
+
+
+def _project_level(
+    station: StationFeature,
+    delay_h: float,
+    h: int,
+    rain_hourly: Mapping[datetime, float],
+    base: datetime,
+    saturation: float,
+) -> float:
+    """Projected level of a station at H+h."""
+    # Component 1: current trend continues (capped)
+    trend_m = (station.rate_cm_h / 100.0) * min(h, TREND_EXTRAPOLATION_MAX_H)
+
+    # Component 2: rain falling AFTER t0, lagged (rain before t0 is already
+    # contained in the current level and its trend)
+    rain_mm = _rain_after_t0(
+        rain_hourly, base,
+        h - RAIN_RESPONSE_DELAY_H - RAIN_RESPONSE_DURATION_H,
+        h - RAIN_RESPONSE_DELAY_H,
     )
-    from app.models.schemas import Tendency
+    runoff_factor = 0.3 + (saturation - 1.0) * 0.8  # 0.3 dry, 0.7 saturated
+    rain_response_m = rain_mm * RAIN_TO_LEVEL_COEF * runoff_factor
+    station_rain_delay = max(0.0, RAIN_RESPONSE_DELAY_H - delay_h)
+    if h >= station_rain_delay:
+        rain_rise = rain_response_m
+    else:
+        rain_rise = rain_response_m * (h / max(1.0, station_rain_delay))
 
-    settings = get_settings()
-    now = datetime.utcnow()
-    forecast_days = min((hours // 24) + 1, 16)
+    return max(0.0, station.height_m + min(trend_m + rain_rise, MAX_RISE_M))
 
-    # Track data source status for response
-    data_sources = {}
 
-    # Fetch each data source independently for graceful degradation
-    tide_data = None
-    try:
-        tide_data = await get_current_tide_data()
-        data_sources["tide"] = {"status": "ok", "port": tide_data.port}
-    except Exception as e:
-        logger.error("Forecast: tide data fetch failed: %s", e)
-        data_sources["tide"] = {"status": "error", "error": str(e)}
+def build_forecast_features(fi: ForecastInputs, h: int) -> tuple[RiskFeatures, Optional[float]]:
+    """Risk features at H+h, plus the projected primary level (display)."""
+    base = floor_hour(fi.t0)
+    t_h = fi.t0 + timedelta(hours=h)
+    saturation = fi.soil_saturation_factor if fi.soil_saturation_factor is not None else 1.0
 
-    rain_forecast = []
-    try:
-        rain_forecast = await fetch_open_meteo_forecast(
-            settings.moulin_lat, settings.moulin_lon, forecast_days
-        )
-        data_sources["rain"] = {
-            "status": "ok" if rain_forecast else "empty",
-            "source": "Open-Meteo (AROME/ARPEGE)",
-            "hours": len(rain_forecast),
-        }
-    except Exception as e:
-        logger.error("Forecast: rain forecast fetch failed: %s", e)
-        data_sources["rain"] = {"status": "error", "error": str(e)}
+    # --- Projected stations (same scoring path as realtime) ---
+    stations = []
+    primary_level = None
+    for s in fi.stations:
+        if h == 0:
+            height, rate = s.height_m, s.rate_cm_h
+        else:
+            delay = fi.station_delays.get(s.station_id, 0.0)
+            height = _project_level(s, delay, h, fi.rain_hourly, base, saturation)
+            prev = _project_level(s, delay, h - 1, fi.rain_hourly, base, saturation)
+            rate = (height - prev) * 100.0
+        stations.append(StationFeature(
+            station_id=s.station_id,
+            station_name=s.station_name,
+            river=s.river,
+            height_m=height,
+            rate_cm_h=rate,
+            weight=s.weight,
+            thresholds=s.thresholds,
+            display_tendency=s.display_tendency if h == 0 else None,
+        ))
+        if s.station_id == fi.primary_station_id:
+            primary_level = height
 
-    soil_wind = {}
-    try:
-        soil_wind = await fetch_soil_and_wind(
-            settings.moulin_lat, settings.moulin_lon
-        )
-        data_sources["soil_wind"] = {"status": "ok"}
-    except Exception as e:
-        logger.error("Forecast: soil/wind fetch failed: %s", e)
-        data_sources["soil_wind"] = {"status": "error", "error": str(e)}
+    # --- Projected rising count: current count decays, rain after t0 adds ---
+    active = [s for s in fi.stations if s.weight > 0]
+    n_rising_now = sum(1 for s in active if s.rate_cm_h > RISING_RATE_CM_H)
+    decay = max(0.0, 1.0 - h / MOMENTUM_DECAY_H)
+    rain_reaching_rivers = _rain_after_t0(
+        fi.rain_hourly, base,
+        h - RAIN_RESPONSE_DELAY_H - RAIN_RESPONSE_DURATION_H,
+        h - RAIN_RESPONSE_DELAY_H,
+    )
+    rain_rising = min(_rain_driven_rising(rain_reaching_rivers), len(active))
+    n_rising = max(round(n_rising_now * decay), rain_rising)
 
-    stations_data = None
-    try:
-        stations_data = await get_multi_station_data()
-        n_stations = len(stations_data.stations) if stations_data else 0
-        data_sources["river"] = {
-            "status": "ok" if n_stations > 0 else "empty",
-            "stations": n_stations,
-        }
-    except Exception as e:
-        logger.error("Forecast: station data fetch failed: %s", e)
-        data_sources["river"] = {"status": "error", "error": str(e)}
+    # --- Rain windows ---
+    if h == 0 and fi.observed_rain is not None:
+        # H+0 is the realtime nowcast: same rain inputs as /api/realtime
+        obs = fi.observed_rain
+        rain_24h, rain_72h, rain_7d = obs.last_24h_mm, obs.last_72h_mm, obs.last_7d_mm
+        fc_24h, fc_72h = obs.forecast_24h_mm, obs.forecast_72h_mm
+    else:
+        t_key = base + timedelta(hours=h)
+        rain_24h = rain_window_sum(fi.rain_hourly, t_key, 24)
+        rain_72h = rain_window_sum(fi.rain_hourly, t_key, 72)
+        rain_7d = rain_window_sum(fi.rain_hourly, t_key, 168)
+        fc_24h = rain_window_sum(fi.rain_hourly, t_key, 24, forward=True)
+        fc_72h = rain_window_sum(fi.rain_hourly, t_key, 72, forward=True)
 
-    # Fetch past observed hourly rainfall to seed cumulative calculations
-    # Without this, H+0 cumulative rain (24h, 72h) would be near-zero
-    # because rain_forecast only contains future predictions.
-    past_rain_hourly: dict[int, float] = {}
-    try:
-        past_rain_hourly = await fetch_past_hourly_rain(
-            settings.moulin_lat, settings.moulin_lon, past_days=7
-        )
-        data_sources["rain_past"] = {
-            "status": "ok" if past_rain_hourly else "empty",
-            "hours": len(past_rain_hourly),
-        }
-    except Exception as e:
-        logger.warning("Forecast: past rain fetch failed: %s", e)
-        data_sources["rain_past"] = {"status": "error", "error": str(e)}
+    # --- Tide (same rule as realtime) ---
+    tide = risk_core.tide_at(t_h, fi.tide_highs, fallback_coefficient=fi.tide_fallback_coefficient)
+    tide_available = tide.available and fi.tide_reliable
 
-    # Fetch current realtime rain summary from multiple sources and take Max
-    # (same logic as /api/realtime route). Open-Meteo observed often underestimates
-    # vs actual rain gauges, especially during localized events.
-    realtime_rain = {}
-    try:
-        realtime_rain_data = await get_rainfall_summary()
-        best_24h = realtime_rain_data.last_24h_mm if realtime_rain_data else 0
-        best_72h = realtime_rain_data.last_72h_mm if realtime_rain_data else 0
-        # Enrich with Netatmo
-        try:
-            from app.services.collectors.netatmo import get_basin_rainfall
-            netatmo = await get_basin_rainfall()
-            if netatmo and netatmo.get("available"):
-                best_24h = max(best_24h, netatmo.get("rain_24h_avg_mm", 0) or 0)
-        except Exception:
-            pass
-        # Enrich with Infoclimat
-        try:
-            from app.services.collectors.infoclimat import get_infoclimat_data
-            infoclimat = await get_infoclimat_data()
-            if infoclimat and infoclimat.get("available"):
-                best_24h = max(best_24h, infoclimat.get("rain_24h_avg_mm", 0) or 0)
-        except Exception:
-            pass
-        realtime_rain = {"24h": best_24h, "72h": best_72h}
-    except Exception as e:
-        logger.warning("Forecast: realtime rain summary failed: %s", e)
+    # --- Wind ---
+    wind = fi.westerly_wind_kmh
+    if h > 0:
+        wind = fi.westerly_wind_hourly.get(base + timedelta(hours=h), wind)
 
-    # Build rainfall lookup by hour (negative = past, positive = future)
-    rain_by_hour: dict[int, float] = {}
-    # Past observed rain (negative indices: -168 to -1)
-    for hour_offset, precip_mm in past_rain_hourly.items():
-        rain_by_hour[hour_offset] = precip_mm
-    # Future forecast rain (positive indices: 0+)
-    for fc in rain_forecast:
-        hours_ahead = int((fc.timestamp - now).total_seconds() / 3600)
-        if 0 <= hours_ahead < hours:
-            rain_by_hour[hours_ahead] = fc.precipitation_mm
+    features = RiskFeatures(
+        timestamp=t_h,
+        stations=tuple(stations),
+        primary_station_id=fi.primary_station_id,
+        rain_24h_mm=rain_24h,
+        rain_72h_mm=rain_72h,
+        rain_7d_mm=rain_7d,
+        rain_forecast_24h_mm=fc_24h,
+        rain_forecast_72h_mm=fc_72h,
+        tide_available=tide_available,
+        tide_coefficient=tide.coefficient,
+        hours_to_high_tide=tide.hours_to_high_tide,
+        westerly_wind_kmh=wind,
+        soil_saturation_factor=fi.soil_saturation_factor,
+        n_rising_override=n_rising,
+    )
+    return features, primary_level
 
-    # Calibrate past rain against realtime multi-source data.
-    # If Open-Meteo observed underestimates vs actual gauges, scale up
-    # the past hourly rain proportionally so H+0 cumulative matches reality.
-    if realtime_rain.get("24h", 0) > 0 and past_rain_hourly:
-        past_24h_sum = sum(
-            rain_by_hour.get(h, 0.0) for h in range(-23, 1)
-        )
-        if past_24h_sum > 0:
-            correction_factor = realtime_rain["24h"] / past_24h_sum
-            if correction_factor > 1.2:  # Only correct if >20% underestimate
-                logger.info(
-                    "Forecast: rain calibration factor=%.2f (observed=%.1fmm, model=%.1fmm)",
-                    correction_factor, realtime_rain["24h"], past_24h_sum,
-                )
-                for h_offset in list(past_rain_hourly.keys()):
-                    if h_offset in rain_by_hour:
-                        rain_by_hour[h_offset] *= correction_factor
-        elif realtime_rain["24h"] > 1.0:
-            # No past hourly data but realtime shows rain: inject as uniform distribution
-            per_hour = realtime_rain["24h"] / 24.0
-            for h_offset in range(-23, 0):
-                rain_by_hour[h_offset] = rain_by_hour.get(h_offset, 0) + per_hour
 
-    # Build tide events lookup (safe even if tide_data is None)
-    tide_events = []
-    if tide_data and tide_data.tides:
-        for t in tide_data.tides:
-            hours_ahead = (t.timestamp - now).total_seconds() / 3600
-            if -12 <= hours_ahead <= hours + 12:
-                tide_events.append({
-                    "timestamp": t.timestamp,
-                    "type": t.tide_type.value if t.tide_type else None,
-                    "coefficient": t.coefficient,
-                    "height_m": t.height_m,
-                })
-        tide_events.sort(key=lambda t: t["timestamp"])
+def _display_hours_to_high(fi: ForecastInputs, t_h: datetime, value: Optional[float]) -> float:
+    if value is not None:
+        return value
+    if fi.tide_highs:
+        nearest = min(fi.tide_highs, key=lambda x: abs((x[0] - t_h).total_seconds()))
+        return (nearest[0] - t_h).total_seconds() / 3600
+    return 0.0
 
-    # Get current station levels and rates for projection
-    current_levels: dict[str, float] = {}
-    current_rates: dict[str, float] = {}
-    if stations_data:
-        for station in stations_data.stations:
-            if station.weight > 0:
-                current_levels[station.station_id] = station.current_level.height_m
-                current_rates[station.station_id] = station.rate_cm_per_hour
 
-    # Compute current momentum (number of rising stations)
-    n_rising = sum(1 for r in current_rates.values() if r > 1.0)
-    n_total = max(len(current_rates), 1)
-
-    # Soil saturation factor
-    saturation = soil_wind.get("soil_saturation_factor", 1.0)
-
-    # v3.0 weights (must match risk_v2.py)
-    weights = {
-        "river": 0.28,
-        "rain_24h": 0.10,
-        "rain_72h": 0.13,
-        "rain_7d": 0.05,
-        "tide": 0.05,
-        "tide_phase": 0.05,
-        "tendency": 0.13,
-        "momentum": 0.08,
-        "wind_west": 0.03,
-        "soil_sat": 0.05,
-        "video": 0.05,
-    }
-    # Exclude video (not available in forecast)
-    total_w = sum(weights.values()) - weights["video"]
-
-    # Generate hourly forecasts
-    forecasts = []
+def build_forecast(fi: ForecastInputs, hours: int) -> list[dict]:
+    """Hourly forecast entries for H+0..H+hours (pure)."""
+    params = risk_core.get_model_params()
+    base = floor_hour(fi.t0)
+    out = []
     for h in range(0, hours + 1):
-        forecast_time = now + timedelta(hours=h)
-
-        # --- Rain: cumulative 24h, 72h, 7d up to this hour ---
-        # Ranges can go negative to include past observed rain
-        rain_24h = sum(
-            rain_by_hour.get(hour, 0.0)
-            for hour in range(h - 23, h + 1)
-        )
-        rain_72h = sum(
-            rain_by_hour.get(hour, 0.0)
-            for hour in range(h - 71, h + 1)
-        )
-        rain_7d = sum(
-            rain_by_hour.get(hour, 0.0)
-            for hour in range(h - 167, h + 1)
-        )
-
-        # Apply saturation factor
-        rain_24h_eff = rain_24h * saturation
-        rain_72h_eff = rain_72h * saturation
-
-        # --- Tide: find coefficient and hours to high tide ---
-        tide_coef = 70
-        hours_to_high = 6.0
-
-        # Find closest high tide (before or after)
-        high_tides = [t for t in tide_events if t["type"] == "PM"]
-        if high_tides:
-            closest_ht = min(
-                high_tides,
-                key=lambda t: abs((t["timestamp"] - forecast_time).total_seconds()),
-            )
-            hours_to_high = (closest_ht["timestamp"] - forecast_time).total_seconds() / 3600
-            if closest_ht["coefficient"]:
-                tide_coef = closest_ht["coefficient"]
-
-        # --- River level projection with rainfall-driven hydrological model ---
-        #
-        # Key insight: River levels respond to rainfall with a delay.
-        # - Rain falls at T
-        # - Upstream stations (Bergerac, Périgueux) see rise at T+8-12h
-        # - Downstream stations (Pessac, moulin) see rise at T+16-24h
-        #
-        # Model: projected_level = current_level + rain_response + current_trend
-        # rain_response = cumulative_rain_with_delay * runoff_coefficient * saturation
-
-        # Hydrological response parameters (calibrated from Feb 2024 flood)
-        # Feb 2024: ~100mm over 3 days caused ~1.5m rise at Pessac
-        RAIN_TO_LEVEL_COEF = 0.008  # m of river rise per mm of rain (after runoff)
-        RAIN_RESPONSE_DELAY_H = 18  # Hours for rain to affect river level
-        RAIN_RESPONSE_DURATION_H = 36  # Hours over which rain effect persists
-
-        # Calculate rain that will have affected rivers by hour h
-        # Rain at hour (h - RAIN_RESPONSE_DELAY_H) affects level at hour h
-        # Range can go negative to account for past rain driving current levels
-        rain_affecting_rivers = 0.0
-        for rain_h in range(h - RAIN_RESPONSE_DELAY_H - RAIN_RESPONSE_DURATION_H,
-                           h - RAIN_RESPONSE_DELAY_H + 1):
-            rain_affecting_rivers += rain_by_hour.get(rain_h, 0.0)
-
-        # Apply saturation factor (saturated soil = more runoff = higher response)
-        runoff_factor = 0.3 + (saturation - 1.0) * 0.8  # 0.3 dry, 0.7 saturated
-        rain_response_m = rain_affecting_rivers * RAIN_TO_LEVEL_COEF * runoff_factor
-
-        # --- River level projection and per-station scoring ---
-        # Score each station individually against its own thresholds (like risk_v2),
-        # then weighted-average the scores. This avoids the problem of averaging
-        # levels across stations with very different scales before normalizing.
-        #
-        # projected_level is the PRIMARY station (Pessac) projection for display.
-        # The weighted average of all stations dilutes the signal (e.g. Pessac at 6m
-        # averaged with Ribérac at 0.5m gives ~3m, which is misleading on the timeline).
-        projected_level = 2.0
-        primary_station_projected = None
-        river_score = 0.0
-        total_weight = 0.0
-
-        for station_cfg in settings.hubeau_stations:
-            sid = station_cfg["id"]
-            weight = station_cfg.get("weight", 0)
-            delay = station_cfg.get("delay_hours", 0)
-            thresholds = station_cfg.get("thresholds", {})
-
-            if weight <= 0 or sid not in current_levels:
-                continue
-
-            base_level = current_levels[sid]
-            rate = current_rates.get(sid, 0)
-
-            # Component 1: Current trend extrapolation (capped at 12h)
-            if h >= delay:
-                trend_projection = (rate / 100) * min(h - delay, 12)
-            else:
-                trend_projection = 0
-
-            # Component 2: Rain-driven rise (with station-specific delay)
-            # Upstream stations respond earlier to rain
-            station_rain_delay = max(0, RAIN_RESPONSE_DELAY_H - delay)
-            if h >= station_rain_delay:
-                rain_driven_rise = rain_response_m
-            else:
-                # Partial response before full delay
-                rain_driven_rise = rain_response_m * (h / max(1, station_rain_delay))
-
-            # Combined projection
-            # Cap rise based on historical max (Feb 2024: ~+1.5m at Pessac)
-            max_rise = 2.0  # Maximum realistic rise in m
-            projected = base_level + min(trend_projection + rain_driven_rise, max_rise)
-            projected = max(0, projected)
-
-            # Track primary station (Pessac) for display
-            if sid == settings.hubeau_primary_station:
-                primary_station_projected = projected
-
-            # Score this station against its OWN thresholds
-            station_thresholds = (
-                thresholds.get("yellow", settings.risk_dordogne_level_yellow),
-                thresholds.get("orange", settings.risk_dordogne_level_orange),
-                thresholds.get("red", settings.risk_dordogne_level_red),
-            )
-            station_score = _normalize_score(projected, station_thresholds)
-            river_score += station_score * weight
-            total_weight += weight
-
-        if total_weight > 0:
-            river_score /= total_weight
-        # Display projected level = primary station (Pessac), not diluted average
-        if primary_station_projected is not None:
-            projected_level = primary_station_projected
-
-        # --- Calculate factor scores ---
-        rain_24h_score = _normalize_score(
-            rain_24h_eff,
-            (settings.risk_rain_24h_yellow, settings.risk_rain_24h_orange, settings.risk_rain_24h_red),
-        )
-        rain_72h_score = _normalize_score(
-            rain_72h_eff,
-            (settings.risk_rain_24h_yellow * 2, settings.risk_rain_24h_orange * 2, settings.risk_rain_24h_red * 2),
-        )
-        rain_7d_score = _normalize_score(rain_7d, (60.0, 100.0, 150.0))
-        tide_score = _normalize_score(tide_coef, (70, settings.risk_tide_coef_high, 110))
-
-        # Tide phase score
-        if abs(hours_to_high) <= 1:
-            tide_phase_score = 1.0
-        elif abs(hours_to_high) <= 2:
-            tide_phase_score = 0.8
-        elif abs(hours_to_high) <= 3:
-            tide_phase_score = 0.5
-        elif abs(hours_to_high) <= 4:
-            tide_phase_score = 0.3
-        else:
-            tide_phase_score = 0.1
-
-        # Tendency and momentum: ANTICIPATE based on rainfall forecast
-        #
-        # Key insight: Heavy rain WILL cause rivers to rise 12-24h later.
-        # We should anticipate this in the risk score NOW, not wait for it.
-
-        # Current momentum decay
-        decay = max(0.0, 1.0 - h / 48.0) if h > 0 else 1.0
-        current_momentum = n_rising * decay
-
-        # Rain-driven momentum prediction
-        # Thresholds calibrated from historical floods:
-        # - 10mm cumul -> 1-2 stations rising
-        # - 20mm cumul -> 3 stations rising
-        # - 40mm cumul -> 4-5 stations rising
-        if rain_affecting_rivers >= 40:
-            rain_driven_rising = 5
-        elif rain_affecting_rivers >= 25:
-            rain_driven_rising = 4
-        elif rain_affecting_rivers >= 15:
-            rain_driven_rising = 3
-        elif rain_affecting_rivers >= 8:
-            rain_driven_rising = 2
-        elif rain_affecting_rivers >= 3:
-            rain_driven_rising = 1
-        else:
-            rain_driven_rising = 0
-
-        # Combine: take maximum of current trend and rain-predicted momentum
-        proj_n_rising = max(round(current_momentum), rain_driven_rising)
-
-        if proj_n_rising >= 3:
-            tendency_score = 0.7
-        elif proj_n_rising >= 1:
-            tendency_score = 0.5
-        else:
-            tendency_score = 0.0
-
-        tendency = Tendency.RISING if proj_n_rising >= 2 else (Tendency.STABLE if proj_n_rising == 1 else Tendency.FALLING)
-
-        # Momentum score (v3.0 with river gate)
-        momentum_score = _calculate_momentum_score(
-            n_rising=proj_n_rising, n_total=n_total, river_score=river_score,
-        )
-
-        # Conjunction multiplier (v3.0)
-        conjunction = _calculate_conjunction_multiplier(
-            river_score, tide_phase_score, tendency,
-            rain_72h_score=rain_72h_score, rain_24h_score=rain_24h_score,
-            n_rising=proj_n_rising,
-        )
-
-        # Stability dampener (v3.0)
-        dampener = _calculate_stability_dampener(
-            river_score, tendency, n_rising=proj_n_rising,
-        )
-
-        # Weighted calculation (v3.0 weights)
-        weighted = (
-            river_score * weights["river"] +
-            rain_24h_score * weights["rain_24h"] +
-            rain_72h_score * weights["rain_72h"] +
-            rain_7d_score * weights["rain_7d"] +
-            tide_score * weights["tide"] +
-            tide_phase_score * weights["tide_phase"] +
-            tendency_score * weights["tendency"] +
-            momentum_score * weights["momentum"]
-        )
-
-        weighted *= conjunction
-        weighted *= dampener
-        score = min((weighted / total_w) * 100, 100)
-
-        level = _score_to_level(score)
-
-        forecasts.append({
-            "timestamp": forecast_time.isoformat(),
+        features, primary_level = build_forecast_features(fi, h)
+        bd = compute_risk(features, params)
+        out.append({
+            "timestamp": _iso_utc(features.timestamp),
             "hours_ahead": h,
-            "score": round(score, 1),
-            "level": level.value,
-            "rain_1h_mm": round(rain_by_hour.get(h, 0.0), 1),
-            "rain_24h_mm": round(rain_24h, 1),
-            "rain_72h_mm": round(rain_72h, 1),
-            "tide_coefficient": tide_coef,
-            "hours_to_high_tide": round(hours_to_high, 1),
-            "projected_level_m": round(projected_level, 2),
+            "score": bd.score,
+            "level": bd.level.value,
+            "rain_1h_mm": round(fi.rain_hourly.get(base + timedelta(hours=h + 1), 0.0), 1),
+            "rain_24h_mm": round(features.rain_24h_mm, 1),
+            "rain_72h_mm": round(features.rain_72h_mm, 1),
+            "tide_coefficient": bd.tide_coefficient or params.default_tide_coefficient,
+            "hours_to_high_tide": round(_display_hours_to_high(fi, features.timestamp, bd.hours_to_high_tide), 1),
+            "tide_available": bd.tide_available,
+            "projected_level_m": round(primary_level, 2) if primary_level is not None else 0.0,
+            "n_rising": bd.n_rising,
+            "conjunction_multiplier": round(bd.conjunction_multiplier, 2),
+            "stability_dampener": round(bd.stability_dampener, 2),
         })
+    return out
 
-    # Find critical periods
-    critical = [f for f in forecasts if f["level"] in ["orange", "red"]]
 
-    # Generate summary
-    max_score = max(f["score"] for f in forecasts) if forecasts else 0
-    max_level = _score_to_level(max_score)
+def summarize_forecast(forecasts: list[dict], hours: int, data_sources: dict) -> dict:
+    """Summary fields (max risk, critical periods, text)."""
+    critical = [f for f in forecasts if f["level"] in ("orange", "red")]
+    max_score = max((f["score"] for f in forecasts), default=0)
+    max_level = score_to_level(max_score)
 
     if max_level == RiskLevel.RED:
         summary = f"ALERTE: Risque ROUGE prévu (max {max_score:.0f}/100)"
@@ -548,7 +381,6 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
     else:
         summary = "Conditions favorables prévues"
 
-    # Count critical hours
     red_hours = sum(1 for f in forecasts if f["level"] == "red")
     orange_hours = sum(1 for f in forecasts if f["level"] == "orange")
     if red_hours > 0:
@@ -556,34 +388,195 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
     if orange_hours > 0:
         summary += f" - {orange_hours}h en orange"
 
-    # Note degraded sources in summary
-    failed_sources = [k for k, v in data_sources.items() if v.get("status") == "error"]
-    if failed_sources:
-        summary += f" (sources indisponibles: {', '.join(failed_sources)})"
+    failed = [k for k, v in data_sources.items() if isinstance(v, dict) and v.get("status") == "error"]
+    if failed:
+        summary += f" (sources indisponibles: {', '.join(failed)})"
 
-    # Duration label
-    if hours >= 168:
-        duration_label = "7 jours"
-    elif hours >= 72:
-        duration_label = f"{hours}h"
-    else:
-        duration_label = f"{hours}h"
-
-    result = {
-        "generated_at": now.isoformat(),
-        "hours_ahead": hours,
-        "duration_label": duration_label,
-        "forecasts": forecasts,
+    return {
+        "duration_label": "7 jours" if hours >= 168 else f"{hours}h",
         "max_risk": round(max_score, 1),
         "max_level": max_level.value,
         "critical_periods": critical,
         "summary": summary,
-        "data_sources": data_sources,
     }
 
-    # Cache result
-    await _set_cached_forecast(hours, result)
 
+# ---------------------------------------------------------------------------
+# I/O
+# ---------------------------------------------------------------------------
+
+async def _fetch_past_hourly_rain_utc(lat: float, lon: float, past_days: int = 7) -> dict[datetime, float]:
+    """Past observed hourly rain from Open-Meteo, keyed by hour END (naive UTC)."""
+    import httpx
+    from app.services.collectors.weather import OPEN_METEO_CURRENT
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            OPEN_METEO_CURRENT,
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "hourly": "precipitation",
+                "past_days": past_days,
+                "forecast_days": 1,
+                "timezone": "UTC",
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        hourly = response.json().get("hourly", {})
+
+    out: dict[datetime, float] = {}
+    for time_str, mm in zip(hourly.get("time", []), hourly.get("precipitation", [])):
+        if mm is None:
+            continue
+        out[datetime.fromisoformat(time_str)] = float(mm)
+    return out
+
+
+async def _fetch_tide_highs_from_influx(port: str, start: datetime, end: datetime) -> list[tuple[datetime, Optional[int]]]:
+    """Stored tide predictions -> high tides (ts, coefficient) in [start, end]."""
+    from app.services import influx_client
+    from app.services.risk_v2 import tide_inputs_from_records
+
+    rows = await influx_client.query_tides(port, start, end)
+    highs, coefs = tide_inputs_from_records(rows)
+    result = []
+    for ts, _ in highs:
+        coef = None
+        if coefs:
+            c_ts, c = min(coefs, key=lambda x: abs((x[0] - ts).total_seconds()))
+            if abs((c_ts - ts).total_seconds()) <= 3600:
+                coef = c
+        result.append((ts, coef))
+    return result
+
+
+async def get_risk_forecast_v2(hours: int = 168) -> dict:
+    """
+    Generate detailed risk forecast for the next hours (default: 7 days).
+
+    Returns:
+        dict with generated_at, hours_ahead, forecasts (hourly), max_risk,
+        max_level, critical_periods, summary, data_sources, model_version.
+    """
+    cached = await _get_cached_forecast(hours)
+    if cached:
+        logger.info("forecast: from Redis cache")
+        return cached
+
+    from app.services.collectors.weather import fetch_open_meteo_forecast
+    from app.services.risk_v2 import (
+        gather_realtime_inputs,
+        station_features_from_multi,
+        tide_forecast_is_reliable,
+        tide_high_list,
+    )
+
+    settings = get_settings()
+    now = datetime.utcnow()
+    base = floor_hour(now)
+    forecast_days = min((hours // 24) + 2, 16)
+    data_sources: dict = {}
+
+    # Realtime inputs (same as /api/realtime -> H+0 == realtime score)
+    inputs = None
+    try:
+        inputs = await gather_realtime_inputs(now)
+        n_stations = len(inputs.stations.stations) if inputs.stations else 0
+        data_sources["river"] = {"status": "ok" if n_stations > 0 else "empty", "stations": n_stations}
+        data_sources["tide"] = (
+            {"status": "ok", "port": inputs.tide.port}
+            if inputs.tide and tide_forecast_is_reliable(inputs.tide)
+            else {"status": "estimated" if inputs.tide else "error"}
+        )
+        data_sources["soil_wind"] = {"status": "ok" if inputs.soil_wind else "empty"}
+    except Exception as e:
+        logger.error("Forecast: realtime inputs failed: %s", e)
+        data_sources["river"] = {"status": "error", "error": str(e)}
+
+    # Future rain forecast (hourly, converted to UTC, hour-end keys)
+    rain_hourly: dict[datetime, float] = {}
+    wind_hourly: dict[datetime, float] = {}
+    try:
+        rain_forecast = await fetch_open_meteo_forecast(
+            settings.moulin_lat, settings.moulin_lon, forecast_days
+        )
+        for fc in rain_forecast:
+            key = forecast_ts_to_utc(fc.timestamp)
+            if key > base:
+                rain_hourly[key] = fc.precipitation_mm or 0.0
+                westerly = westerly_component(fc.wind_speed_kmh, fc.wind_direction_deg)
+                if westerly is not None:
+                    wind_hourly[key] = westerly
+        data_sources["rain"] = {
+            "status": "ok" if rain_forecast else "empty",
+            "source": "Open-Meteo (AROME/ARPEGE)",
+            "hours": len(rain_forecast),
+        }
+    except Exception as e:
+        logger.error("Forecast: rain forecast fetch failed: %s", e)
+        data_sources["rain"] = {"status": "error", "error": str(e)}
+
+    # Past observed rain (UTC), only hours ending at or before t0
+    try:
+        past = await _fetch_past_hourly_rain_utc(settings.moulin_lat, settings.moulin_lon, past_days=7)
+        past = {k: v for k, v in past.items() if k <= base}
+        rain_hourly.update(past)
+        data_sources["rain_past"] = {"status": "ok" if past else "empty", "hours": len(past)}
+    except Exception as e:
+        logger.warning("Forecast: past rain fetch failed: %s", e)
+        data_sources["rain_past"] = {"status": "error", "error": str(e)}
+
+    observed = inputs.rainfall if inputs else None
+    rain_hourly, calibration = calibrate_past_rain(rain_hourly, now, observed)
+    if calibration:
+        data_sources["rain_calibration"] = {"status": "ok", **calibration}
+
+    # Tides: realtime forecast list extended with stored predictions
+    tide = inputs.tide if inputs else None
+    tide_highs = tide_high_list(tide)
+    try:
+        last_known = max((ts for ts, _ in tide_highs), default=now)
+        extra = await _fetch_tide_highs_from_influx(
+            tide.port if tide else settings.tide_port_bordeaux,
+            last_known + timedelta(minutes=1),
+            now + timedelta(hours=hours + 13),
+        )
+        tide_highs = sorted(tide_highs + [x for x in extra if x[0] > last_known])
+    except Exception as e:
+        logger.warning("Forecast: stored tide predictions unavailable: %s", e)
+
+    stations = station_features_from_multi(inputs.stations, now) if inputs else ()
+    fi = ForecastInputs(
+        t0=now,
+        stations=stations,
+        primary_station_id=(
+            inputs.stations.primary_station_id if inputs and inputs.stations
+            else settings.hubeau_primary_station
+        ),
+        station_delays={s["id"]: float(s.get("delay_hours", 0)) for s in settings.hubeau_stations},
+        rain_hourly=rain_hourly,
+        observed_rain=observed,
+        tide_highs=tide_highs,
+        tide_fallback_coefficient=tide.current_coefficient if tide else None,
+        tide_reliable=tide_forecast_is_reliable(tide),
+        soil_saturation_factor=inputs.soil_saturation_factor if inputs else None,
+        westerly_wind_kmh=inputs.westerly_wind_kmh if inputs else None,
+        westerly_wind_hourly=wind_hourly,
+    )
+
+    forecasts = build_forecast(fi, hours)
+    result = {
+        "generated_at": _iso_utc(now),
+        "hours_ahead": hours,
+        "forecasts": forecasts,
+        "data_sources": data_sources,
+        "model_version": MODEL_VERSION,
+        **summarize_forecast(forecasts, hours, data_sources),
+    }
+
+    await _set_cached_forecast(hours, result)
     return result
 
 

@@ -6,9 +6,13 @@ Periodically collects data from:
 - Weather services
 - Netatmo (rainfall)
 - Camera snapshots
+
+and computes + stores the realtime risk score every hour (the only writer
+of realtime risk points; API reads never store).
 """
 
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -19,8 +23,14 @@ from app.services.collectors.netatmo import get_basin_rainfall, store_rainfall_t
 from app.services.collectors.meteo_agricole import collect_and_store_meteo_agricole, collect_and_store_nowcast_rain
 from app.services.data_store import _fetch_and_store_river_levels
 
+logger = logging.getLogger(__name__)
+
 # Global scheduler instance
 _scheduler: Optional[AsyncIOScheduler] = None
+
+# Delay before the first risk computation, so the initial collections
+# (started immediately, in the background) have populated caches.
+RISK_JOB_FIRST_RUN_DELAY = timedelta(minutes=2)
 
 
 async def collect_tide_job():
@@ -84,6 +94,20 @@ async def collect_nowcast_rain_job():
         print(f"[{datetime.now()}] Error collecting nowcast rain data: {e}")
 
 
+async def compute_risk_job():
+    """Job to compute the realtime risk score and store it (model v3.3)."""
+    try:
+        from app.services.risk_v2 import compute_current_risk
+
+        risk, _ = await compute_current_risk(store=True)
+        logger.info(
+            "Risk score computed and stored: %.1f (%s, model %s)",
+            risk.score, risk.level.value, risk.model_version,
+        )
+    except Exception as e:
+        logger.error("Error computing risk score: %s", e)
+
+
 async def collect_camera_job():
     """Job to capture camera snapshot and analyze."""
     from app.config import get_settings
@@ -101,19 +125,26 @@ async def collect_camera_job():
 
 
 async def start_scheduler():
-    """Start the background scheduler."""
+    """Start the background scheduler.
+
+    Initial collections run immediately as scheduled jobs
+    (``next_run_time=now``) instead of being awaited here, so the API starts
+    serving without waiting for external sources.
+    """
     global _scheduler
 
     if _scheduler is not None:
         return
 
-    _scheduler = AsyncIOScheduler()
+    _scheduler = AsyncIOScheduler(timezone=timezone.utc)
+    now = datetime.now(timezone.utc)
 
     # Tide data: every 6 hours (predictions are stable)
     _scheduler.add_job(
         collect_tide_job,
         trigger=IntervalTrigger(hours=6),
         id="tide_collector",
+        next_run_time=now,
         name="Collect tide data",
         replace_existing=True,
     )
@@ -123,6 +154,7 @@ async def start_scheduler():
         collect_river_job,
         trigger=IntervalTrigger(minutes=15),
         id="river_collector",
+        next_run_time=now,
         name="Collect river levels",
         replace_existing=True,
     )
@@ -132,6 +164,7 @@ async def start_scheduler():
         collect_weather_job,
         trigger=IntervalTrigger(hours=1),
         id="weather_collector",
+        next_run_time=now,
         name="Collect weather data",
         replace_existing=True,
     )
@@ -141,6 +174,7 @@ async def start_scheduler():
         collect_netatmo_job,
         trigger=IntervalTrigger(minutes=15),
         id="netatmo_collector",
+        next_run_time=now,
         name="Collect Netatmo rainfall",
         replace_existing=True,
     )
@@ -150,6 +184,7 @@ async def start_scheduler():
         collect_meteo_agricole_job,
         trigger=IntervalTrigger(hours=6),
         id="meteo_agricole_collector",
+        next_run_time=now,
         name="Collect Meteo Agricole data",
         replace_existing=True,
     )
@@ -159,7 +194,18 @@ async def start_scheduler():
         collect_nowcast_rain_job,
         trigger=IntervalTrigger(minutes=5),
         id="nowcast_rain_collector",
+        next_run_time=now,
         name="Collect nowcast rain radar",
+        replace_existing=True,
+    )
+
+    # Realtime risk score: computed and stored every hour
+    _scheduler.add_job(
+        compute_risk_job,
+        trigger=IntervalTrigger(hours=1),
+        id="risk_scorer",
+        name="Compute and store realtime risk score",
+        next_run_time=now + RISK_JOB_FIRST_RUN_DELAY,
         replace_existing=True,
     )
 
@@ -176,15 +222,7 @@ async def start_scheduler():
         )
 
     _scheduler.start()
-    print("Background scheduler started")
-
-    # Run initial collection
-    await collect_tide_job()
-    await collect_river_job()
-    await collect_weather_job()
-    await collect_netatmo_job()
-    await collect_meteo_agricole_job()
-    await collect_nowcast_rain_job()
+    logger.info("Background scheduler started (initial collections running in background)")
 
 
 async def stop_scheduler():
@@ -194,7 +232,7 @@ async def stop_scheduler():
     if _scheduler is not None:
         _scheduler.shutdown(wait=False)
         _scheduler = None
-        print("Background scheduler stopped")
+        logger.info("Background scheduler stopped")
 
 
 def get_scheduler_status() -> dict:
