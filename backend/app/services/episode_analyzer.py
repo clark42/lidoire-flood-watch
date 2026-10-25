@@ -36,7 +36,7 @@ async def analyze_episode(
 
     Fetches and aggregates data from:
     - Tides (coefficients, heights, phases)
-    - River levels (Dordogne at Libourne)
+    - River levels (Dordogne at Pessac, primary non-tidal station)
     - Rainfall (observed, on Lidoire basin)
     - Video analysis (if available)
 
@@ -53,7 +53,7 @@ async def analyze_episode(
     # Fetch historical data
     tides = await get_historical_tides(start, end)
     river_levels = await get_historical_river_levels(
-        settings.vigicrues_station_libourne,
+        settings.hubeau_primary_station,  # Pessac: Libourne is tidal
         start,
         end,
     )
