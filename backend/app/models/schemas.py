@@ -181,6 +181,9 @@ class StationRiskScore(BaseModel):
     weighted_score: float
     tendency: Tendency
     rate_cm_per_hour: float = 0.0
+    # v3.3: linear (pre-curve) score and height >= orange threshold
+    linear_score: Optional[float] = None
+    above_orange: Optional[bool] = None
 
 
 class RiskFactors(BaseModel):
@@ -206,6 +209,13 @@ class RiskFactors(BaseModel):
     tide_coefficient_raw: Optional[int] = None
     tide_hours_to_high: Optional[float] = None
     tendency_rate_cm_h: Optional[float] = None
+    # v3.3 auditability
+    stability_dampener: float = Field(1.0, ge=0, le=1)
+    n_rising_stations: Optional[int] = None
+    n_above_orange: Optional[int] = None
+    tide_available: bool = True
+    unavailable_factors: list[str] = []
+    notes: list[str] = []
 
 
 class RiskScore(BaseModel):
@@ -216,6 +226,9 @@ class RiskScore(BaseModel):
     factors: RiskFactors
     description: str
     recommendations: list[str] = []
+    model_version: Optional[str] = None
+
+    model_config = {"protected_namespaces": ()}
 
 
 # Flood episodes
