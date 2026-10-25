@@ -41,13 +41,13 @@ export default function Timeline() {
 
   // Sources — initialized from URL
   const [selectedRiverStations, setSelectedRiverStations] = useState<string[]>(
-    () => parseParamList('rivers', ['P577001001'])
+    () => parseParamList('rivers', ['P555001001'])
   )
   const [selectedRainfallStations, setSelectedRainfallStations] = useState<string[]>(
-    () => parseParamList('rain', [])
+    () => parseParamList('rain', ['netatmo-lidoire:Saint-Remy'])
   )
   const [tideEnabled, setTideEnabled] = useState(() => searchParams.get('tide') !== '0')
-  const [riskEnabled, setRiskEnabled] = useState(() => searchParams.get('risk') === '1')
+  const [riskEnabled, setRiskEnabled] = useState(() => searchParams.get('risk') !== '0')
   const [soilEnabled, setSoilEnabled] = useState(() => searchParams.get('soil') === '1')
   const [infoclimatEnabled, setInfoclimatEnabled] = useState(() => searchParams.get('infoclimat') !== '0')
   const [windEnabled, setWindEnabled] = useState(() => searchParams.get('wind') === '1')

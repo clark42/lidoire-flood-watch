@@ -178,15 +178,17 @@ export default function RainfallPanel({
               <div className={`text-xl font-bold ${getRainIntensityColor(netatmo?.rain_1h_avg_mm || 0)}`}>
                 {netatmo?.rain_1h_avg_mm?.toFixed(1) || '0.0'} mm
               </div>
+              <div className="text-[10px] text-gray-400">Netatmo</div>
             </div>
             <div className="p-3 bg-gray-50 rounded-lg">
               <div className="text-xs text-gray-500 mb-1 flex items-center gap-1">
-                24 heures
+                24h observe
                 <InfoTooltip {...TOOLTIPS.rain24h} />
               </div>
               <div className={`text-xl font-bold ${getRainIntensityColor(netatmo?.rain_24h_avg_mm || 0)}`}>
                 {netatmo?.rain_24h_avg_mm?.toFixed(1) || '0.0'} mm
               </div>
+              <div className="text-[10px] text-gray-400">Netatmo bassin</div>
             </div>
             <div className="p-3 bg-blue-50 rounded-lg">
               <div className="text-xs text-blue-600 mb-1 flex items-center gap-1">
@@ -197,6 +199,7 @@ export default function RainfallPanel({
               <div className="text-xl font-bold text-blue-700">
                 {forecast?.forecast_24h_mm?.toFixed(1) || '0.0'} mm
               </div>
+              <div className="text-[10px] text-blue-400">Open-Meteo</div>
             </div>
             <div className="p-3 bg-blue-50 rounded-lg">
               <div className="text-xs text-blue-600 mb-1 flex items-center gap-1">
@@ -207,6 +210,7 @@ export default function RainfallPanel({
               <div className="text-xl font-bold text-blue-700">
                 {forecast?.forecast_72h_mm?.toFixed(1) || '0.0'} mm
               </div>
+              <div className="text-[10px] text-blue-400">Open-Meteo</div>
             </div>
           </div>
 

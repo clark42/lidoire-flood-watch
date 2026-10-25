@@ -294,8 +294,8 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricSparkline
           title="Dordogne"
-          value={`${(stations.find(s => s.station_id === 'P577001001')?.current_level.height_m || 0).toFixed(2)} m`}
-          subtitle={stations.find(s => s.station_id === 'P577001001')?.tendency}
+          value={`${(stations.find(s => s.station_id === 'P555001001')?.current_level.height_m || 0).toFixed(2)} m`}
+          subtitle={stations.find(s => s.station_id === 'P555001001')?.tendency}
           data={sparklineData.river}
           color="#0891b2"
           icon={<Waves className="w-4 h-4" />}
