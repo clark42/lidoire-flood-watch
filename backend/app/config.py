@@ -1,6 +1,6 @@
 """Application configuration."""
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
 
@@ -14,8 +14,19 @@ class Settings(BaseSettings):
     influxdb_org: str = "lidoire"
     influxdb_bucket: str = "flood_data"
 
+    # Optional read-only InfluxDB token for query paths (falls back to
+    # influxdb_token when empty). Limits the blast radius of Flux injection.
+    influxdb_read_token: str = ""
+
     # Redis
     redis_url: str = "redis://localhost:6379"
+
+    # Security
+    # API key required in the X-API-Key header for POST/PUT/PATCH/DELETE on /api.
+    # Empty = write protection disabled (dev mode, warning logged at startup).
+    api_key: str = ""
+    # Comma-separated list of allowed CORS origins (no wildcard).
+    cors_origins: str = "http://localhost:3100,http://localhost:5173"
 
     # API Keys
     shom_api_key: str = ""
@@ -208,9 +219,25 @@ class Settings(BaseSettings):
     # Frontend
     frontend_url: str = "http://localhost:3000"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # extra="ignore": the shared .env also holds compose-only variables
+    # (POSTGRES_PASSWORD, REDIS_PASSWORD...) that are not settings.
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Allowed CORS origins: cors_origins + frontend_url, deduplicated."""
+        origins = [o.strip().rstrip("/") for o in self.cors_origins.split(",")]
+        if self.frontend_url:
+            origins.append(self.frontend_url.strip().rstrip("/"))
+        result: list[str] = []
+        for origin in origins:
+            if origin and origin != "*" and origin not in result:
+                result.append(origin)
+        return result
 
 
 @lru_cache

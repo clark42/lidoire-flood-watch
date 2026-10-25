@@ -1,6 +1,8 @@
 """API routes."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from app.api.deps import require_api_key_for_writes
 
 from app.api.status import router as status_router
 from app.api.realtime import router as realtime_router
@@ -9,7 +11,9 @@ from app.api.episodes import router as episodes_router
 from app.api.risk import router as risk_router
 from app.api.auth import router as auth_router
 
-router = APIRouter()
+# Every route below inherits the API key check: safe methods (GET/HEAD/OPTIONS)
+# stay public, state-changing methods require the X-API-Key header.
+router = APIRouter(dependencies=[Depends(require_api_key_for_writes)])
 
 router.include_router(status_router, tags=["Status"])
 router.include_router(realtime_router, prefix="/realtime", tags=["Realtime"])
