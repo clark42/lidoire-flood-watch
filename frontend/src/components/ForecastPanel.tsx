@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   AreaChart,
   Area,
@@ -90,7 +90,7 @@ export default function ForecastPanel({
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true)
       setError(null)
@@ -102,7 +102,7 @@ export default function ForecastPanel({
     } finally {
       setLoading(false)
     }
-  }
+  }, [hours])
 
   useEffect(() => {
     fetchData()
@@ -111,7 +111,7 @@ export default function ForecastPanel({
       const interval = setInterval(fetchData, refreshInterval)
       return () => clearInterval(interval)
     }
-  }, [hours, autoRefresh, refreshInterval])
+  }, [fetchData, autoRefresh, refreshInterval])
 
   if (loading && !data) {
     return (
