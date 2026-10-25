@@ -5,26 +5,181 @@ Handles writing and querying flood monitoring data:
 - Tide heights and coefficients
 - Rainfall observations from Netatmo/Infoclimat
 - Risk scores
+
+Safety / performance notes:
+- The influxdb-client is synchronous. Every query/write goes through
+  ``_run_query`` / ``_run_write`` which offload the blocking HTTP call to a
+  worker thread (``asyncio.to_thread``) so the event loop keeps serving
+  requests and ``asyncio.gather`` really runs queries in parallel.
+- Flux has no bind parameters in this client version, so every value that is
+  interpolated in a query is validated (whitelist from config, or a strict
+  character set for free-form tag values coming from external APIs) and
+  rendered with ``flux_string`` (proper escaping of ``\\``, ``"`` and ``$``).
+  Invalid values raise ``InvalidQueryParameter`` (a ``ValueError``).
 """
 
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, Optional
 import asyncio
+import logging
+import re
 
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
 from app.config import get_settings
+from app.services.cache import TTLCache
+
+logger = logging.getLogger(__name__)
 
 
 def _flux_ts(dt: datetime) -> str:
-    """Format datetime as RFC3339 for Flux queries.
+    """Format datetime as RFC3339 (UTC) for Flux queries.
 
-    Strips timezone info and appends Z to avoid
-    producing invalid '...+00:00Z' when datetime is tz-aware.
+    Aware datetimes are converted to UTC first (a Paris-time datetime must not
+    be shifted by 1-2h); naive datetimes are assumed to already be UTC. The tz
+    is then stripped so we never produce an invalid '...+00:00Z'.
     """
-    naive = dt.replace(tzinfo=None) if dt.tzinfo else dt
-    return naive.isoformat() + "Z"
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.isoformat() + "Z"
+
+
+def to_naive_utc(dt: datetime) -> datetime:
+    """Return a naive UTC datetime (aware values are converted, not just stripped)."""
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+# ---------------------------------------------------------------------------
+# Flux query safety: validation + escaping
+# ---------------------------------------------------------------------------
+
+
+class InvalidQueryParameter(ValueError):
+    """Raised when a value cannot be safely interpolated in a Flux query."""
+
+
+# Free-form tag values (city names from Netatmo, station names...). Unicode
+# letters/digits, spaces and a few punctuation marks seen in French place names.
+_SAFE_TAG_VALUE_RE = re.compile(r"^[\w][\w \-'’.()]{0,79}$", re.UNICODE)
+# Source tags: 'netatmo-lidoire', 'open-meteo', 'infoclimat-<station>'...
+_SAFE_SOURCE_RE = re.compile(r"^[\w][\w\-.]{0,79}$", re.UNICODE)
+# Measurement / field / tag-key identifiers.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+# Flux duration literal used for aggregateWindow(every: ...).
+VALID_RESOLUTIONS = frozenset({"5m", "15m", "30m", "1h", "3h", "6h", "12h", "1d", "24h"})
+_SUB_HOUR_RESOLUTIONS = frozenset({"5m", "15m", "30m"})
+VALID_AGG_FNS = frozenset({"mean", "sum", "max", "min", "last", "first", "median", "count"})
+
+
+def flux_string(value: str) -> str:
+    """Render ``value`` as a quoted Flux string literal with proper escaping."""
+    if not isinstance(value, str):
+        raise InvalidQueryParameter(f"Expected a string, got {type(value).__name__}")
+    if any(ord(ch) < 0x20 for ch in value):
+        raise InvalidQueryParameter("Control characters are not allowed in Flux strings")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+    return f'"{escaped}"'
+
+
+def known_station_ids() -> set[str]:
+    """Hub'Eau station ids configured in settings (source of truth)."""
+    return {s["id"] for s in get_settings().hubeau_stations}
+
+
+def known_tide_ports() -> set[str]:
+    settings = get_settings()
+    return {settings.tide_port_bordeaux, settings.tide_port_libourne}
+
+
+def validate_station_ids(station_ids: Iterable[str]) -> list[str]:
+    """Return station ids if they are all configured, else raise."""
+    known = known_station_ids()
+    ids = list(station_ids)
+    unknown = [s for s in ids if s not in known]
+    if unknown:
+        raise InvalidQueryParameter(f"Unknown station id(s): {unknown}")
+    return ids
+
+
+def validate_tag_value(value: str, kind: str = "tag value") -> str:
+    if not isinstance(value, str) or not _SAFE_TAG_VALUE_RE.match(value):
+        raise InvalidQueryParameter(f"Invalid {kind}: {value!r}")
+    return value
+
+
+def validate_source(source: str) -> str:
+    if not isinstance(source, str) or not _SAFE_SOURCE_RE.match(source):
+        raise InvalidQueryParameter(f"Invalid source: {source!r}")
+    return source
+
+
+def validate_identifier(name: str, kind: str = "identifier") -> str:
+    if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+        raise InvalidQueryParameter(f"Invalid {kind}: {name!r}")
+    return name
+
+
+def validate_port(port: str) -> str:
+    if port not in known_tide_ports():
+        raise InvalidQueryParameter(f"Unknown tide port: {port!r}")
+    return port
+
+
+def validate_resolution(resolution: str) -> str:
+    if resolution not in VALID_RESOLUTIONS:
+        raise InvalidQueryParameter(f"Invalid resolution: {resolution!r}")
+    return resolution
+
+
+def validate_agg_fn(agg_fn: str) -> str:
+    if agg_fn not in VALID_AGG_FNS:
+        raise InvalidQueryParameter(f"Invalid aggregate function: {agg_fn!r}")
+    return agg_fn
+
+
+def _or_filter(column: str, values: Iterable[str]) -> str:
+    """Build ``|> filter(fn: (r) => r.col == "a" or r.col == "b")``.
+
+    ``values`` must already be validated; they are escaped here anyway.
+    """
+    validate_identifier(column, "column")
+    values = list(values)
+    if not values:
+        return ""
+    conditions = " or ".join(f"r.{column} == {flux_string(v)}" for v in values)
+    return f"|> filter(fn: (r) => {conditions})"
+
+
+# ---------------------------------------------------------------------------
+# Non-blocking execution helpers
+# ---------------------------------------------------------------------------
+
+
+def _bucket() -> str:
+    """Bucket name as an escaped Flux string literal."""
+    return flux_string(get_settings().influxdb_bucket)
+
+
+async def _run_query(query: str):
+    """Run a Flux query in a worker thread (the client is synchronous)."""
+    settings = get_settings()
+    query_api = get_query_api()
+    return await asyncio.to_thread(query_api.query, query, org=settings.influxdb_org)
+
+
+async def _run_write(record) -> None:
+    """Write point(s) in a worker thread (the client is synchronous)."""
+    settings = get_settings()
+    write_api = get_write_api()
+    await asyncio.to_thread(
+        write_api.write,
+        bucket=settings.influxdb_bucket,
+        org=settings.influxdb_org,
+        record=record,
+    )
 
 
 # Global client instance
@@ -71,8 +226,6 @@ async def write_river_level(
     flow_m3s: Optional[float] = None,
 ) -> bool:
     """Write a river level measurement to InfluxDB."""
-    settings = get_settings()
-
     try:
         point = (
             Point("river_level")
@@ -86,20 +239,15 @@ async def write_river_level(
         if flow_m3s is not None:
             point = point.field("flow_m3s", flow_m3s)
 
-        get_write_api().write(
-            bucket=settings.influxdb_bucket,
-            org=settings.influxdb_org,
-            record=point,
-        )
+        await _run_write(point)
         return True
     except Exception as e:
-        print(f"Error writing river level to InfluxDB: {e}")
+        logger.error("Error writing river level to InfluxDB: %s", e)
         return False
 
 
 async def write_river_levels_batch(levels: list[dict]) -> int:
     """Write multiple river level measurements in a batch."""
-    settings = get_settings()
     written = 0
 
     try:
@@ -117,14 +265,10 @@ async def write_river_levels_batch(levels: list[dict]) -> int:
                 point = point.field("flow_m3s", lv["flow_m3s"])
             points.append(point)
 
-        get_write_api().write(
-            bucket=settings.influxdb_bucket,
-            org=settings.influxdb_org,
-            record=points,
-        )
+        await _run_write(points)
         written = len(points)
     except Exception as e:
-        print(f"Error writing river levels batch to InfluxDB: {e}")
+        logger.error("Error writing river levels batch to InfluxDB: %s", e)
 
     return written
 
@@ -137,8 +281,6 @@ async def write_tide(
     coefficient: Optional[int] = None,
 ) -> bool:
     """Write a tide measurement to InfluxDB."""
-    settings = get_settings()
-
     try:
         point = (
             Point("tide")
@@ -152,14 +294,10 @@ async def write_tide(
         if coefficient is not None:
             point = point.field("coefficient", coefficient)
 
-        get_write_api().write(
-            bucket=settings.influxdb_bucket,
-            org=settings.influxdb_org,
-            record=point,
-        )
+        await _run_write(point)
         return True
     except Exception as e:
-        print(f"Error writing tide to InfluxDB: {e}")
+        logger.error("Error writing tide to InfluxDB: %s", e)
         return False
 
 
@@ -173,8 +311,6 @@ async def write_rainfall(
     lon: Optional[float] = None,
 ) -> bool:
     """Write rainfall observation to InfluxDB."""
-    settings = get_settings()
-
     try:
         # Ensure numeric values are floats, not None
         precip_h = float(precipitation_mm_h) if precipitation_mm_h is not None else 0.0
@@ -195,14 +331,10 @@ async def write_rainfall(
         if lon is not None:
             point = point.field("lon", float(lon))
 
-        get_write_api().write(
-            bucket=settings.influxdb_bucket,
-            org=settings.influxdb_org,
-            record=point,
-        )
+        await _run_write(point)
         return True
     except Exception as e:
-        print(f"Error writing rainfall to InfluxDB for {station_city}/{source}: {e}")
+        logger.error("Error writing rainfall to InfluxDB for %s/%s: %s", station_city, source, e)
         return False
 
 
@@ -213,8 +345,6 @@ async def write_point(
     timestamp: datetime,
 ) -> bool:
     """Write a generic point to InfluxDB."""
-    settings = get_settings()
-
     try:
         point = Point(measurement).time(timestamp, WritePrecision.S)
 
@@ -227,14 +357,10 @@ async def write_point(
             elif value is not None:
                 point = point.field(key, str(value))
 
-        get_write_api().write(
-            bucket=settings.influxdb_bucket,
-            org=settings.influxdb_org,
-            record=point,
-        )
+        await _run_write(point)
         return True
     except Exception as e:
-        print(f"Error writing point to InfluxDB: {e}")
+        logger.error("Error writing point to InfluxDB: %s", e)
         return False
 
 
@@ -277,19 +403,19 @@ async def query_river_levels(
     end: datetime,
 ) -> list[dict]:
     """Query river level data from InfluxDB."""
-    settings = get_settings()
+    validate_station_ids([station_id])
 
     query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
+    from(bucket: {_bucket()})
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
         |> filter(fn: (r) => r._measurement == "river_level")
-        |> filter(fn: (r) => r.station_id == "{station_id}")
+        |> filter(fn: (r) => r.station_id == {flux_string(station_id)})
         |> filter(fn: (r) => r._field == "height_m")
         |> sort(columns: ["_time"])
     '''
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         results = []
 
         for table in tables:
@@ -302,9 +428,10 @@ async def query_river_levels(
                     "river": record.values.get("river"),
                 })
 
+        results.sort(key=lambda r: r["timestamp"])
         return results
     except Exception as e:
-        print(f"Error querying river levels from InfluxDB: {e}")
+        logger.error("Error querying river levels from InfluxDB: %s", e)
         return []
 
 
@@ -313,10 +440,8 @@ async def query_all_stations_levels(
     end: datetime,
 ) -> dict[str, list[dict]]:
     """Query river level data for all stations."""
-    settings = get_settings()
-
     query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
+    from(bucket: {_bucket()})
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
         |> filter(fn: (r) => r._measurement == "river_level")
         |> filter(fn: (r) => r._field == "height_m")
@@ -324,7 +449,7 @@ async def query_all_stations_levels(
     '''
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         results: dict[str, list[dict]] = {}
 
         for table in tables:
@@ -340,9 +465,13 @@ async def query_all_stations_levels(
                     "river": record.values.get("river"),
                 })
 
+        # A station may span several series (e.g. renamed station_name tag):
+        # restore a global time order per station.
+        for points in results.values():
+            points.sort(key=lambda r: r["timestamp"])
         return results
     except Exception as e:
-        print(f"Error querying all stations from InfluxDB: {e}")
+        logger.error("Error querying all stations from InfluxDB: %s", e)
         return {}
 
 
@@ -352,18 +481,18 @@ async def query_tides(
     end: datetime,
 ) -> list[dict]:
     """Query tide data from InfluxDB."""
-    settings = get_settings()
+    validate_port(port)
 
     query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
+    from(bucket: {_bucket()})
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
         |> filter(fn: (r) => r._measurement == "tide")
-        |> filter(fn: (r) => r.port == "{port}")
+        |> filter(fn: (r) => r.port == {flux_string(port)})
         |> sort(columns: ["_time"])
     '''
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         results = []
 
         for table in tables:
@@ -378,7 +507,7 @@ async def query_tides(
 
         return results
     except Exception as e:
-        print(f"Error querying tides from InfluxDB: {e}")
+        logger.error("Error querying tides from InfluxDB: %s", e)
         return []
 
 
@@ -388,12 +517,10 @@ async def query_rainfall(
     source: Optional[str] = None,
 ) -> list[dict]:
     """Query rainfall data from InfluxDB."""
-    settings = get_settings()
-
-    source_filter = f'|> filter(fn: (r) => r.source == "{source}")' if source else ""
+    source_filter = _or_filter("source", [validate_source(source)]) if source else ""
 
     query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
+    from(bucket: {_bucket()})
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
         |> filter(fn: (r) => r._measurement == "rainfall")
         {source_filter}
@@ -401,7 +528,7 @@ async def query_rainfall(
     '''
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         results = []
 
         for table in tables:
@@ -416,8 +543,104 @@ async def query_rainfall(
 
         return results
     except Exception as e:
-        print(f"Error querying rainfall from InfluxDB: {e}")
+        logger.error("Error querying rainfall from InfluxDB: %s", e)
         return []
+
+
+# Netatmo's precipitation_mm_24h is a rolling 24h counter. A cumulative total
+# over N days is obtained by sampling that counter at N non-overlapping 24h
+# boundaries (T, T-24h, T-48h...) and summing the samples. A reading is
+# accepted for boundary B if it lies in [B - 3h, B + 1h) (never after now+5min).
+_COUNTER_SEARCH_BEFORE = timedelta(hours=3)
+_COUNTER_SEARCH_AFTER = timedelta(hours=1)
+_COUNTER_FUTURE_SLACK = timedelta(minutes=5)
+
+RAIN_CUMUL_CACHE_TTL_S = 300
+_rain_cumul_cache = TTLCache(ttl_seconds=RAIN_CUMUL_CACHE_TTL_S, max_entries=64)
+
+
+def build_rainfall_counter_query(
+    cities: list[str],
+    source: str,
+    start: datetime,
+    stop: datetime,
+) -> str:
+    """Flux query returning, per city, the last 24h-counter reading of each hour.
+
+    ``window(every: 1h) |> last()`` is used rather than
+    ``aggregateWindow(fn: last)`` on purpose: the selector keeps the original
+    ``_time`` of the reading, which the 24h-boundary sampling relies on, while
+    still reducing ~4 readings/hour to 1 server-side.
+    """
+    validate_source(source)
+    for city in cities:
+        validate_tag_value(city, "city")
+
+    return f'''
+    from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(stop)})
+        |> filter(fn: (r) => r._measurement == "rainfall")
+        |> filter(fn: (r) => r._field == "precipitation_mm_24h")
+        {_or_filter("source", [source])}
+        {_or_filter("city", cities)}
+        |> window(every: 1h)
+        |> last()
+        |> group(columns: ["city"])
+        |> sort(columns: ["_time"])
+    '''
+
+
+def sum_daily_counters(
+    samples: list[tuple[datetime, Optional[float]]],
+    now: datetime,
+    num_days: int,
+) -> Optional[float]:
+    """Sum 24h-counter samples taken at ``num_days`` 24h boundaries before ``now``.
+
+    ``samples`` are (naive UTC timestamp, value) pairs sorted by time.
+    Returns None when no boundary has a reading.
+    """
+    total = 0.0
+    found = False
+    limit = now + _COUNTER_FUTURE_SLACK
+
+    for day_offset in range(max(1, num_days)):
+        target = now - timedelta(hours=24 * day_offset)
+        lo = target - _COUNTER_SEARCH_BEFORE
+        hi = min(target + _COUNTER_SEARCH_AFTER, limit)
+        selected = None
+        for ts, value in samples:
+            if lo <= ts < hi and value is not None:
+                selected = value  # samples are sorted: keep the last one
+        if selected is not None:
+            total += selected
+            found = True
+
+    return round(total, 1) if found else None
+
+
+async def _query_rainfall_counters(
+    cities: list[str],
+    source: str,
+    num_days: int,
+    now: datetime,
+) -> dict[str, list[tuple[datetime, Optional[float]]]]:
+    """One Flux query: hourly counter readings per city covering ``num_days``."""
+    start = now - timedelta(hours=24 * (max(1, num_days) - 1)) - _COUNTER_SEARCH_BEFORE
+    stop = now + _COUNTER_FUTURE_SLACK
+    query = build_rainfall_counter_query(cities, source, start, stop)
+
+    tables = await _run_query(query)
+    samples: dict[str, list[tuple[datetime, Optional[float]]]] = {c: [] for c in cities}
+    for table in tables:
+        for record in table.records:
+            city = record.values.get("city")
+            if city not in samples:
+                continue
+            samples[city].append((to_naive_utc(record.get_time()), record.get_value()))
+    for points in samples.values():
+        points.sort(key=lambda p: p[0])
+    return samples
 
 
 async def query_station_rainfall_cumulative(
@@ -446,49 +669,18 @@ async def query_station_rainfall_cumulative(
     Returns:
         Cumulative rainfall in mm, or None if no data
     """
-    settings = get_settings()
     now = datetime.utcnow()
-
-    # Break the total period into 24h chunks
     num_days = max(1, hours // 24)
 
-    total_rain = 0.0
-    data_found = False
+    try:
+        samples = await _query_rainfall_counters([city], source, num_days, now)
+    except InvalidQueryParameter:
+        raise
+    except Exception as e:
+        logger.error("Error querying cumulative rainfall for %s: %s", city, e)
+        return None
 
-    for day_offset in range(num_days):
-        # For each 24h boundary, find the closest precipitation_mm_24h reading.
-        # Search in a window around the target time.
-        target = now - timedelta(hours=24 * day_offset)
-        search_start = target - timedelta(hours=3)
-        search_end = target + timedelta(hours=1)
-
-        # Clamp to not go into the future
-        if search_end > now + timedelta(minutes=5):
-            search_end = now + timedelta(minutes=5)
-
-        query = f'''
-        from(bucket: "{settings.influxdb_bucket}")
-            |> range(start: {_flux_ts(search_start)}, stop: {_flux_ts(search_end)})
-            |> filter(fn: (r) => r._measurement == "rainfall")
-            |> filter(fn: (r) => r.source == "{source}")
-            |> filter(fn: (r) => r.city == "{city}")
-            |> filter(fn: (r) => r._field == "precipitation_mm_24h")
-            |> last()
-        '''
-
-        try:
-            tables = get_query_api().query(query, org=settings.influxdb_org)
-
-            for table in tables:
-                for record in table.records:
-                    value = record.get_value()
-                    if value is not None:
-                        total_rain += value
-                        data_found = True
-        except Exception as e:
-            print(f"Error querying rainfall for {city} day-{day_offset}: {e}")
-
-    return round(total_rain, 1) if data_found else None
+    return sum_daily_counters(samples.get(city, []), now, num_days)
 
 
 async def query_all_stations_rainfall_cumulative(
@@ -498,19 +690,47 @@ async def query_all_stations_rainfall_cumulative(
     """
     Query cumulative rainfall for multiple stations over 24h, 72h, and 7 days.
 
+    A single Flux query covers all cities and the full 7-day lookback (instead
+    of cities x 11 sequential queries); results are cached in-process for
+    ``RAIN_CUMUL_CACHE_TTL_S`` seconds since the Dashboard polls this path
+    from several endpoints.
+
     Returns:
         Dict mapping city -> {rain_24h, rain_72h, rain_7d}
     """
-    results = {}
+    unique_cities = list(dict.fromkeys(c for c in cities if c))
+    if not unique_cities:
+        return {}
 
-    for city in cities:
-        results[city] = {
-            "rain_24h_mm": await query_station_rainfall_cumulative(city, 24, source),
-            "rain_72h_mm": await query_station_rainfall_cumulative(city, 72, source),
-            "rain_7d_mm": await query_station_rainfall_cumulative(city, 7 * 24, source),  # 7 days in hours
+    cache_key = (source, tuple(sorted(unique_cities)))
+    cached = _rain_cumul_cache.get(cache_key)
+    if cached is not None:
+        return {city: dict(values) for city, values in cached.items()}
+
+    now = datetime.utcnow()
+    try:
+        samples = await _query_rainfall_counters(unique_cities, source, 7, now)
+    except InvalidQueryParameter:
+        raise
+    except Exception as e:
+        logger.error("Error querying cumulative rainfall for %s: %s", unique_cities, e)
+        # Not cached: retry on next call.
+        return {
+            city: {"rain_24h_mm": None, "rain_72h_mm": None, "rain_7d_mm": None}
+            for city in unique_cities
         }
 
-    return results
+    results: dict[str, dict[str, Optional[float]]] = {}
+    for city in unique_cities:
+        city_samples = samples.get(city, [])
+        results[city] = {
+            "rain_24h_mm": sum_daily_counters(city_samples, now, 1),
+            "rain_72h_mm": sum_daily_counters(city_samples, now, 3),
+            "rain_7d_mm": sum_daily_counters(city_samples, now, 7),
+        }
+
+    _rain_cumul_cache.set(cache_key, results)
+    return {city: dict(values) for city, values in results.items()}
 
 
 async def query_risk_scores(
@@ -546,9 +766,7 @@ async def query_risk_scores(
 
 
 async def get_data_stats() -> dict:
-    """Get statistics about stored data."""
-    settings = get_settings()
-
+    """Get statistics about stored data (point counts over the last 30 days)."""
     stats = {
         "river_levels": 0,
         "tides": 0,
@@ -557,29 +775,93 @@ async def get_data_stats() -> dict:
         "oldest_data": None,
         "newest_data": None,
     }
+    measurement_keys = {
+        "river_level": "river_levels",
+        "tide": "tides",
+        "rainfall": "rainfall",
+        "risk_score": "risk_scores",
+    }
 
-    for measurement in ["river_level", "tide", "rainfall", "risk_score"]:
+    async def _count(measurement: str) -> int:
         query = f'''
-        from(bucket: "{settings.influxdb_bucket}")
+        from(bucket: {_bucket()})
             |> range(start: -30d)
-            |> filter(fn: (r) => r._measurement == "{measurement}")
+            |> filter(fn: (r) => r._measurement == {flux_string(measurement)})
             |> count()
         '''
-
         try:
-            tables = get_query_api().query(query, org=settings.influxdb_org)
-            for table in tables:
-                for record in table.records:
-                    key = measurement.replace("_", "_") + "s"
-                    if measurement == "river_level":
-                        key = "river_levels"
-                    elif measurement == "risk_score":
-                        key = "risk_scores"
-                    stats[key] = record.get_value()
-        except Exception:
-            pass
+            tables = await _run_query(query)
+        except Exception as e:
+            logger.warning("Error counting %s points in InfluxDB: %s", measurement, e)
+            return 0
+        # One table per series: sum them (previously the last series won).
+        return sum(int(r.get_value() or 0) for t in tables for r in t.records)
+
+    counts = await asyncio.gather(*(_count(m) for m in measurement_keys))
+    for measurement, total in zip(measurement_keys, counts):
+        stats[measurement_keys[measurement]] = total
 
     return stats
+
+
+def _rain_aggregation(resolution: str, agg_fn: str) -> str:
+    """Flux aggregation stage(s) for the ``precipitation_mm_h`` rate field.
+
+    ``precipitation_mm_h`` is a *rate*: Netatmo historically wrote its sliding
+    60-min total every 15 min, Open-Meteo writes one hourly value (plus "last
+    hour" points at arbitrary minutes). Summing raw points therefore over-counts
+    (~4x for Netatmo). For totals ("sum") we always reduce to one value per hour
+    with ``mean`` first (= mm fallen in that hour, whatever the sampling), then:
+      - 1h: that hourly value,
+      - coarser (6h, 12h, 1d...): sum of the hourly values (mm per period),
+      - sub-hour (15m...): mean rate x window fraction of an hour (mm per window).
+    Other functions (mean/max/...) apply directly at ``resolution``.
+    """
+    validate_resolution(resolution)
+    validate_agg_fn(agg_fn)
+
+    if agg_fn != "sum":
+        return f"|> aggregateWindow(every: {resolution}, fn: {agg_fn}, createEmpty: false)"
+
+    if resolution in _SUB_HOUR_RESOLUTIONS:
+        fraction = int(resolution[:-1]) / 60.0
+        return (
+            f"|> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)\n"
+            f"        |> map(fn: (r) => ({{r with _value: r._value * {fraction}}}))"
+        )
+    if resolution == "1h":
+        return "|> aggregateWindow(every: 1h, fn: mean, createEmpty: false)"
+    # Stamp hourly means at the hour *start* so each hour lands in the right
+    # coarse window; the coarse window is then stamped at its stop like every
+    # other aggregateWindow output.
+    return (
+        '|> aggregateWindow(every: 1h, fn: mean, createEmpty: false, timeSrc: "_start")\n'
+        f"        |> aggregateWindow(every: {resolution}, fn: sum, createEmpty: false)"
+    )
+
+
+def build_rainfall_by_station_query(
+    start: datetime,
+    end: datetime,
+    sources: list[str] | None = None,
+    cities: list[str] | None = None,
+    resolution: str = "1h",
+    agg_fn: str = "mean",
+) -> str:
+    """Build the Flux query used by ``query_rainfall_by_station`` (validated)."""
+    source_filter = _or_filter("source", [validate_source(s) for s in sources]) if sources else ""
+    city_filter = _or_filter("city", [validate_tag_value(c, "city") for c in cities]) if cities else ""
+
+    return f'''
+    from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
+        |> filter(fn: (r) => r._measurement == "rainfall")
+        |> filter(fn: (r) => r._field == "precipitation_mm_h")
+        {source_filter}
+        {city_filter}
+        {_rain_aggregation(resolution, agg_fn)}
+        |> sort(columns: ["_time"])
+    '''
 
 
 async def query_rainfall_by_station(
@@ -599,37 +881,19 @@ async def query_rainfall_by_station(
         sources: Optional list of sources to filter (e.g., ["netatmo-lidoire"])
         cities: Optional list of cities to filter
         resolution: Aggregation resolution (default: 1h)
-        agg_fn: Aggregation function — "mean" for rate (mm/h), "sum" for total (mm/period)
+        agg_fn: Aggregation function — "mean" for rate (mm/h), "sum" for total
+            (mm/period, computed from hourly means, see ``_rain_aggregation``)
 
     Returns:
         Dict mapping "source:city" -> list of {timestamp, value} points
+
+    Raises:
+        InvalidQueryParameter: on unsafe source/city/resolution/agg_fn values.
     """
-    settings = get_settings()
-
-    # Build filters
-    source_filter = ""
-    if sources:
-        source_conditions = " or ".join([f'r.source == "{s}"' for s in sources])
-        source_filter = f"|> filter(fn: (r) => {source_conditions})"
-
-    city_filter = ""
-    if cities:
-        city_conditions = " or ".join([f'r.city == "{c}"' for c in cities])
-        city_filter = f"|> filter(fn: (r) => {city_conditions})"
-
-    query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
-        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-        |> filter(fn: (r) => r._measurement == "rainfall")
-        |> filter(fn: (r) => r._field == "precipitation_mm_h")
-        {source_filter}
-        {city_filter}
-        |> aggregateWindow(every: {resolution}, fn: {agg_fn}, createEmpty: false)
-        |> sort(columns: ["_time"])
-    '''
+    query = build_rainfall_by_station_query(start, end, sources, cities, resolution, agg_fn)
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         results: dict[str, list[dict]] = {}
 
         for table in tables:
@@ -646,10 +910,33 @@ async def query_rainfall_by_station(
                     "value": record.get_value(),
                 })
 
+        for points in results.values():
+            points.sort(key=lambda p: p["timestamp"])
         return results
     except Exception as e:
-        print(f"Error querying rainfall by station from InfluxDB: {e}")
+        logger.error("Error querying rainfall by station from InfluxDB: %s", e)
         return {}
+
+
+def build_river_levels_multi_station_query(
+    start: datetime,
+    end: datetime,
+    station_ids: list[str] | None = None,
+    resolution: str = "1h",
+) -> str:
+    """Build the Flux query used by ``query_river_levels_multi_station`` (validated)."""
+    validate_resolution(resolution)
+    station_filter = _or_filter("station_id", validate_station_ids(station_ids)) if station_ids else ""
+
+    return f'''
+    from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
+        |> filter(fn: (r) => r._measurement == "river_level")
+        |> filter(fn: (r) => r._field == "height_m")
+        {station_filter}
+        |> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)
+        |> sort(columns: ["_time"])
+    '''
 
 
 async def query_river_levels_multi_station(
@@ -664,32 +951,16 @@ async def query_river_levels_multi_station(
     Args:
         start: Start datetime
         end: End datetime
-        station_ids: Optional list of station IDs to filter
+        station_ids: Optional list of station IDs to filter (must be configured)
         resolution: Aggregation resolution (default: 1h)
 
     Returns:
         Dict mapping station_id -> list of {timestamp, value, station_name, river} points
     """
-    settings = get_settings()
-
-    # Build station filter
-    station_filter = ""
-    if station_ids:
-        station_conditions = " or ".join([f'r.station_id == "{s}"' for s in station_ids])
-        station_filter = f"|> filter(fn: (r) => {station_conditions})"
-
-    query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
-        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-        |> filter(fn: (r) => r._measurement == "river_level")
-        |> filter(fn: (r) => r._field == "height_m")
-        {station_filter}
-        |> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)
-        |> sort(columns: ["_time"])
-    '''
+    query = build_river_levels_multi_station_query(start, end, station_ids, resolution)
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         results: dict[str, list[dict]] = {}
 
         for table in tables:
@@ -706,9 +977,11 @@ async def query_river_levels_multi_station(
                     "river": record.values.get("river"),
                 })
 
+        for points in results.values():
+            points.sort(key=lambda p: p["timestamp"])
         return results
     except Exception as e:
-        print(f"Error querying multi-station river levels from InfluxDB: {e}")
+        logger.error("Error querying multi-station river levels from InfluxDB: %s", e)
         return {}
 
 
@@ -719,20 +992,21 @@ async def query_tides_timeline(
     resolution: str = "1h",
 ) -> list[dict]:
     """Query tide height data with aggregation for timeline display."""
-    settings = get_settings()
+    validate_port(port)
+    validate_resolution(resolution)
 
     query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
+    from(bucket: {_bucket()})
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
         |> filter(fn: (r) => r._measurement == "tide")
-        |> filter(fn: (r) => r.port == "{port}")
+        |> filter(fn: (r) => r.port == {flux_string(port)})
         |> filter(fn: (r) => r._field == "height_m")
         |> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)
         |> sort(columns: ["_time"])
     '''
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         results = []
 
         for table in tables:
@@ -742,10 +1016,106 @@ async def query_tides_timeline(
                     "value": record.get_value(),
                 })
 
+        results.sort(key=lambda p: p["timestamp"])
         return results
     except Exception as e:
-        print(f"Error querying tides timeline from InfluxDB: {e}")
+        logger.error("Error querying tides timeline from InfluxDB: %s", e)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Coverage (density) checks used by the timeline cache-through
+# ---------------------------------------------------------------------------
+
+
+def build_coverage_query(
+    measurement: str,
+    start: datetime,
+    end: datetime,
+    field: Optional[str] = None,
+    filters: Optional[dict[str, list[str]]] = None,
+    window: Optional[str] = None,
+) -> str:
+    """Flux query yielding ``count`` and ``first`` per series, without raw points.
+
+    With ``window`` set, points are first bucketed with
+    ``aggregateWindow(fn: count)`` so the count is the number of *windows
+    with data* (e.g. hours with at least one reading), independent of the
+    sampling rate.
+    """
+    validate_identifier(measurement, "measurement")
+    if field is not None:
+        validate_identifier(field, "field")
+    if window is not None:
+        validate_resolution(window)
+
+    filter_lines = [f"|> filter(fn: (r) => r._measurement == {flux_string(measurement)})"]
+    if field is not None:
+        filter_lines.append(f"|> filter(fn: (r) => r._field == {flux_string(field)})")
+    for column, values in (filters or {}).items():
+        if column == "station_id":
+            validate_station_ids(values)
+        elif column == "source":
+            for v in values:
+                validate_source(v)
+        else:
+            for v in values:
+                validate_tag_value(v, column)
+        filter_lines.append(_or_filter(column, values))
+    if window is not None:
+        filter_lines.append(f"|> aggregateWindow(every: {window}, fn: count, createEmpty: false)")
+    body = "\n        ".join(line for line in filter_lines if line)
+
+    return f'''
+    data = from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
+        {body}
+
+    data |> count() |> yield(name: "count")
+    data |> first() |> yield(name: "first")
+    '''
+
+
+async def query_coverage(
+    measurement: str,
+    start: datetime,
+    end: datetime,
+    field: Optional[str] = None,
+    filters: Optional[dict[str, list[str]]] = None,
+    group_tag: Optional[str] = None,
+    window: Optional[str] = None,
+) -> Optional[dict[str, dict]]:
+    """Count points (or windows with data) per ``group_tag`` value in one query.
+
+    Returns ``{tag_value: {"count": int, "first": datetime | None}}`` (key
+    ``"_all"`` when ``group_tag`` is None), or ``None`` if InfluxDB failed —
+    callers must not treat a failure as "no data" and trigger backfills.
+    """
+    if group_tag is not None:
+        validate_identifier(group_tag, "group tag")
+    query = build_coverage_query(measurement, start, end, field, filters, window)
+
+    try:
+        tables = await _run_query(query)
+    except Exception as e:
+        logger.error("Error querying %s coverage from InfluxDB: %s", measurement, e)
+        return None
+
+    coverage: dict[str, dict] = {}
+    for table in tables:
+        for record in table.records:
+            key = str(record.values.get(group_tag)) if group_tag else "_all"
+            entry = coverage.setdefault(key, {"count": 0, "first": None})
+            result_name = record.values.get("result")
+            if result_name == "count":
+                entry["count"] += int(record.get_value() or 0)
+            elif result_name == "first":
+                ts = record.get_time()
+                if ts is not None:
+                    ts = to_naive_utc(ts)
+                    if entry["first"] is None or ts < entry["first"]:
+                        entry["first"] = ts
+    return coverage
 
 
 async def query_risk_scores_timeline(
@@ -782,25 +1152,42 @@ async def query_risk_scores_timeline(
         return []
 
 
-async def query_basin_rainfall_sparkline(hours: int = 24) -> list[dict]:
-    """Query hourly basin rainfall for sparkline display (mean of netatmo-lidoire)."""
-    settings = get_settings()
-    end = datetime.utcnow()
-    start = end - timedelta(hours=hours)
+def build_basin_sparkline_query(
+    start: datetime,
+    end: datetime,
+    source: str = "netatmo-lidoire",
+) -> str:
+    """Hourly basin-mean rainfall rate across all stations of ``source``.
 
-    query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
+    ``group()`` merges every city into one table *before* aggregateWindow, so
+    each hour is the mean over all stations (previously each city produced its
+    own series and the timestamp dedup kept only the first city).
+    """
+    validate_source(source)
+    return f'''
+    from(bucket: {_bucket()})
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
         |> filter(fn: (r) => r._measurement == "rainfall")
-        |> filter(fn: (r) => r.source == "netatmo-lidoire")
+        |> filter(fn: (r) => r.source == {flux_string(source)})
         |> filter(fn: (r) => r._field == "precipitation_mm_h")
+        |> group()
+        |> sort(columns: ["_time"])
         |> aggregateWindow(every: 1h, fn: mean, createEmpty: true)
         |> fill(value: 0.0)
         |> sort(columns: ["_time"])
     '''
 
+
+async def query_basin_rainfall_sparkline(hours: int = 24) -> list[dict]:
+    """Query hourly basin rainfall for sparkline display (mean of netatmo-lidoire)."""
+    hours = max(1, min(int(hours), 24 * 14))
+    end = datetime.utcnow()
+    start = end - timedelta(hours=hours)
+
+    query = build_basin_sparkline_query(start, end)
+
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         results = []
 
         for table in tables:
@@ -810,7 +1197,7 @@ async def query_basin_rainfall_sparkline(hours: int = 24) -> list[dict]:
                     "value": round(record.get_value() or 0.0, 1),
                 })
 
-        # Deduplicate by timestamp (multiple stations may produce multiple rows per hour)
+        # Single table after group(); keep a defensive dedup on timestamp.
         seen = set()
         deduped = []
         for r in results:
@@ -820,7 +1207,7 @@ async def query_basin_rainfall_sparkline(hours: int = 24) -> list[dict]:
 
         return deduped
     except Exception as e:
-        print(f"Error querying basin rainfall sparkline from InfluxDB: {e}")
+        logger.error("Error querying basin rainfall sparkline from InfluxDB: %s", e)
         return []
 
 
@@ -916,32 +1303,7 @@ async def query_latest_point(
     Returns:
         Dict of field values or None if no recent data
     """
-    settings = get_settings()
-    start = datetime.utcnow() - timedelta(hours=max_age_hours)
-
-    query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
-        |> range(start: {_flux_ts(start)})
-        |> filter(fn: (r) => r._measurement == "{measurement}")
-        |> filter(fn: (r) => r.location == "{location}")
-        |> last()
-    '''
-
-    try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
-        if not tables:
-            return None
-
-        result = {}
-        for table in tables:
-            for record in table.records:
-                result[record.get_field()] = record.get_value()
-                result["_time"] = record.get_time()
-
-        return result if result else None
-    except Exception as e:
-        print(f"Error querying latest {measurement} from InfluxDB: {e}")
-        return None
+    return await query_latest_measurement(measurement, {"location": location}, max_age_hours)
 
 
 async def query_latest_measurement(
@@ -959,23 +1321,24 @@ async def query_latest_measurement(
     Returns:
         Dict of field values or None if no recent data
     """
-    settings = get_settings()
+    validate_identifier(measurement, "measurement")
+    tag_filters = "\n        ".join(
+        f"|> filter(fn: (r) => r.{validate_identifier(k, 'tag key')} == "
+        f"{flux_string(validate_tag_value(str(v), k))})"
+        for k, v in tags.items()
+    )
     start = datetime.utcnow() - timedelta(hours=max_age_hours)
 
-    tag_filters = "\n        ".join(
-        f'|> filter(fn: (r) => r.{k} == "{v}")' for k, v in tags.items()
-    )
-
     query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
+    from(bucket: {_bucket()})
         |> range(start: {_flux_ts(start)})
-        |> filter(fn: (r) => r._measurement == "{measurement}")
+        |> filter(fn: (r) => r._measurement == {flux_string(measurement)})
         {tag_filters}
         |> last()
     '''
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         if not tables:
             return None
 
@@ -987,8 +1350,40 @@ async def query_latest_measurement(
 
         return result if result else None
     except Exception as e:
-        print(f"Error querying latest {measurement} from InfluxDB: {e}")
+        logger.error("Error querying latest %s from InfluxDB: %s", measurement, e)
         return None
+
+
+_SOIL_FIELDS = ("moisture_shallow", "moisture_deep", "soil_temp", "et0_mm")
+# Realtime field -> (measurement, timeline field)
+_SOIL_REALTIME_FIELDS = {
+    "moisture": ("soil_moisture", "moisture_shallow"),
+    "moisture_deep": ("soil_agricultural", "moisture_deep"),
+    "temperature_0cm": ("soil_agricultural", "soil_temp"),
+    "et0_mm": ("soil_agricultural", "et0_mm"),
+}
+
+
+def _location_field_query(
+    measurement: str,
+    start: datetime,
+    end: datetime,
+    fields: list[str],
+    resolution: str,
+) -> str:
+    validate_identifier(measurement, "measurement")
+    validate_resolution(resolution)
+    for f in fields:
+        validate_identifier(f, "field")
+    return f'''
+    from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
+        |> filter(fn: (r) => r._measurement == {flux_string(measurement)})
+        |> filter(fn: (r) => r.location == "moulin")
+        {_or_filter("_field", fields)}
+        |> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)
+        |> sort(columns: ["_time"])
+    '''
 
 
 async def query_soil_timeline(
@@ -1015,26 +1410,16 @@ async def query_soil_timeline(
     Returns:
         Dict mapping field_name -> list of {timestamp, value} points
     """
-    settings = get_settings()
-
-    requested_fields = fields or ["moisture_shallow", "moisture_deep", "soil_temp", "et0_mm"]
-
+    requested_fields = [f for f in (fields or _SOIL_FIELDS) if f in _SOIL_FIELDS]
     results: dict[str, list[dict]] = {f: [] for f in requested_fields}
+    if not requested_fields:
+        return results
 
     # Query 1: soil_timeline measurement (backfilled historical data)
-    field_conditions = " or ".join([f'r._field == "{f}"' for f in requested_fields])
-    query_timeline = f'''
-    from(bucket: "{settings.influxdb_bucket}")
-        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-        |> filter(fn: (r) => r._measurement == "soil_timeline")
-        |> filter(fn: (r) => r.location == "moulin")
-        |> filter(fn: (r) => {field_conditions})
-        |> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)
-        |> sort(columns: ["_time"])
-    '''
+    query_timeline = _location_field_query("soil_timeline", start, end, requested_fields, resolution)
 
     try:
-        tables = get_query_api().query(query_timeline, org=settings.influxdb_org)
+        tables = await _run_query(query_timeline)
         for table in tables:
             for record in table.records:
                 field_name = record.get_field()
@@ -1044,46 +1429,32 @@ async def query_soil_timeline(
                         "value": record.get_value(),
                     })
     except Exception as e:
-        print(f"Error querying soil_timeline from InfluxDB: {e}")
+        logger.error("Error querying soil_timeline from InfluxDB: %s", e)
 
-    # Query 2: Fallback - realtime soil_moisture + soil_agricultural measurements
-    # Map realtime field names to timeline field names
-    realtime_field_map = {
-        "moisture": "moisture_shallow",
-        "moisture_deep": "moisture_deep",
-        "temperature_0cm": "soil_temp",
-        "et0_mm": "et0_mm",
-    }
+    # Query 2: Fallback - realtime soil_moisture + soil_agricultural measurements,
+    # only for fields the primary query returned nothing for (run in parallel).
+    fallbacks = [
+        (realtime_field, measurement, timeline_field)
+        for realtime_field, (measurement, timeline_field) in _SOIL_REALTIME_FIELDS.items()
+        if timeline_field in results and not results[timeline_field]
+    ]
 
-    for realtime_field, timeline_field in realtime_field_map.items():
-        if timeline_field not in requested_fields:
-            continue
-        # Only fill if the primary query returned no data for this field
-        if results[timeline_field]:
-            continue
-
-        measurement = "soil_agricultural" if realtime_field != "moisture" else "soil_moisture"
-
-        query_rt = f'''
-        from(bucket: "{settings.influxdb_bucket}")
-            |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-            |> filter(fn: (r) => r._measurement == "{measurement}")
-            |> filter(fn: (r) => r.location == "moulin")
-            |> filter(fn: (r) => r._field == "{realtime_field}")
-            |> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)
-            |> sort(columns: ["_time"])
-        '''
-
+    async def _fallback(realtime_field: str, measurement: str):
+        query_rt = _location_field_query(measurement, start, end, [realtime_field], resolution)
         try:
-            tables = get_query_api().query(query_rt, org=settings.influxdb_org)
-            for table in tables:
-                for record in table.records:
-                    results[timeline_field].append({
-                        "timestamp": record.get_time(),
-                        "value": record.get_value(),
-                    })
+            return await _run_query(query_rt)
         except Exception as e:
-            print(f"Error querying realtime {measurement}.{realtime_field} from InfluxDB: {e}")
+            logger.error("Error querying realtime %s.%s from InfluxDB: %s", measurement, realtime_field, e)
+            return []
+
+    fallback_tables = await asyncio.gather(*(_fallback(rf, m) for rf, m, _ in fallbacks))
+    for (_rf, _m, timeline_field), tables in zip(fallbacks, fallback_tables):
+        for table in tables:
+            for record in table.records:
+                results[timeline_field].append({
+                    "timestamp": record.get_time(),
+                    "value": record.get_value(),
+                })
 
     return results
 
@@ -1098,24 +1469,13 @@ async def query_wind_timeline(
     Returns dict mapping field_name -> list of {timestamp, value} points.
     Fields: speed_kmh, direction_deg, westerly_kmh
     """
-    settings = get_settings()
-
     requested_fields = ["speed_kmh", "direction_deg", "westerly_kmh"]
     results: dict[str, list[dict]] = {f: [] for f in requested_fields}
 
-    field_conditions = " or ".join([f'r._field == "{f}"' for f in requested_fields])
-    query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
-        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-        |> filter(fn: (r) => r._measurement == "wind")
-        |> filter(fn: (r) => r.location == "moulin")
-        |> filter(fn: (r) => {field_conditions})
-        |> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)
-        |> sort(columns: ["_time"])
-    '''
+    query = _location_field_query("wind", start, end, requested_fields, resolution)
 
     try:
-        tables = get_query_api().query(query, org=settings.influxdb_org)
+        tables = await _run_query(query)
         for table in tables:
             for record in table.records:
                 field_name = record.get_field()
@@ -1125,7 +1485,7 @@ async def query_wind_timeline(
                         "value": record.get_value(),
                     })
     except Exception as e:
-        print(f"Error querying wind timeline from InfluxDB: {e}")
+        logger.error("Error querying wind timeline from InfluxDB: %s", e)
 
     return results
 
