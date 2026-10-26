@@ -44,7 +44,7 @@ npm test                                # Vitest (helpers, contrastes des jetons
 npm run build                           # tsc + vite build
 ```
 
-Tests : `frontend/src/**/*.test.{ts,tsx}` a cote du module (environnement node, pas de DOM : composants testes via `renderToStaticMarkup`), fixture de prod `src/test-fixtures/outlook.json`.
+Tests : `frontend/src/**/*.test.{ts,tsx}` a cote du module (environnement node, pas de DOM : composants testes via `renderToStaticMarkup`), fixtures dans `src/test-fixtures/` : `outlook.json` et `timeline-*.json` lus en GET sur la prod ; `geo-profile-*.json`, `episode-drivers.json`, `episode-labels.json` calcules par le code backend de main a partir des series de la prod (routes absentes de la prod au 2026-10-27).
 
 ### Evaluation hors ligne
 ```bash
@@ -172,13 +172,17 @@ src/
 ├── utils/levels.ts      # Ordre et rang des niveaux, levelFromScore (15/35/55), buildVerdict (pire niveau 0-72 h)
 ├── utils/confidence.ts  # Raisons de confiance (Pessac a jour, notes de l'outlook, "cale sur 5 crues")
 ├── utils/scale.ts       # linearScale / logScale / niceTicks pour les SVG maison
+├── utils/lidoireProfile.ts # PUR, miroir de services/lidoire_profile.py : Z_c, remous (plan d'eau horizontal), marches du terrain, geometrie du profil (d3-scale)
+├── utils/replay.ts      # PUR : presets du replay (pics des labels a l'heure), index horaire, valeurs a t (enveloppe 12.5 h causale), phrase factuelle par preset
+├── utils/phasePlane.ts  # PUR : plan des crues (log Eyraud x Pessac), traces journalieres (fenetres 1d datees par leur fin), lecture et legende calculees
+├── hooks/useChartFrame.ts # useElementWidth (ResizeObserver), usePrefersReducedMotion, useInView (fetch a l'approche)
 ├── utils/observations.ts # Libelles et couleurs des types d'observation
 ├── theme/               # theme.ts (preference systeme/clair/sombre, localStorage 'lfw_theme'), contrast.ts (WCAG)
 ├── styles/tokens.css    # Jetons clair/sombre (source unique), styles/fonts.css (@font-face woff2)
 ├── hooks/useRiskOutlook.ts # GET /api/risk/outlook toutes les 10 min (verdict + liste)
 ├── tooltipContent.ts    # Dictionnaire centralise des textes de tooltips
 ├── pages/
-│   ├── Dashboard.tsx    # Sections (dashboardSections.ts) : Maintenant, Pourquoi, 72 h, Agir, Replay, Carte, Pluie et sol, Fiabilite ; TimeMachine (bandeau en haut une fois actif) ; fraicheur = Pessac ; recharts et leaflet en lazy
+│   ├── Dashboard.tsx    # Sections (dashboardSections.ts) : Maintenant, Pourquoi, 72 h, Agir, Coupe & replay (#replay), Plan des crues (#plan), Carte, Pluie et sol, Fiabilite ; TimeMachine ouvert depuis le replay (bandeau en haut une fois actif, ?tm= conserve) ; fraicheur = Pessac ; recharts, leaflet et panneaux d3 en lazy
 │   ├── Timeline.tsx     # Graphiques historiques multi-sources + forecast overlay
 │   ├── Episodes.tsx     # Liste/creation/analyse/issue des episodes
 │   └── Configuration.tsx # Statut, simulation, cle API ; version du modele lue dans l'API (`risk_model.version`, sinon `RiskScore.model_version`)
@@ -188,6 +192,8 @@ src/
     ├── ui/LevelMeter.tsx (4 pastilles + mot), ui/ValueTag.tsx (+ ValueTagLegend, libelles dans ui/valueKinds.ts)
     ├── RiskBreakdownPanel.tsx (contributions = poids x score / denominateur x conjonction x amortisseur, gate maree), StationsPanel.tsx, RainfallPanel.tsx
     ├── ForecastSkillPanel.tsx (Configuration)
+    ├── ReplayPanel.tsx  # Coupe & replay : LidoireProfile (+ Readout, curseur de plancher), ReplayScrubber (presets, lecture/pause, pas de 6 h en mouvement reduit), SyncStrips (Pessac/Libourne/Z_c NGF, Eyraud, score + shadows, pluie)
+    ├── FloodPlanPanel.tsx # Plan des crues : FloodPhasePlane (episodes de /api/episodes/drivers, formes par issue, point du jour, traces 21 j et fevriers 2024/2026), legende, tableau
     ├── ForecastPanel.tsx, BasinRainfallGauge.tsx, SoilConditionsPanel.tsx, NowcastRainChart.tsx
     ├── HydroMap.tsx, MetricSparkline.tsx, TimeMachineBanner.tsx, TimelineSourceSelector.tsx
     ├── InfoTooltip.tsx, DataCard.tsx, DataSourcesStatus.tsx (bandeau des sources = `/api/status.sources`)
@@ -283,7 +289,9 @@ Affichage seulement, JAMAIS lu par v3.4 (`tests/api360/test_api360_v34_unchanged
 - **Z_c** (estime) = (1 - alpha) x (3.33 + max Pessac 12.5 h) + alpha x (-1.17 + max Libourne 12.5 h), alpha = 0.2, points <= t ; Libourne absent => Pessac seul (note). Config : `ngf_station_zeros_m`, `confluence_downstream_weight`, `confluence_envelope_hours`, `mill_ground_z_m_ngf` (12.0, terrain, pas le plancher).
 - **Remous** (approximation plan d'eau horizontal) : `distance_m` = point le plus en amont du profil avec z <= Z_c (interpole, borne haute qui peut sauter un seuil), `connected_distance_m` = s'arrete au premier point au-dessus de Z_c en remontant ; distances sous le moulin. Ignore le debit propre de la Lidoire et la pente de la ligne d'eau. 2024-02-26 11:00 : Z_c 6.55 m, front a 3.0 km (connecte 2.46 km), 2.8 km sous le moulin ; 2026-02-12 16:00 : Z_c 8.62 m, 3.09 km. Le front ne franchit la marche de 3.05 km qu'au-dela de ~9 m NGF.
 - `GET /api/geo/profile?at=&points=` : profil, moulin, `confluence` (Z_c enveloppe + `instant`), `backwater` (+ `instant`), `margin` (terrain moulin - Z_c), config exposee ; 422 si `at` invalide ou futur ; cache 60 s (1 h pour t > 1 j), pas de cache en cas d'erreur Influx.
+- Frontend (section Coupe & replay) : Z_c et remous recalcules chaque heure cote client depuis `/api/timeline/unified` (memes formules, test d'equivalence sur fixtures), remplaces par `/api/geo/profile?at=&points=false` quand le curseur s'arrete (350 ms, cache par heure). Le niveau de la Lidoire au moulin n'est jamais dessine : non mesure, capteur prevu.
 - `GET /api/episodes/drivers` : pour chaque label, a `peak_time` (precision au jour) : Pessac et Eyraud Q max sur 12.5 h, pluie Open-Meteo moulin 72 h, piezometre (dernier point <= t, 48 h), GloFAS p50 si stocke, Z_c ; percentiles (`climatology.percentile_of`) contre l'historique stocke depuis 2022-11 (max journaliers Pessac/Eyraud, cumuls 3 j octobre-avril, moyennes journalieres nappe). Fenetres explicites dans `windows`. Cache 6 h, `partial` (non cache) si une requete echoue.
+- Frontend (Plan des crues) : `eyraud_q_m3s` des drivers est null pour 2023-11-30 et 2026-02-12 (historique Eyraud stocke en journalier, aucun point dans la fenetre de 12.5 h) : le front prend le max journalier du jour du pic (cercle en tirets, "journalier" dans le tableau). Sur ces valeurs, Eyraud ne separe plus strictement (crue la plus faible 19.6 m3/s, 2023-12-11 "presque" a 19.7) : la legende le calcule et le dit.
 - `GET /api/risk/analogs?at=&k=3` : distance = RMS des ecarts de percentile sur `analog_axes` (Pessac, Eyraud Q, pluie 72 h, nappe ; >= `analog_min_axes` = 2 axes communs) ; k plus proches avec issue, hauteur, notes, percentiles, ecarts, nombre d'observations (et photos) a pic +/- 36 h ; `nothing_close` + `message` si le plus proche > `analog_distance_threshold` (30, comme le prototype).
 - `GET /api/realtime/radar/frame.png?t=latest|<iso>` : image ACRR (cumul 1 h) recadree sur le bassin + `radar_frame_margin_km` (10 km), reechantillonnee au plus proche voisin sur une grille lon/lat reguliere (`radar_frame_pixel_deg` 0.005, 132 x 62 px), transparente a 0 mm, rampe bleu -> violet, gris translucide hors couverture ; bbox dans `X-Radar-Bbox` et `/radar/frame.json` (heure, legende, attribution CC BY 4.0, stats). Lecteur COG maison (`opera_radar`), PNG ecrit avec zlib, aucune dependance ; cache par heure d'image (26 h), `latest` = derniere image stockee (`radar_rain`) sinon listing ; 404 hors des 24 h glissantes, 503 si le bucket ne repond pas (CircuitBreaker). Meme origine : passe la CSP `img-src 'self'`.
 
