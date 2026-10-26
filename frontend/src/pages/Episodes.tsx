@@ -544,7 +544,7 @@ export default function Episodes() {
                     />
                     <MetricCard
                       label="Coef maree"
-                      value={selectedAnalysis.context.max_tide_coefficient.toString()}
+                      value={selectedAnalysis.context.max_tide_coefficient?.toString() ?? 'inconnu'}
                     />
                   </div>
                 </div>

@@ -342,7 +342,8 @@ export interface EpisodeContext {
   rain_48h_before_mm: number
   rain_72h_before_mm: number
   max_dordogne_level_m: number
-  max_tide_coefficient: number
+  // null when no tide data covers the episode (unknown)
+  max_tide_coefficient: number | null
   tide_phase_at_peak: string | null
   hours_since_high_tide: number | null
 }

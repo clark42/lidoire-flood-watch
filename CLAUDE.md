@@ -82,7 +82,7 @@ app/
     ├── forecast.py      # Previsions horaires (features par heure -> compute_risk)
     ├── backfill.py      # Backfill historique (rivers, rain, tides, soil, risk)
     ├── episode_detector.py  # Detection automatique d'episodes par seuil
-    ├── episode_analyzer.py / episode_analyzer_v2.py  # Contexte hydro-meteo des episodes
+    ├── episode_analyzer_v2.py  # Contexte hydro-meteo des episodes (seul analyseur : /analyze, /analyze-v2, /analyze/{id}, /patterns, /compare) ; donnees stockees d'abord, coefficient de maree None sans maree
     ├── labels.py        # Chargement des labels, parsing des anciens prefixes [CONFIRMED: ...]
     ├── cache.py         # get_redis() partage, TTLCache en memoire, CircuitBreaker, EXTERNAL_TIMEOUT_S
     ├── influx_client.py # InfluxDB non bloquant, ecritures par lot, validation Flux
@@ -119,7 +119,7 @@ tests/
 ├── groundtruth/  evaluation/  models/  followups/  notifier/
 ```
 
-Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episodes.py` (remplaces par `scripts/eval/`).
+Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episodes.py` (remplaces par `scripts/eval/`), `services/episode_analyzer.py` (analyseur v1) et les fonctions sans appelant de `data_store.py` (`get_timeline_data`, `get_multi_station_timeline`, `get_historical_river_levels`, `get_historical_rainfall` et son repli Netatmo, `store_*`, `get_episodes_in_range`).
 
 ### Frontend (`frontend/src/`)
 

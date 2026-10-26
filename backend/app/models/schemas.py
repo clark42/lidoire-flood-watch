@@ -375,7 +375,8 @@ class EpisodeContext(BaseModel):
     rain_48h_before_mm: float
     rain_72h_before_mm: float
     max_dordogne_level_m: float
-    max_tide_coefficient: int
+    # None when no tide data covers the episode (unknown, never a default)
+    max_tide_coefficient: Optional[int] = None
     tide_phase_at_peak: Optional[str] = None
     hours_since_high_tide: Optional[float] = None
 

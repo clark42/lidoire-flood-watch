@@ -8,7 +8,7 @@ import pytest
 from app.services import data_store, influx_client, risk_core, risk_v2
 from app.services.collectors import netatmo
 from app.services.collectors import tide as tide_collector
-from app.models.schemas import RainfallObservation, TideData, TideType
+from app.models.schemas import TideData, TideType
 
 from risk_scenario import build_scenario
 
@@ -233,17 +233,6 @@ async def test_reviewfix_historical_tides_detects_highs_from_heights(monkeypatch
 # --- batched writes ----------------------------------------------------------
 
 
-async def test_reviewfix_store_rainfall_is_one_batch(monkeypatch):
-    batches = _capture_batches(monkeypatch)
-    obs = [RainfallObservation(timestamp=T + timedelta(hours=k), source="netatmo", precipitation_mm_h=0.5 * k,
-                               precipitation_mm_24h=3.0) for k in range(4)]
-    assert await data_store.store_rainfall(obs) == 4
-    assert len(batches) == 1 and len(batches[0]) == 4
-    assert batches[0][2]["fields"]["precipitation_mm_h"] == 1.0
-    assert await data_store.store_rainfall([]) == 0
-    assert len(batches) == 1
-
-
 async def test_reviewfix_store_tide_data_is_one_batch_and_skips_estimated(monkeypatch):
     batches = _capture_batches(monkeypatch)
     tides = [
@@ -252,7 +241,7 @@ async def test_reviewfix_store_tide_data_is_one_batch_and_skips_estimated(monkey
         TideData(timestamp=T + timedelta(hours=12), port="LIDOIRE", tide_type=TideType.HIGH, height_m=5.0,
                  source="estimated"),
     ]
-    assert await data_store.store_tide_data(tides) == 2
+    assert await tide_collector.store_tides_to_influx(tides) == 2
     assert len(batches) == 1 and len(batches[0]) == 2
 
 
