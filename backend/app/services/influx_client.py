@@ -1708,6 +1708,47 @@ async def query_latest_point(
     return await query_latest_measurement(measurement, {"location": location}, max_age_hours)
 
 
+async def query_last_time(
+    measurement: str,
+    tags: Optional[dict[str, Iterable[str]]] = None,
+    field: Optional[str] = None,
+    start: Optional[datetime] = None,
+    stop: Optional[datetime] = None,
+) -> Optional[datetime]:
+    """Naive UTC time of the newest point of ``measurement`` in [start, stop).
+
+    ``tags`` maps a tag key to accepted values (OR). Cheap: ``last()`` per
+    series (pushed down to the storage engine), then the max in Python. The
+    defaults read the last 30 days up to now. Query errors propagate.
+    """
+    validate_identifier(measurement, "measurement")
+    now = _utcnow()
+    start = start or now - timedelta(days=30)
+    stop = stop or now
+    filters = [f"|> filter(fn: (r) => r._measurement == {flux_string(measurement)})"]
+    for key, values in (tags or {}).items():
+        filters.append(_or_filter(
+            validate_identifier(key, "tag key"),
+            [validate_tag_value(str(v), key) for v in values],
+        ))
+    if field:
+        filters.append(f"|> filter(fn: (r) => r._field == {flux_string(validate_identifier(field, 'field'))})")
+    filter_lines = "\n        ".join(f for f in filters if f)
+
+    query = f'''
+    from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(stop)})
+        {filter_lines}
+        |> last()
+        |> keep(columns: ["_time"])
+    '''
+
+    tables = await _run_query(query)
+    times = [record.get_time() for table in tables for record in table.records]
+    times = [to_naive_utc(t) for t in times if t is not None]
+    return max(times) if times else None
+
+
 async def query_latest_measurement(
     measurement: str,
     tags: dict,
