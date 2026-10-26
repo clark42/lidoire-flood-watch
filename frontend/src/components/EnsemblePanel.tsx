@@ -1,22 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import {
-  Area,
-  CartesianGrid,
-  ComposedChart,
-  Line,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
-import { CloudRain, Radar, RefreshCw, Waves } from 'lucide-react'
+import { CloudRain, Radar, RefreshCw } from 'lucide-react'
 import { getEnsembleForecast, getRadarBasinRain } from '../api'
 import type {
   EnsembleForecast,
   EnsembleHorizon,
-  GlofasDay,
-  GlofasForecast,
   RadarBasinRain,
 } from '../types'
 import InfoTooltip from './InfoTooltip'
@@ -37,12 +24,6 @@ function probClass(p: number): string {
 
 function pct(p: number | null | undefined): string {
   return p == null ? '-' : `${Math.round(p * 100)} %`
-}
-
-/** "2026-10-27" -> "27/10" (GloFAS days are calendar days, no time zone). */
-function shortDay(day: string): string {
-  const [, mm, dd] = day.split('-')
-  return dd && mm ? `${dd}/${mm}` : day
 }
 
 function modelDetail(row: EnsembleHorizon, threshold: string, labels: Record<string, string>): string {
@@ -146,69 +127,7 @@ function RadarStrip({ radar }: { radar: RadarBasinRain | null }) {
   )
 }
 
-function GlofasTooltip({ active, payload }: { active?: boolean; payload?: { payload: GlofasDay }[] }) {
-  if (!active || !payload || !payload.length) return null
-  const d = payload[0].payload
-  return (
-    <div className="bg-white border rounded shadow p-2 text-xs space-y-0.5">
-      <div className="font-medium">{shortDay(d.date)} (J+{d.lead_days})</div>
-      <div>Mediane : {d.p50.toFixed(2)} m³/s</div>
-      <div>p10-p90 : {d.p10.toFixed(2)} - {d.p90.toFixed(2)} m³/s</div>
-      <div>min-max : {d.min.toFixed(2)} - {d.max.toFixed(2)} m³/s</div>
-      <div>P(&gt; p95) : {pct(d.prob_gt_p95)} - P(&gt; p99) : {pct(d.prob_gt_p99)}</div>
-    </div>
-  )
-}
-
-function GlofasFan({ glofas }: { glofas: GlofasForecast }) {
-  if (!glofas.available || !glofas.days || glofas.days.length === 0) {
-    return (
-      <div className="text-xs text-gray-400">
-        GloFAS indisponible{glofas.note ? ` : ${glofas.note}` : ''}
-      </div>
-    )
-  }
-  const clim = glofas.climatology
-  const data = glofas.days.map((d) => ({ ...d, outer: [d.min, d.max], band: [d.p10, d.p90] }))
-  const dataMax = Math.max(...glofas.days.map((d) => d.max))
-  const yMax = Math.max(dataMax * 1.15, clim ? clim.p95 * 1.1 : 0, 0.5)
-  const peak95 = glofas.max_prob_gt_p95_10d
-  return (
-    <div>
-      {clim && (
-        <div className="text-xs text-gray-600 mb-1">
-          P(debit &gt; p95 = {clim.p95.toFixed(1)} m³/s) sur 10 j :{' '}
-          <span className="font-semibold">{pct(peak95?.value)}</span>
-          {peak95 && peak95.value > 0 && ` (le ${shortDay(peak95.date)})`}
-          {' - '}p99 = {clim.p99.toFixed(1)} m³/s : {pct(glofas.max_prob_gt_p99_10d?.value)}
-        </div>
-      )}
-      <ResponsiveContainer width="100%" height={170}>
-        <ComposedChart data={data} margin={{ top: 5, right: 10, bottom: 0, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-          <XAxis dataKey="date" tickFormatter={shortDay} tick={{ fontSize: 10 }} minTickGap={20} />
-          <YAxis domain={[0, Number(yMax.toFixed(1))]} tick={{ fontSize: 10 }} width={32} />
-          <Tooltip content={<GlofasTooltip />} />
-          <Area type="monotone" dataKey="outer" stroke="none" fill="#99f6e4" fillOpacity={0.5} isAnimationActive={false} />
-          <Area type="monotone" dataKey="band" stroke="none" fill="#2dd4bf" fillOpacity={0.5} isAnimationActive={false} />
-          <Line type="monotone" dataKey="p50" stroke="#0f766e" strokeWidth={2} dot={false} isAnimationActive={false} />
-          {clim && clim.p95 <= yMax && (
-            <ReferenceLine y={clim.p95} stroke="#f97316" strokeDasharray="4 3" label={{ value: 'p95', fontSize: 9, position: 'right' }} />
-          )}
-          {clim && clim.p99 <= yMax && (
-            <ReferenceLine y={clim.p99} stroke="#ef4444" strokeDasharray="4 3" label={{ value: 'p99', fontSize: 9, position: 'right' }} />
-          )}
-        </ComposedChart>
-      </ResponsiveContainer>
-      <div className="text-[10px] text-gray-400">
-        Run du {glofas.run ? shortDay(glofas.run) : '?'} - {glofas.members ?? '?'} membres - m³/s
-        {glofas.stale && ' (donnees anciennes)'}
-      </div>
-    </div>
-  )
-}
-
-/** Probabilistic forecasts: observed radar rain, ensemble rain exceedance, GloFAS fan chart. */
+/** Probabilistic forecasts: observed radar rain, ensemble rain exceedance (the GloFAS fan is GlofasFan). */
 export default function EnsemblePanel() {
   const [forecast, setForecast] = useState<EnsembleForecast | null>(null)
   const [radar, setRadar] = useState<RadarBasinRain | null>(null)
@@ -293,22 +212,12 @@ export default function EnsemblePanel() {
           </div>
         )}
 
-        {forecast?.glofas && (
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <Waves className="w-4 h-4 text-teal-700" />
-              <span className="text-sm font-medium text-gray-700">Debit Lidoire modelise (GloFAS)</span>
-              <InfoTooltip {...TOOLTIPS.glofas} />
-            </div>
-            <GlofasFan glofas={forecast.glofas} />
-          </div>
-        )}
       </div>
 
       <div className="px-4 pb-3 text-[10px] text-gray-400 space-y-0.5">
         <div>Indicatif : ces previsions n'entrent pas dans le score de risque v3.4.</div>
         {rain?.attribution && <div>{rain.attribution}</div>}
-        {forecast?.glofas?.attribution && <div>{forecast.glofas.attribution}</div>}
+        <div>Débit GloFAS sur 30 jours : section « 30 jours ».</div>
       </div>
     </div>
   )
