@@ -238,6 +238,10 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # Notifications (ntfy), hourly after risk_scorer; no job when not configured
+    from app.services.notifier import schedule_notifier
+    schedule_notifier(_scheduler, first_run=now + RISK_JOB_FIRST_RUN_DELAY)
+
     # Camera: every minute (configurable)
     from app.config import get_settings
     settings = get_settings()

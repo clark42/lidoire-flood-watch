@@ -98,6 +98,8 @@ def test_security_env_example_has_only_placeholders():
         "SHOM_API_KEY",
         "METEOFRANCE_API_KEY",
         "CAMERA_RTSP_URL",
+        "NTFY_TOPIC",
+        "NTFY_TOKEN",
     }
     seen = set()
     for line in ENV_EXAMPLE.read_text().splitlines():

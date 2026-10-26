@@ -29,3 +29,13 @@ class FloodEpisodeRow(Base):
     observed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     water_height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
     outcome_source: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class NotifierStateRow(Base):
+    """Notifier state (JSON), one row per key: survives backend restarts."""
+
+    __tablename__ = "notifier_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

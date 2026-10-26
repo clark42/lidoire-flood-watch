@@ -217,6 +217,27 @@ class Settings(BaseSettings):
     # Frontend
     frontend_url: str = "http://localhost:3000"
 
+    # Notifications (app/services/notifier.py). ntfy: POST <ntfy_url>/<ntfy_topic>.
+    # Empty URL or topic = notifications disabled (one info log at startup).
+    # On a public server the topic acts as a password: anyone knowing it can subscribe.
+    ntfy_url: str = ""
+    ntfy_topic: str = ""
+    ntfy_token: str = ""  # Optional bearer token (access-controlled topic)
+    # Observed level: rising to orange/red is sent at once; a lower level is
+    # sent only once it has held notify_downgrade_hold_hours (the score
+    # oscillates around the thresholds with the tide).
+    notify_yellow: bool = False  # Also notify green <-> yellow transitions
+    notify_downgrade_hold_hours: float = 3.0
+    # Forecast heads-up: max score over the next N hours reaches orange/red
+    notify_forecast_hours: int = 48
+    # Data staleness: primary station last point / last stored realtime score
+    notify_station_stale_hours: float = 3.0
+    notify_score_stale_hours: float = 2.0
+
+    @property
+    def notifications_enabled(self) -> bool:
+        return bool(self.ntfy_url.strip() and self.ntfy_topic.strip())
+
     # extra="ignore": the shared .env also holds compose-only variables
     # (POSTGRES_PASSWORD, REDIS_PASSWORD...) that are not settings.
     model_config = SettingsConfigDict(
