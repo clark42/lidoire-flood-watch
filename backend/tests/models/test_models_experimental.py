@@ -37,6 +37,12 @@ def test_models_experimental_not_imported_by_production():
         if p.name != "models_experimental.py" and "models_experimental" in p.read_text(encoding="utf-8")
     ]
     assert offenders == []
+    # v4-alpha (risk_v4) is not wired yet: only the offline candidate wrapper may import it
+    offenders_v4 = [
+        p for p in app_dir.rglob("*.py")
+        if p.name not in ("risk_v4.py", "models_experimental.py") and "risk_v4" in p.read_text(encoding="utf-8")
+    ]
+    assert offenders_v4 == []
 
 
 def test_models_piecewise_matches_harness():

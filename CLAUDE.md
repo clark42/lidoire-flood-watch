@@ -50,6 +50,7 @@ python -m scripts.eval build            # une fois, ~4 min de telechargements (c
 python -m scripts.eval replay --offline # scores horaires v3.4 + baselines
 python -m scripts.eval report --offline # metriques -> data/eval_out/
 python -m scripts.eval.candidates --offline   # modeles candidats (data/eval_out/candidates/)
+python -m scripts.eval.climatology [--offline] # seuils a priori v4-alpha (climatologie <= 2022-09)
 ```
 
 ## Architecture
@@ -86,6 +87,7 @@ app/
 └── services/
     ├── risk_core.py     # Coeur de scoring PUR, modele v3.4 (compute_risk, aucune I/O)
     ├── risk_shadow.py   # Modele shadow 3.4-gate (gate de remous, PUR), stocke, jamais affiche
+    ├── risk_v4.py       # Candidat v4-alpha "4.0a" (mecanismes, PUR), importe par AUCUN code de production
     ├── risk_v2.py       # Construction des features (temps reel, simulation, backfill), stockage
     ├── forecast.py      # Previsions horaires (features par heure -> compute_risk)
     ├── outlook.py       # Horizons 6/24/72 h, pourquoi, checklist, notes de confiance (PUR + cache)
@@ -127,7 +129,8 @@ app/
 
 ```
 scripts/eval/            # Harnais d'evaluation (python -m scripts.eval build|replay|report)
-├── sources.py           # Telechargements + cache (Hydroportail, Open-Meteo archive/marine)
+├── sources.py           # Telechargements + cache (Hydroportail H/Q, Hub'Eau elab/piezo, Open-Meteo archive/marine/flood)
+├── climatology.py       # Seuils a priori v4-alpha (series arretees au 2022-09-30)
 ├── dataset.py           # Lignes horaires FeatureRow (features risk_core + valeurs brutes)
 ├── truth.py             # Evenements depuis episodes_labels.json
 ├── contingency.py       # Alertes, POD/FAR/CSI, avance
@@ -368,7 +371,29 @@ Precautions : 5 crues (une crue = 20 points de POD, IC 95% de 3/5 = 15-95%, aucu
 
 Periodes d'alerte v3.3 non labellisees a faire annoter : 2023-11-02 -> 11-06, 2023-11-09 -> 11-15, 2024-01-18 -> 01-19, 2024-02-10 -> 02-13, 2024-03-02 -> 03-04, 2024-05-14 -> 05-16, 2024-05-20 -> 05-23, 2024-11-21 -> 11-22, 2025-01-27 -> 01-29 (liste complete : `unlabelled_alerts.csv`).
 
-`app/services/models_experimental.py` (gate remous, regles backwater, regression logistique, GR4H) n'est importe par aucun code de production : un test (`test_models_experimental_not_imported_by_production`) l'impose.
+### Candidat v4-alpha (`app/services/risk_v4.py`, pre-enregistre le 2026-10-26)
+
+Score = max(min(remous, ruissellement), debordement direct [, nappe]), chaque mecanisme note 0-100 (0 / 15 / 35 / 55 aux ancres zero / jaune / orange / rouge), breakdown par mecanisme. Seuils fixes AVANT tout calcul de metrique v4, sans label : remous = H_aval Pessac 3.0 / 3.8 / 4.5 m (ou Z_c = 0.8 (Pessac + 3.33) + 0.2 (Libourne - 1.17) m NGF, seuils par quantile mapping) ; ruissellement = max 12.5 h du Q de l'Eyraud (P540401002) publie 7 h plus tard, seuils 0.4 / 0.7 / 1.0 x Q2 = 18.89 m3/s (QIXnJ 2010-2022) ; debordement = niveaux 2 / 5 / 10 ans de Pessac (HIXnJ 1996-2022 : 5.13 / 6.25 / 6.54 m) ; nappe (off par defaut) = piezometre de Mouliets 08048X0088/P, percentiles 50 / 90 / 97 / 99.5 (2007-2022). Variantes : Caudeau (Q2 9.64), GR4H (0.4 / 0.7 / 1.0 x Q2 simule), GloFAS cellule Lidoire (Q2 7.22, seamless_v4 publie a J+1). Latences appliquees : Eyraud/Caudeau 7 h, piezo J+1 12 h, GloFAS J+1 0 h. COMEPHORE non telecharge (une requete Range par membre du tar, ~140k requetes).
+
+| Modele | Protocole | Niveau | Crues | Alertes | FA brutes (lab.+non lab.) | FAR brut / lab. | CSI | Avance med./min (h) | Alertes/an | AUC |
+|--------|-----------|--------|-------|---------|------|------|-----|------|------|-----|
+| v4a_joint (Eyraud) | pre-enregistre, 0 param. | orange | 4/5 | 9 | 4 (1+3) | 50% / 20% | 0.44 | 37 / -2 | 3.3 | 0.912 [0.80-0.97] |
+| v4a_joint | pre-enregistre | rouge | 3/5 | 6 | 3 (0+3) | 50% / 0% | 0.38 | -4 / -5 | 2.5 | |
+| v4a_joint_zc (Z_c) | pre-enregistre | orange | 4/5 | 9 | 4 (1+3) | 50% / 20% | 0.44 | 36 / 2 | 3.3 | 0.911 |
+| v4a_caudeau | pre-enregistre | orange | 4/5 | 10 | 6 (3+3) | 60% / 43% | 0.36 | 32 / -2 | 3.0 | 0.869 |
+| v4a_gr4h | pre-enregistre | orange | 1/5 | 2 | 1 (0+1) | 50% / 0% | 0.17 | 68 / 68 | 1.3 | 0.897 |
+| v4a_glofas | pre-enregistre | orange | 2/5 | 10 | 8 (0+8) | 80% / 0% | 0.15 | 38 / 36 | 3.3 | 0.879 |
+| v4a_joint+gw (nappe) | pre-enregistre | orange | 4/5 | 19 | 15 (4+11) | 79% / 50% | 0.20 | 37 / 0 | 4.8 | 0.834 |
+| bw_rule_eyraud_cv | LOEO bloque, 2 param. | orange | 3/5 | 7 | 4 (0+4) | 57% / 0% | 0.33 | 69 / 12 | 2.3 | 0.902 |
+| lr_eyraud_haval_cv | LOEO bloque, 3 param. | orange | 5/5 | 15 | 9 (3+6) | 64% / 38% | 0.36 | 15 / -1 | 4.8 | 0.835 [0.56-0.97] |
+
+Fusion a 12 h : v4a_joint 9 alertes orange / CSI 0.44 / 2.8 par an (rouge 5 / CSI 0.43). Ablation sans debordement : identique en orange (le debordement n'atteint l'orange qu'en 2026-02, hors periode labellisee). Eyraud sans latence (borne optimiste, fusion 12 h) : 8 alertes orange, 0 FA labellisee, AUC 0.935.
+
+Lecture par episode (v4a_joint) : rate 2023-03-11 (infiltration, H_aval 2.8 m, alerte le 12/03 a +16 h, comptee non labellisee) ; 2024-02-26 detectee 2 h apres le pic labellise (precision au jour) ; 2024-03-30 (near miss) sans alerte, Eyraud 20.5 m3/s mais remous bas (3.1 m) ; 2024-05-09 sans alerte, remous 5.4 m mais Eyraud 10 m3/s ; 2025-01-12 sans alerte ; seule FA labellisee = 2025-11-25 (near miss "haut", alerte orange de 7 h) ; 3 alertes non labellisees, toutes dans les periodes a annoter (2023-03-12, 2023-11-04 -> 11-06 Ciaran, 2023-11-12). 2026-02 : joint 98 des le 10/02 21 h (Eyraud 31 m3/s le 12/02 avec Pessac 6-6.6 m) puis debordement 100 (Pessac 7.85 m le 14/02 10 h) : les deux mecanismes, seule une heure d'inondation labellisee les departagera. Avril 2025 : pluie 19-20/04, pic Eyraud 31.1 m3/s le 21/04 00 h UTC, Pessac max 4.79 m le 22/04 14 h, Eyraud 2.5 m3/s a l'heure labellisee (23/04 16 h) : le pic au moulin est plus probablement le 21-22/04 (label non modifie, a confirmer).
+
+Precautions v4 : 5 crues (IC 95% de 4/5 = 28-99%, l'ecart avec v3.4 n'est pas significatif) ; la structure (remous ET ruissellement) et le choix de l'Eyraud viennent d'analyses faites sur ces memes 14 episodes (biais de selection : la Caudeau, 2e analogue, fait moins bien) ; seuils a priori mais pas hors echantillon au sens strict ; debordement non teste par les labels.
+
+`app/services/models_experimental.py` (gate remous, regles backwater, regression logistique, GR4H, wrapper v4-alpha) n'est importe par aucun code de production, `risk_v4.py` non plus (seul le wrapper l'importe) : un test (`test_models_experimental_not_imported_by_production`) l'impose.
 
 ## Tooltips pedagogiques
 
@@ -446,3 +471,4 @@ Installation existante : conserver l'ancien mot de passe Postgres et l'ancien je
 - Regression logistique / GR4H seulement quand davantage d'episodes seront labellises.
 - Archiver aussi le shadow `3.4-gate` dans `forecast_runs` (une ligne par version) et ajouter les scores evenementiels (POD/FAR par episode) a `forecast-skill`.
 - Vigilance officielle (Vigicrues DO5, Meteo-France pluie-inondation/crues >= orange) comme feature candidate, une fois la serie `vigilance` accumulee ; observations terrain comme labels supplementaires.
+- v4-alpha en shadow `4.0a` (variante `v4a_joint`) des que les collecteurs Q Eyraud temps reel existent ; labelliser 2026-02 avec l'heure et confirmer l'heure d'avril 2025.
