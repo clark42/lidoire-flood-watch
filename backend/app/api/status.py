@@ -370,7 +370,7 @@ async def get_sources_detail():
                 "configured": bool(settings.infoclimat_api_key),
                 "search_radius_km": 40,
                 "max_stations": 5,
-                "note": "API restreinte par IP — l'IP du serveur doit etre whitelistee",
+                "note": "Cle API requise ; seules les 5 stations les plus proches sont interrogees",
             },
             "open_meteo": {
                 "name": "Open-Meteo",
@@ -379,7 +379,8 @@ async def get_sources_detail():
                 "api_archive": "https://archive-api.open-meteo.com/v1/archive",
                 "fields": [
                     "precipitation", "temperature", "humidity", "wind",
-                    "soil_moisture (0-7cm, 7-100cm)", "soil_temperature",
+                    "soil_moisture (temps reel : ICON 0-9 / 9-81 cm ; timeline : ECMWF 0-7 / 7-100 cm)",
+                    "soil_temperature",
                     "evapotranspiration (ET0)",
                 ],
                 "basin_points": basin_points,

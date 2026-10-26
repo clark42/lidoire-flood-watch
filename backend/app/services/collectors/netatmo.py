@@ -139,6 +139,23 @@ def _update_stored_tokens(access_token: str, refresh_token: str, expires_in: int
         logger.warning("Could not persist Netatmo tokens")
 
 
+def is_authorised() -> bool:
+    """Cheap check (no network): client credentials and a token are configured.
+
+    False means Netatmo cannot return any data until the OAuth flow
+    (/api/auth/netatmo) has been completed.
+    """
+    settings = get_settings()
+    if not settings.netatmo_client_id or not settings.netatmo_client_secret:
+        return False
+    tokens = _get_stored_tokens()
+    return bool(
+        tokens.get("refresh_token")
+        or _valid_access_token(tokens)
+        or settings.netatmo_refresh_token
+    )
+
+
 def _valid_access_token(tokens: dict) -> Optional[str]:
     """Return the stored access token if it is valid for at least 5 more minutes."""
     if tokens.get("access_token") and tokens.get("expires_at"):

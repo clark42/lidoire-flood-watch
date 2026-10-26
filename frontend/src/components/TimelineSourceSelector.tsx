@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { Check, Droplets, Waves, AlertTriangle, Anchor, Sprout, Wind, Radio } from 'lucide-react'
 import type { RiverStationInfo, RainfallStationInfo } from '../types'
+import { formatDistanceKm } from '../utils/format'
 
 interface TimelineSourceSelectorProps {
   riverStations: RiverStationInfo[]
@@ -149,7 +150,7 @@ export default function TimelineSourceSelector({
                     {isSelected && <Check className="w-3 h-3" />}
                     {station.name}
                     <span className="opacity-60">
-                      ({station.distance_km}km)
+                      ({formatDistanceKm(station.distance_km)})
                     </span>
                   </button>
                 )
@@ -164,8 +165,11 @@ export default function TimelineSourceSelector({
         <div className="flex items-center gap-2 mb-2">
           <Droplets className="w-4 h-4 text-green-600" />
           <span className="text-sm font-medium text-green-700">
-            Pluviometrie (Netatmo Lidoire)
+            Pluviometrie (Open-Meteo, Netatmo Lidoire)
           </span>
+          {rainfallStations.some((s) => s.available === false) && (
+            <span className="text-xs text-gray-500">Netatmo indisponible (non autorise)</span>
+          )}
         </div>
         <div className="space-y-2">
           {Object.entries(positionLabels).map(([position, label]) => {
@@ -180,15 +184,17 @@ export default function TimelineSourceSelector({
                   const isSelected = selectedRainfallStations.includes(
                     station.id
                   )
+                  const unavailable = station.available === false
                   return (
                     <button
                       key={station.id}
                       onClick={() => onRainfallStationToggle(station.id)}
+                      title={unavailable ? 'Source indisponible : aucune donnee collectee' : undefined}
                       className={`flex items-center gap-1 px-2 py-1 text-xs rounded-full border transition-all ${
                         isSelected
                           ? 'border-2'
                           : 'border-gray-200 bg-white hover:bg-gray-50'
-                      }`}
+                      } ${unavailable ? 'opacity-50' : ''}`}
                       style={
                         isSelected
                           ? {
@@ -201,6 +207,7 @@ export default function TimelineSourceSelector({
                     >
                       {isSelected && <Check className="w-3 h-3" />}
                       {station.name}
+                      {unavailable && <span className="opacity-60">(indisponible)</span>}
                     </button>
                   )
                 })}

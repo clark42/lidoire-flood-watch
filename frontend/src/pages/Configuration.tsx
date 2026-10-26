@@ -28,6 +28,7 @@ import type {
 } from '../types'
 import { formatAge, parseApiDate } from '../utils/time'
 import ApiKeyPanel from '../components/ApiKeyPanel'
+import { formatDistanceKm } from '../utils/format'
 import ActionError from '../components/ActionError'
 
 const DEPENDENCIES: { key: DependencyName; label: string }[] = [
@@ -392,7 +393,7 @@ export default function Configuration() {
                           {s.id}
                         </td>
                         <td className="py-2 pr-3">{s.river}</td>
-                        <td className="py-2 pr-3 text-right">{s.distance_km} km</td>
+                        <td className="py-2 pr-3 text-right">{formatDistanceKm(s.distance_km)}</td>
                         <td className="py-2 pr-3 text-right">{s.delay_hours}h</td>
                         <td className="py-2 pr-3 text-right font-medium">
                           {(s.weight * 100).toFixed(0)}%
