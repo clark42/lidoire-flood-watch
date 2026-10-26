@@ -177,11 +177,18 @@ def test_risk_model_never_reads_the_new_series():
         "app/services/forecast.py", "app/services/backfill.py", "app/services/episode_detector.py",
         "app/services/notifier.py", "scripts/eval",
     ]
+    # scripts/eval downloads its own GloFAS archive for offline candidates (v4-alpha):
+    # there only imports of the production modules are forbidden.
+    imports = re.compile(r"^\s*(?:from|import)\s+app\.services\.(?:collectors\.)?(?:%s)\b" % "|".join(new_modules),
+                         re.M)
     for rel in risk_paths:
         path = BACKEND / rel
         files = sorted(path.rglob("*.py")) if path.is_dir() else [path]
         for f in files:
             text = f.read_text()
+            assert not imports.search(text), f"{f.relative_to(BACKEND)} imports the new code"
+            if rel == "scripts/eval":
+                continue
             for name in new_modules:
                 assert name not in text, f"{f.relative_to(BACKEND)} references {name}"
 
