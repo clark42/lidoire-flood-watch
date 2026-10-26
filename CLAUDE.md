@@ -188,6 +188,7 @@ Service dans `backend/app/services/forecast.py` :
 - Pluie Open-Meteo (AROME/ARPEGE + ECMWF) en UTC, pluie passee calibree sur la pluie temps reel multi-sources (facteur borne a [1/3, 3])
 - Niveaux projetes : tendance actuelle (12 h max) + reponse a la pluie tombee apres t0, decalee par `delay_hours` de chaque station
 - Nombre de stations en hausse : decroissance lineaire sur 48 h, plus apport de la pluie projetee
+- Maree connue jusqu'a l'horizon `tide_horizon` (derniere PM connue + 6.21 h, champ du resultat et de `data_sources.tide.horizon`) ; au-dela (H > 0), maree indisponible (`tide_available=false`, `beyond_tide_horizon=true`, facteurs maree a 0) au lieu d'une phase perimee
 - Cache Redis 30 min ; overlay Timeline via `include_forecast=true`
 
 ### Notifications
@@ -212,7 +213,7 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 
 ## Sources de donnees
 
-- **Marees** : SHOM (cle API, port de Bordeaux) ou Open-Meteo Marine (niveau marin modele au large de l'embouchure, 45.6 / -1.2 ; PM/BM extraites, coefficient estime). Les heures sont decalees une seule fois, a la collecte, de `tide_phase_lag_hours[source]` (Open-Meteo 6 h, SHOM 2 h non mesure) pour estimer la maree a la confluence de la Lidoire, et stockees sous `port=LIDOIRE` (`tide_port_confluence`) ; hauteurs et coefficients restent ceux de la source. PM mesuree apres celle de l'embouchure (archives 2023-06 -> 2025-12) : Libourne +4.0 h, Pessac +7.0 h. Les anciens points `BORDEAUX`/`LIBOURNE` (sans decalage) ne sont plus lus : apres deploiement, re-backfill des marees et des scores. Serie timeline `tide:LIDOIRE`. Marees estimees jamais stockees, `TideForecast.available=False`.
+- **Marees** : SHOM (cle API, port de Bordeaux) ou Open-Meteo Marine (niveau marin modele au large de l'embouchure, 45.6 / -1.2 ; PM/BM extraites, coefficient estime). Les heures sont decalees une seule fois, a la collecte, de `tide_phase_lag_hours[source]` (Open-Meteo 6 h, SHOM 2 h non mesure) pour estimer la maree a la confluence de la Lidoire, et stockees sous `port=LIDOIRE` (`tide_port_confluence`) ; hauteurs et coefficients restent ceux de la source. PM mesuree apres celle de l'embouchure (archives 2023-06 -> 2025-12) : Libourne +4.0 h, Pessac +7.0 h. Les anciens points `BORDEAUX`/`LIBOURNE` (sans decalage) ne sont plus lus : apres deploiement, re-backfill des marees et des scores. Serie timeline `tide:LIDOIRE`. Marees estimees jamais stockees, `TideForecast.available=False`. Un seul point par horodatage : l'heure d'une PM/BM n'est pas reecrite en hauteur horaire non taguee, un lot ne garde qu'un evenement par (port, type, heure), et les lectures (`query_tides_timeline`, `tide_inputs_from_records`) fusionnent les doublons deja en base. Horizon de collecte Open-Meteo Marine : `tide_forecast_days` = 10 (niveau marin servi ~9.5 jours, nulls de fin ignores).
 - **Niveaux rivieres** : Hub'Eau temps reel (30 derniers jours), Hydroportail pour l'historique, Vigicrues pour Libourne (metres)
 - **Meteo prevue** : Open-Meteo (modeles AROME/ARPEGE), timestamps UTC
 - **Meteo locale** : Netatmo (stations citoyennes du bassin Lidoire), Infoclimat StatIC

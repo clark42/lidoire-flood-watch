@@ -1391,39 +1391,69 @@ async def query_river_levels_multi_station(
         return {}
 
 
-async def query_tides_timeline(
+def build_tides_timeline_query(
     start: datetime,
     end: datetime,
     port: str = "LIDOIRE",
     resolution: str = "1h",
-) -> list[dict]:
-    """Query tide height data with aggregation for timeline display."""
+    agg_fn: str = "mean",
+) -> str:
+    """Flux query of ``query_tides_timeline`` (validated).
+
+    PM/BM events (``tide_type`` tag) and hourly heights are distinct series
+    that can share a timestamp: they are grouped into one table before the
+    aggregation, so each window yields a single point.
+    """
     validate_port(port)
     validate_resolution(resolution)
-
-    query = f'''
+    if agg_fn not in VALID_AGG_FNS:
+        raise InvalidQueryParameter(f"invalid aggregation function: {agg_fn!r}")
+    return f'''
     from(bucket: {_bucket()})
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
         |> filter(fn: (r) => r._measurement == "tide")
         |> filter(fn: (r) => r.port == {flux_string(port)})
         |> filter(fn: (r) => r._field == "height_m")
-        |> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)
+        |> group(columns: ["_measurement", "_field", "port"])
+        |> sort(columns: ["_time"])
+        |> aggregateWindow(every: {resolution}, fn: {agg_fn}, createEmpty: false)
         |> sort(columns: ["_time"])
     '''
 
+
+def dedupe_timeline_points(points: list[dict], combine=None) -> list[dict]:
+    """One {timestamp, value} per timestamp, sorted (``combine`` defaults to the mean)."""
+    combine = combine or (lambda values: sum(values) / len(values))
+    by_ts: dict[datetime, list[float]] = {}
+    for p in points:
+        if p.get("timestamp") is None or p.get("value") is None:
+            continue
+        by_ts.setdefault(p["timestamp"], []).append(p["value"])
+    return [{"timestamp": ts, "value": combine(v)} for ts, v in sorted(by_ts.items())]
+
+
+async def query_tides_timeline(
+    start: datetime,
+    end: datetime,
+    port: str = "LIDOIRE",
+    resolution: str = "1h",
+    agg_fn: str = "mean",
+) -> list[dict]:
+    """Tide heights aggregated per window for the timeline (one point per window).
+
+    Idempotent read: duplicate timestamps (PM/BM point stored next to the
+    hourly height of the same hour) are merged, in Flux and again here.
+    """
+    query = build_tides_timeline_query(start, end, port, resolution, agg_fn)
+
     try:
         tables = await _run_query(query)
-        results = []
-
-        for table in tables:
-            for record in table.records:
-                results.append({
-                    "timestamp": record.get_time(),
-                    "value": record.get_value(),
-                })
-
-        results.sort(key=lambda p: p["timestamp"])
-        return results
+        results = [
+            {"timestamp": record.get_time(), "value": record.get_value()}
+            for table in tables
+            for record in table.records
+        ]
+        return dedupe_timeline_points(results, max if agg_fn == "max" else None)
     except Exception as e:
         logger.error("Error querying tides timeline from InfluxDB: %s", e)
         return []

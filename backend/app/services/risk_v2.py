@@ -956,10 +956,12 @@ def tide_inputs_from_records(rows: list[dict]) -> tuple[list[tuple[datetime, Opt
     coefficient of the latest past high tide, exactly like the realtime
     TideForecast (where coefficients are attached to the PM events).
     """
-    heights = sorted(
-        (to_utc_naive(r["timestamp"]), float(r["height_m"]))
+    # One height per time (a PM/BM point and the hourly height of the same
+    # hour are two rows with the same value)
+    heights = sorted({
+        to_utc_naive(r["timestamp"]): float(r["height_m"])
         for r in rows if r.get("height_m") is not None
-    )
+    }.items())
     coefs = sorted(
         (to_utc_naive(r["timestamp"]), int(r["coefficient"]))
         for r in rows if r.get("coefficient") is not None

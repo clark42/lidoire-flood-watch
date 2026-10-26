@@ -191,6 +191,11 @@ class Settings(BaseSettings):
         "open-meteo-marine": 6.0,
         "shom": 2.0,
     }
+    # Open-Meteo Marine forecast length requested by the tide collector. The
+    # sea level is served ~9.5 days ahead (null beyond): 7 days left the risk
+    # forecast without tides after ~5.5 days. Beyond the last stored high
+    # tide the forecast marks the tide unavailable (forecast.tide_horizon).
+    tide_forecast_days: int = 10
 
     # Risk thresholds (v2.4: lowered based on Feb 2024 analysis)
     risk_rain_24h_yellow: float = 25.0  # mm (was 30)
