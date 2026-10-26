@@ -60,3 +60,28 @@ async def test_store_does_not_write_fake_hourly(monkeypatch):
     assert n == 2
     assert len(batches) == 1  # one HTTP write for all stations
     assert all(set(f) == {"precipitation_mm_24h"} for f in points)
+
+
+async def test_fetch_sends_every_station(monkeypatch):
+    import httpx
+
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "infoclimat_api_key", "k")
+    seen = []
+
+    def handler(request):
+        seen.append(request.url)
+        return httpx.Response(200, json={"hourly": {}})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        infoclimat.httpx, "AsyncClient",
+        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+    )
+
+    await infoclimat.fetch_station_observations(
+        ["ST1", "ST2"], datetime(2026, 10, 25), datetime(2026, 10, 26)
+    )
+    assert seen[0].params.get_list("stations[]") == ["ST1", "ST2"]
+    assert seen[0].params["token"] == "k"

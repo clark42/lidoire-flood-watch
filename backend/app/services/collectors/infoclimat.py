@@ -169,18 +169,14 @@ async def fetch_station_observations(
         "start": start_date.strftime("%Y-%m-%d"),
         "end": end_date.strftime("%Y-%m-%d"),
         "token": api_key,
+        # Repeated stations[] key; httpx drops a query string already present in the URL
+        "stations[]": station_ids,
     }
-
-    # Add stations (multiple stations[] params)
-    stations_params = "&".join([f"stations[]={sid}" for sid in station_ids])
 
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            # Build full URL with stations array
-            full_url = f"{INFOCLIMAT_API_URL}?{stations_params}"
-
             response = await client.get(
-                full_url,
+                INFOCLIMAT_API_URL,
                 params=params,
                 timeout=30.0,
             )
@@ -195,7 +191,8 @@ async def fetch_station_observations(
             return data
 
     except httpx.HTTPStatusError as e:
-        logger.warning(f"Infoclimat API error: {e.response.status_code}")
+        # The body names the cause, e.g. {"errors":["Wrong IP address"]} for an IP-bound token
+        logger.warning(f"Infoclimat API error: {e.response.status_code} {e.response.text[:200]}")
         return {}
     except Exception as e:
         logger.warning(f"Error fetching Infoclimat observations: {e}")
