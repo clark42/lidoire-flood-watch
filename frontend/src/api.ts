@@ -333,6 +333,7 @@ export async function getUnifiedTimeline(
   signal?: AbortSignal,
   includeRiskShadow?: boolean,
   indicatorSeries?: string[],
+  includeRiskShadowV4?: boolean,
 ): Promise<UnifiedTimelineResult> {
   const params = new URLSearchParams({ resolution })
   if (start) params.set('start', start)
@@ -351,6 +352,7 @@ export async function getUnifiedTimeline(
   if (includeWind) params.set('include_wind', 'true')
   if (includeForecast) params.set('include_forecast', 'true')
   if (includeRiskShadow) params.set('include_risk_shadow', 'true')
+  if (includeRiskShadowV4) params.set('include_risk_shadow_v4', 'true')
   if (indicatorSeries && indicatorSeries.length > 0) {
     params.set('indicators', indicatorSeries.join(','))
   }
