@@ -21,6 +21,7 @@ from typing import Optional
 
 from app.config import get_settings
 from app.models.schemas import WeatherForecast, RainfallObservation, RainfallSummary
+from app.services.cache import EXTERNAL_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ async def fetch_open_meteo_forecast(lat: float, lon: float, forecast_days: int =
                         # UTC: all callers compare these naive timestamps to utcnow()
                         "timezone": "UTC",
                     },
-                    timeout=30.0,
+                    timeout=EXTERNAL_TIMEOUT_S,
                 ),
                 client.get(
                     OPEN_METEO_MODELS["ecmwf"],  # ECMWF for long range
@@ -101,7 +102,7 @@ async def fetch_open_meteo_forecast(lat: float, lon: float, forecast_days: int =
                         "forecast_days": min(forecast_days, 16),
                         "timezone": "UTC",
                     },
-                    timeout=30.0,
+                    timeout=EXTERNAL_TIMEOUT_S,
                 ),
             )
             mf_response.raise_for_status()
@@ -194,7 +195,7 @@ async def fetch_multi_model_forecast(
                         "forecast_days": min(forecast_days, 16),
                         "timezone": "Europe/Paris",
                     },
-                    timeout=30.0,
+                    timeout=EXTERNAL_TIMEOUT_S,
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -329,7 +330,7 @@ async def fetch_soil_and_wind(lat: float, lon: float) -> dict:
                     "forecast_days": 1,
                     "timezone": "UTC",
                 },
-                timeout=30.0,
+                timeout=EXTERNAL_TIMEOUT_S,
             )
             response.raise_for_status()
             data = response.json()
@@ -835,7 +836,7 @@ async def _fetch_past_hourly_series(lat: float, lon: float) -> list[tuple[dateti
                         "forecast_days": 1,
                         "timezone": "UTC",
                     },
-                    timeout=30.0,
+                    timeout=EXTERNAL_TIMEOUT_S,
                 )
                 response.raise_for_status()
                 series = _parse_hourly_series(response.json())

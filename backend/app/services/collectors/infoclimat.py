@@ -21,6 +21,13 @@ import httpx
 
 from app.config import get_settings
 from app.models.schemas import RainfallObservation
+from app.services.cache import (
+    EXTERNAL_TIMEOUT_S,
+    CircuitBreaker,
+    TTLCache,
+    describe_error,
+    is_upstream_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +52,15 @@ _stations_cache: Optional[list[dict]] = None
 _observations_cache: dict = {}
 _cache_expiry: Optional[datetime] = None
 CACHE_DURATION_MINUTES = 15
+
+# Request paths never call Infoclimat: the scheduler job (every 15 min) runs
+# get_basin_rainfall_infoclimat(), whose last available result is served by
+# peek_basin_rainfall_infoclimat() for up to LATEST_MAX_AGE_S.
+LATEST_MAX_AGE_S = 60 * 60
+_latest = TTLCache(ttl_seconds=LATEST_MAX_AGE_S, max_entries=1)
+
+# One breaker for the whole host (stations list + observations)
+_breaker = CircuitBreaker("Infoclimat")
 
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -71,13 +87,15 @@ async def fetch_stations_list() -> list[dict]:
 
     if _stations_cache:
         return _stations_cache
+    if not _breaker.allow():
+        return []
 
     # Direct Infoclimat GeoJSON endpoint
     url = "https://www.infoclimat.fr/opendata/stations_xhr.php?format=geojson"
 
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            response = await client.get(url, timeout=30.0)
+            response = await client.get(url, timeout=EXTERNAL_TIMEOUT_S)
             response.raise_for_status()
             data = response.json()
 
@@ -101,15 +119,21 @@ async def fetch_stations_list() -> list[dict]:
                     })
 
             _stations_cache = stations
+            _breaker.record_success()
             logger.info(f"Infoclimat: loaded {len(stations)} stations")
             return stations
 
     except Exception as e:
-        logger.warning(f"Error fetching Infoclimat stations list: {e}")
+        if is_upstream_failure(e):
+            _breaker.record_failure(e)
+        else:
+            logger.warning("Error fetching Infoclimat stations list: %s", describe_error(e))
         return []
 
 
-async def find_stations_near(lat: float, lon: float, radius_km: float = 30) -> list[dict]:
+async def find_stations_near(
+    lat: float, lon: float, radius_km: float = 30, fetch: bool = True,
+) -> list[dict]:
     """
     Find Infoclimat stations within a radius of a point.
 
@@ -117,11 +141,12 @@ async def find_stations_near(lat: float, lon: float, radius_km: float = 30) -> l
         lat: Center latitude
         lon: Center longitude
         radius_km: Search radius in km
+        fetch: False on request paths: only the already loaded list is used
 
     Returns:
         List of stations with distance, sorted by proximity
     """
-    stations = await fetch_stations_list()
+    stations = await fetch_stations_list() if fetch else (_stations_cache or [])
 
     nearby = []
     for station in stations:
@@ -158,6 +183,8 @@ async def fetch_station_observations(
     if not api_key:
         logger.info("Infoclimat API key not configured")
         return {}
+    if not _breaker.allow():
+        return {}
 
     # Build request URL
     # Format: ?version=2&method=get&format=json&stations[]={id}&start={date}&end={date}&token={key}
@@ -178,7 +205,7 @@ async def fetch_station_observations(
             response = await client.get(
                 INFOCLIMAT_API_URL,
                 params=params,
-                timeout=30.0,
+                timeout=EXTERNAL_TIMEOUT_S,
             )
 
             if response.status_code == 403:
@@ -188,14 +215,15 @@ async def fetch_station_observations(
             response.raise_for_status()
             data = response.json()
 
+            _breaker.record_success()
             return data
 
-    except httpx.HTTPStatusError as e:
-        # The body names the cause, e.g. {"errors":["Wrong IP address"]} for an IP-bound token
-        logger.warning(f"Infoclimat API error: {e.response.status_code} {e.response.text[:200]}")
-        return {}
     except Exception as e:
-        logger.warning(f"Error fetching Infoclimat observations: {e}")
+        if is_upstream_failure(e):
+            _breaker.record_failure(e)
+        else:
+            # The body names the cause, e.g. {"errors":["Wrong IP address"]} for an IP-bound token
+            logger.warning("Error fetching Infoclimat observations: %s", describe_error(e))
         return {}
 
 
@@ -369,8 +397,26 @@ async def get_basin_rainfall_infoclimat() -> dict:
     # Update cache
     _observations_cache = result
     _cache_expiry = now + timedelta(minutes=CACHE_DURATION_MINUTES)
+    _latest.set("basin", result)
 
     return result
+
+
+def peek_basin_rainfall_infoclimat() -> dict:
+    """Last available Infoclimat basin rainfall, never calling the API.
+
+    Used by request paths (realtime inputs, /api/realtime/*): the data is
+    fetched by the scheduler job. Unavailable (same shape as a failed fetch)
+    when no result younger than LATEST_MAX_AGE_S exists.
+    """
+    cached = _latest.get("basin")
+    if cached is not None:
+        return cached
+    return {
+        "available": False,
+        "reason": "No recent Infoclimat data (fetched in the background)",
+        "stations": [],
+    }
 
 
 async def store_rainfall_to_influx(data: dict) -> int:

@@ -4,7 +4,7 @@ Periodically collects data from:
 - Tide APIs
 - Hub'Eau (river levels)
 - Weather services
-- Netatmo (rainfall)
+- Netatmo, Infoclimat (rainfall; request paths only read their caches)
 - Camera snapshots
 
 and computes + stores the realtime risk score every hour (the only writer
@@ -79,6 +79,20 @@ async def collect_netatmo_job():
             logger.info("Netatmo not available (token missing?)")
     except Exception as e:
         logger.error("Error collecting Netatmo data: %s", e)
+
+
+async def collect_infoclimat_job():
+    """Job to refresh the Infoclimat basin rainfall (request paths only read its cache)."""
+    try:
+        from app.services.collectors.infoclimat import get_basin_rainfall_infoclimat
+
+        data = await get_basin_rainfall_infoclimat()
+        if data.get("available"):
+            logger.info("Collected Infoclimat rainfall (%s stations)", data.get("stations_count", 0))
+        else:
+            logger.info("Infoclimat not available: %s", data.get("reason"))
+    except Exception as e:
+        logger.error("Error collecting Infoclimat data: %r", e)
 
 
 async def collect_meteo_agricole_job():
@@ -181,6 +195,16 @@ async def start_scheduler():
         id="netatmo_collector",
         next_run_time=now,
         name="Collect Netatmo rainfall",
+        replace_existing=True,
+    )
+
+    # Infoclimat rainfall: every 15 minutes
+    _scheduler.add_job(
+        collect_infoclimat_job,
+        trigger=IntervalTrigger(minutes=15),
+        id="infoclimat_collector",
+        next_run_time=now,
+        name="Collect Infoclimat rainfall",
         replace_existing=True,
     )
 

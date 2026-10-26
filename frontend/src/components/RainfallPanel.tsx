@@ -12,11 +12,14 @@ import type { NetatmoData, NetatmoStation, InfoclimatStation, InfoclimatRainfall
 import InfoTooltip from './InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 import { netatmoAuthUrl } from '../api'
+import { formatDistanceKm } from '../utils/format'
 
 interface RainfallPanelProps {
   netatmo: NetatmoData | null
   infoclimat?: {
+    /** Rainfall observations were returned (rainfall.available) */
     available: boolean
+    /** Stations discovered near the moulin (not necessarily reporting) */
     stations_found?: number
     nearest_stations?: InfoclimatStation[]
     rainfall?: InfoclimatRainfall
@@ -113,7 +116,7 @@ function StationRow({ station }: { station: NetatmoStation }) {
       <div className="flex items-center gap-2">
         <MapPin className="w-3 h-3 text-gray-400" />
         <span>{station.city}</span>
-        <span className="text-xs text-gray-400">{station.distance_km}km</span>
+        <span className="text-xs text-gray-400">{formatDistanceKm(station.distance_km)}</span>
       </div>
       <div className="flex gap-3">
         <span className="text-xs">
@@ -147,9 +150,19 @@ export default function RainfallPanel({
     )
   }
 
-  const totalStations = (netatmo?.stations_count || 0) + (infoclimat?.stations_found || 0)
+  // Only stations that actually returned data are counted
+  const netatmoAvailable = netatmo?.available === true
+  const netatmoReporting = netatmoAvailable ? netatmo?.stations_count || 0 : 0
+  const infoclimatReporting = infoclimat?.available ? infoclimat.rainfall?.stations_count || 0 : 0
+  const totalStations = netatmoReporting + infoclimatReporting
   const lidoireStations = netatmo?.lidoire_stations || []
   const otherStations = netatmo?.stations || []
+  // 24h observed: Netatmo basin when it works, Infoclimat otherwise
+  const observed24h = netatmoAvailable
+    ? { value: netatmo?.rain_24h_avg_mm ?? 0, source: 'Netatmo bassin' }
+    : infoclimat?.available && infoclimat.rainfall?.rain_24h_avg_mm != null
+      ? { value: infoclimat.rainfall.rain_24h_avg_mm, source: 'Infoclimat (Netatmo indisponible)' }
+      : null
 
   return (
     <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -161,7 +174,9 @@ export default function RainfallPanel({
         <div className="flex items-center gap-2">
           <CloudRain className="w-5 h-5 text-indigo-600" />
           <h3 className="font-semibold text-indigo-800">Pluviometrie</h3>
-          <span className="text-sm text-indigo-600">({totalStations} stations)</span>
+          <span className="text-sm text-indigo-600">
+            ({totalStations} station{totalStations > 1 ? 's' : ''} avec donnees)
+          </span>
         </div>
         {expanded ? (
           <ChevronUp className="w-5 h-5 text-indigo-600" />
@@ -176,9 +191,13 @@ export default function RainfallPanel({
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="p-3 bg-gray-50 rounded-lg">
               <div className="text-xs text-gray-500 mb-1">Derniere heure</div>
-              <div className={`text-xl font-bold ${getRainIntensityColor(netatmo?.rain_1h_avg_mm || 0)}`}>
-                {netatmo?.rain_1h_avg_mm?.toFixed(1) || '0.0'} mm
-              </div>
+              {netatmoAvailable ? (
+                <div className={`text-xl font-bold ${getRainIntensityColor(netatmo?.rain_1h_avg_mm || 0)}`}>
+                  {(netatmo?.rain_1h_avg_mm ?? 0).toFixed(1)} mm
+                </div>
+              ) : (
+                <div className="text-sm font-medium text-gray-400 py-1">indisponible</div>
+              )}
               <div className="text-[10px] text-gray-400">Netatmo</div>
             </div>
             <div className="p-3 bg-gray-50 rounded-lg">
@@ -186,10 +205,14 @@ export default function RainfallPanel({
                 24h observe
                 <InfoTooltip {...TOOLTIPS.rain24h} />
               </div>
-              <div className={`text-xl font-bold ${getRainIntensityColor(netatmo?.rain_24h_avg_mm || 0)}`}>
-                {netatmo?.rain_24h_avg_mm?.toFixed(1) || '0.0'} mm
-              </div>
-              <div className="text-[10px] text-gray-400">Netatmo bassin</div>
+              {observed24h ? (
+                <div className={`text-xl font-bold ${getRainIntensityColor(observed24h.value)}`}>
+                  {observed24h.value.toFixed(1)} mm
+                </div>
+              ) : (
+                <div className="text-sm font-medium text-gray-400 py-1">indisponible</div>
+              )}
+              <div className="text-[10px] text-gray-400">{observed24h?.source ?? 'Netatmo, Infoclimat'}</div>
             </div>
             <div className="p-3 bg-blue-50 rounded-lg">
               <div className="text-xs text-blue-600 mb-1 flex items-center gap-1">
@@ -246,12 +269,12 @@ export default function RainfallPanel({
                     <span className="font-medium text-sm">Netatmo</span>
                     <InfoTooltip {...TOOLTIPS.netatmoSource} />
                     <span className="text-xs text-gray-500">
-                      {netatmo.stations_count} stations
+                      {netatmo.available ? `${netatmo.stations_count} stations` : 'indisponible (non autorise)'}
                     </span>
                   </div>
                   {netatmo.closest_station && (
                     <span className="text-xs text-gray-500">
-                      Plus proche: {netatmo.closest_station.city} ({netatmo.closest_station.distance_km}km)
+                      Plus proche: {netatmo.closest_station.city} ({formatDistanceKm(netatmo.closest_station.distance_km)})
                     </span>
                   )}
                 </div>
@@ -298,7 +321,9 @@ export default function RainfallPanel({
                     <span className="font-medium text-sm">Infoclimat</span>
                     <InfoTooltip {...TOOLTIPS.infoclimatSource} />
                     <span className="text-xs text-gray-500">
-                      {infoclimat.rainfall?.stations_count || infoclimat.stations_found || 0} stations
+                      {infoclimat.available
+                        ? `${infoclimat.rainfall?.stations_count ?? 0} stations avec donnees`
+                        : 'indisponible'}
                     </span>
                   </div>
                   {infoclimat.rainfall?.available && infoclimat.rainfall.rain_24h_avg_mm != null && (
@@ -322,7 +347,7 @@ export default function RainfallPanel({
                           <MapPin className="w-3 h-3 text-purple-400" />
                           <span>{station.station_name}</span>
                           <span className="text-xs text-gray-400">
-                            {station.distance_km}km
+                            {formatDistanceKm(station.distance_km)}
                           </span>
                         </div>
                         <span className="text-xs">
@@ -340,6 +365,9 @@ export default function RainfallPanel({
                 {/* Discovery stations (when no rainfall data) */}
                 {!infoclimat.rainfall?.available && infoclimat.nearest_stations && infoclimat.nearest_stations.length > 0 && (
                   <div className="p-2 space-y-1">
+                    <div className="px-2 text-xs text-gray-500">
+                      Stations proches, sans donnees ({Math.min(3, infoclimat.nearest_stations.length)} sur {infoclimat.stations_found ?? infoclimat.nearest_stations.length}) :
+                    </div>
                     {infoclimat.nearest_stations.slice(0, 3).map((station, idx) => (
                       <div
                         key={idx}
@@ -349,7 +377,7 @@ export default function RainfallPanel({
                           <MapPin className="w-3 h-3 text-gray-400" />
                           <span>{station.name}</span>
                           <span className="text-xs text-gray-400">
-                            {station.distance_km}km
+                            {formatDistanceKm(station.distance_km)}
                           </span>
                         </div>
                         <span className="text-xs text-gray-400">{station.source}</span>
@@ -360,7 +388,7 @@ export default function RainfallPanel({
 
                 {!infoclimat.available && (
                   <div className="p-3 text-sm text-amber-600">
-                    API restreinte par IP
+                    Aucune observation recue{infoclimat.rainfall?.reason ? ` : ${infoclimat.rainfall.reason}` : ''}
                   </div>
                 )}
               </div>
