@@ -125,7 +125,8 @@ src/
 ├── App.tsx              # Router principal, navigation
 ├── api.ts               # Client API (fetchJson, X-API-Key depuis localStorage 'lfw_api_key')
 ├── types.ts             # Types TypeScript (miroir des schemas backend)
-├── utils/time.ts        # Helpers de dates (UTC)
+├── utils/time.ts        # parseApiDate (UTC) + formatParis : tout l'affichage en Europe/Paris
+├── utils/format.ts      # Libelles FR des niveaux de risque, formatDistanceKm
 ├── tooltipContent.ts    # Dictionnaire centralise des textes de tooltips
 ├── pages/
 │   ├── Dashboard.tsx    # Vue temps reel avec score de risque + TimeMachine
@@ -185,7 +186,7 @@ Service dans `backend/app/services/forecast.py` :
 
 ### Stations surveillees
 
-Distances a vol d'oiseau depuis le moulin (haversine sur `lat`/`lon` du config) ; delais et poids de `config.hubeau_stations`. Le champ `distance_km` du config est uniquement affiche et ne correspond pas a ces valeurs.
+Distances a vol d'oiseau depuis le moulin (haversine sur `lat`/`lon` du config) ; delais et poids de `config.hubeau_stations`. `distance_km` n'est jamais code en dur : un validateur de `Settings` le calcule depuis `lat`/`lon` (`app/geo.py`, arrondi a 0.1 km), et toutes les routes (cartes du dashboard, `/api/timeline/sources`, `/api/sources-detail`) le reprennent. Affichage uniquement, jamais lu par le modele.
 
 | Station | Code Hub'Eau | Riviere | Distance | Delai | Poids |
 |---------|-------------|---------|----------|-------|-------|
@@ -205,7 +206,7 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 - **Niveaux rivieres** : Hub'Eau temps reel (30 derniers jours), Hydroportail pour l'historique, Vigicrues pour Libourne (metres)
 - **Meteo prevue** : Open-Meteo (modeles AROME/ARPEGE), timestamps UTC
 - **Meteo locale** : Netatmo (stations citoyennes du bassin Lidoire), Infoclimat StatIC
-- **Sol** : Open-Meteo (humidite, temperature, ET0) + Meteo Agricole (bilan hydrique)
+- **Sol** : Open-Meteo (humidite, temperature, ET0) + Meteo Agricole (bilan hydrique). Deux modeles distincts en "best match" : le temps reel (`/api/realtime` `soil`, entree du modele) lit les couches 0-1/1-3/3-9 cm et 9-27/27-81 cm servies par DWD ICON ; la Timeline (`soil_timeline`) lit 0-7/7-28/28-100 cm servies par ECMWF IFS (ERA5 en archive), nettement plus humides (ex. 0.195 vs 0.311 m3/m3 a la meme heure). Les series Timeline ne melangent jamais les deux (seul ET0 peut venir du temps reel).
 - **Camera** : Flux RTSP configurable via `CAMERA_RTSP_URL`
 
 Jobs du scheduler : rivieres et Netatmo 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, camera si configuree.
@@ -327,6 +328,9 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 - InfluxDB : `INFLUXDB_TOKEN` limite au bucket recommande, `INFLUXDB_READ_TOKEN` en lecture seule pour les requetes.
 
 ### Contrats d'API a respecter
+
+- Dates : tous les `datetime` des schemas Pydantic (`UtcDatetime`) sortent en ISO 8601 UTC avec `Z` (naifs = UTC en interne). Quelques payloads dict anciens restent naifs : le frontend les lit en UTC (`parseApiDate`) et affiche tout en Europe/Paris (`formatParis`). Vigicrues est en UTC (`+00:00`) et sur le meme zero que Hub'Eau.
+- Netatmo : `/api/realtime/basin-rainfall` expose `available`/`stations_count` (moyennes 0.0 = valeurs de remplissage si `available=false`) ; `/api/timeline/sources` marque les stations Netatmo `available=false` tant que Netatmo n'est pas autorise. La Timeline part par defaut sur Open-Meteo (Moulin) + Infoclimat.
 
 - `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`.
 - `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`.
