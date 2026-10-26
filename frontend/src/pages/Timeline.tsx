@@ -87,6 +87,8 @@ export default function Timeline() {
   const [forecastEnabled, setForecastEnabled] = useState(() => searchParams.get('forecast') === '1')
   // Shadow model 3.4-gate (v3.4 + backwater gate), compared with the displayed score
   const [riskShadowEnabled, setRiskShadowEnabled] = useState(() => searchParams.get('risk_shadow') === '1')
+  // Shadow model 4.0a (v4-alpha mechanisms), stored for comparison only
+  const [riskShadowV4Enabled, setRiskShadowV4Enabled] = useState(() => searchParams.get('risk_shadow_v4') === '1')
   // Hydrological indicators (flow:EYRAUD, gw:MOULIETS, tide_obs:BORDEAUX...), outside the model
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>(() => parseParamList('ind', []))
 
@@ -133,9 +135,10 @@ export default function Timeline() {
     if (windEnabled) params.wind = '1'
     if (forecastEnabled) params.forecast = '1'
     if (riskShadowEnabled) params.risk_shadow = '1'
+    if (riskShadowV4Enabled) params.risk_shadow_v4 = '1'
     if (selectedIndicators.length > 0) params.ind = selectedIndicators.join(',')
     setSearchParams(params, { replace: true })
-  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, selectedIndicators, setSearchParams])
+  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, riskShadowV4Enabled, selectedIndicators, setSearchParams])
 
   // Fetch available sources and episodes on mount
   useEffect(() => {
@@ -181,8 +184,9 @@ export default function Timeline() {
         signal,
         riskShadowEnabled,
         selectedIndicators.length > 0 ? selectedIndicators : undefined,
+        riskShadowV4Enabled,
       ),
-    [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, selectedIndicators, resolution],
+    [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, riskShadowV4Enabled, selectedIndicators, resolution],
   )
 
   // Each run aborts the previous one, so a slow response (uncached period,
@@ -534,6 +538,8 @@ export default function Timeline() {
               onRiskToggle={() => setRiskEnabled((v) => !v)}
               riskShadowEnabled={riskShadowEnabled}
               onRiskShadowToggle={() => setRiskShadowEnabled((v) => !v)}
+              riskShadowV4Enabled={riskShadowV4Enabled}
+              onRiskShadowV4Toggle={() => setRiskShadowV4Enabled((v) => !v)}
               soilEnabled={soilEnabled}
               onSoilToggle={() => setSoilEnabled((v) => !v)}
               infoclimatEnabled={infoclimatEnabled}

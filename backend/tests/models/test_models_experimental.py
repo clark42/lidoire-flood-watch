@@ -37,12 +37,39 @@ def test_models_experimental_not_imported_by_production():
         if p.name != "models_experimental.py" and "models_experimental" in p.read_text(encoding="utf-8")
     ]
     assert offenders == []
-    # v4-alpha (risk_v4) is not wired yet: only the offline candidate wrapper may import it
-    offenders_v4 = [
-        p for p in app_dir.rglob("*.py")
-        if p.name not in ("risk_v4.py", "models_experimental.py") and "risk_v4" in p.read_text(encoding="utf-8")
-    ]
+    # v4-alpha (risk_v4): only the shadow module "4.0a" and the offline candidate wrapper may import it
+    allowed_v4 = {"risk_v4.py", "risk_shadow_v4.py", "models_experimental.py"}
+    offenders_v4 = sorted(
+        p.name for p in app_dir.rglob("*.py")
+        if p.name not in allowed_v4 and "risk_v4" in p.read_text(encoding="utf-8")
+    )
     assert offenders_v4 == []
+    # v3.4, its forecast and the notifier never reference the v4 code, even through the shadow module
+    for name in ("risk_core.py", "forecast.py", "notifier.py", "risk_shadow.py",
+                 "episode_detector.py", "outlook.py", "forecast_archive.py"):
+        text = (app_dir / "services" / name).read_text(encoding="utf-8")
+        assert "risk_v4" not in text and "risk_shadow_v4" not in text, name
+
+
+def test_v4_code_not_loaded_by_v34_forecast_or_notifier():
+    """Importing the production model, forecast and notifier (and risk_v2, which
+    imports the shadow module lazily) never loads risk_v4 / risk_shadow_v4."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "import app.services.risk_core, app.services.risk_v2, app.services.forecast, "
+        "app.services.notifier, app.services.risk_shadow, app.services.episode_detector\n"
+        "loaded = sorted(m for m in sys.modules if m in "
+        "('app.services.risk_v4', 'app.services.risk_shadow_v4', 'app.services.models_experimental'))\n"
+        "print(','.join(loaded))\n"
+    )
+    import pathlib
+
+    backend = pathlib.Path(mx.__file__).resolve().parents[2]
+    out = subprocess.run([sys.executable, "-c", code], cwd=backend, capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == ""
 
 
 def test_models_piecewise_matches_harness():

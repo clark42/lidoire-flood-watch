@@ -447,7 +447,7 @@ async def trigger_backfill(
     skip_tides: bool = Query(False, description="Skip tide backfill"),
     skip_soil: bool = Query(False, description="Skip soil data backfill"),
     skip_risk: bool = Query(False, description="Skip risk score recalculation"),
-    risk_shadow: bool = Query(False, description="Also backfill the shadow model 3.4-gate"),
+    risk_shadow: bool = Query(False, description="Also backfill the shadow models 3.4-gate and 4.0a (v4-alpha)"),
     risk_step_hours: int = Query(
         1, ge=1, le=24, description="Step of the risk score recalculation in hours (default hourly)",
     ),
@@ -466,7 +466,7 @@ async def trigger_backfill(
     - Open-Meteo: Soil moisture and temperature
 
     Then recalculates risk scores using the v3.4 model (and, with
-    ``risk_shadow=true``, the shadow model 3.4-gate), one score every
+    ``risk_shadow=true``, the shadow models 3.4-gate and 4.0a), one score every
     ``risk_step_hours`` (hourly by default, whatever the range).
 
     Example: POST /api/episodes/backfill?start_date=2022-11-01T00:00:00

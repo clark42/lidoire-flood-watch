@@ -219,8 +219,9 @@ async def recalculate_risk_scores(
       are preferred on read for an hour that has both).
 
     Steps are ``step_hours`` apart (hourly by default, whatever the range).
-    ``shadow=True`` also writes the shadow model "3.4-gate"
-    (``risk_score_shadow``) for the same steps.
+    ``shadow=True`` also writes the shadow models "3.4-gate" and "4.0a"
+    (v4-alpha, needs the Eyraud flow history: ``indicators=true`` once)
+    to ``risk_score_shadow`` for the same steps.
     """
     from app.services.risk_v2 import backfill_risk_scores
 
@@ -253,7 +254,7 @@ async def run_full_backfill(
         start_date: Start of backfill (default: 2022-11-01)
         end_date: End of backfill (default: now)
         skip_*: Skip specific data sources
-        risk_shadow: Also backfill the shadow model 3.4-gate (off by default)
+        risk_shadow: Also backfill the shadow models 3.4-gate and 4.0a (off by default)
         risk_step_hours: Step of the risk score recalculation (default 1 h)
         indicators: Also backfill the hydrological indicators (river_flow,
             groundwater, tide_observed; off by default, never a model input)
