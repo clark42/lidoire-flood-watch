@@ -1010,102 +1010,158 @@ async def _hours_with_live_scores(start: datetime, end: datetime) -> set[datetim
     }
 
 
+# Backfill step: hourly by default whatever the range, so the stored series
+# keeps the tidal oscillation (TimeMachine, episode detection). Coarser steps
+# stay available (``step_hours``) for quick partial re-runs.
+DEFAULT_RISK_STEP_HOURS = 1
+MAX_RISK_STEP_HOURS = 24
+
+# Long ranges are scored in windows of this many days: inputs are loaded per
+# window (with their lookback), so memory is bounded by one window whatever
+# the range. Scores do not depend on the window size (each step only reads
+# points <= t inside its lookback, loaded with every window).
+BACKFILL_CHUNK_DAYS = 30.0
+
+# Extra tide history loaded before each window: the coefficient is the one of
+# the latest past high tide carrying one (``risk_core.tide_at``), so a window
+# must see a few high tides before its first step.
+TIDE_COEF_LOOKBACK_H = 48.0
+
+
+@dataclass
+class _BackfillInputs:
+    station_points: dict[str, list[risk_core.LevelPoint]]
+    rain_hourly: dict[datetime, float]
+    high_tides: list[tuple[datetime, Optional[int]]]
+    coef_records: list[tuple[datetime, int]]
+
+
+async def _load_backfill_inputs(
+    configs: list[StationConfig],
+    first: datetime,
+    last: datetime,
+    lookback: timedelta,
+) -> _BackfillInputs:
+    """Stored inputs needed to score every step of [first, last]."""
+    from app.services import influx_client
+
+    station_points: dict[str, list[risk_core.LevelPoint]] = {}
+    for cfg in configs:
+        rows = await influx_client.query_river_levels(cfg.station_id, first - lookback, last + timedelta(hours=1))
+        pts = _level_points(rows)
+        if pts:
+            station_points[cfg.station_id] = pts
+
+    rain_rows = await influx_client.query_rainfall(first - timedelta(hours=169), last + timedelta(hours=1))
+    rain_hourly = rain_hourly_from_records(rain_rows)
+    del rain_rows
+
+    tide_window = timedelta(hours=TIDE_WINDOW_H)
+    tide_rows = await load_tide_rows(first - tide_window - timedelta(hours=TIDE_COEF_LOOKBACK_H), last + tide_window)
+    high_tides, coef_records = tide_inputs_from_records(tide_rows)
+    return _BackfillInputs(station_points, rain_hourly, high_tides, coef_records)
+
+
 async def backfill_risk_scores(
     start: datetime,
     end: datetime,
     store: bool = True,
     skip_live_hours: bool = False,
     shadow: bool = False,
+    step_hours: int = DEFAULT_RISK_STEP_HOURS,
+    chunk_days: float = BACKFILL_CHUNK_DAYS,
 ) -> int:
     """Recompute (and store) risk scores from historical data in InfluxDB.
 
     Each step only uses observed points at or before the step time (level
-    max age and rate window from settings). Resolution adapts to the period:
-    hourly up to 7 days, 3-hourly up to 30 days, 6-hourly beyond. Steps start
-    on a full hour so re-runs overwrite the same points.
+    max age and rate window from settings). Steps are ``step_hours`` apart
+    (hourly by default, whatever the range) and start on a full hour so
+    re-runs overwrite the same points. The step only selects which hours are
+    scored: the score of a given hour does not depend on it.
 
-    Stored points are tagged ``source=backfill`` (one batched write) and
-    never replace the realtime series: readers prefer the realtime point for
-    an hour that has both (``influx_client.prefer_realtime_risk_rows``). With
-    ``skip_live_hours`` (anonymous timeline cache-through), hours that
-    already hold a realtime score of the current model are not recomputed.
-    With ``shadow``, the shadow model "3.4-gate" is also written for every
-    scored step (``risk_score_shadow``, source=backfill), from the same
-    inputs.
+    The range is processed in windows of ``chunk_days`` (inputs loaded and
+    scores written per window, the event loop is released between windows):
+    memory stays bounded for a multi-year range.
 
-    Returns the number of v3.3 scores computed (stored when ``store=True``).
+    Stored points are tagged ``source=backfill`` (one batched write per
+    window) and never replace the realtime series: readers prefer the
+    realtime point for an hour that has both
+    (``influx_client.prefer_realtime_risk_rows``). With ``skip_live_hours``
+    (anonymous timeline cache-through), hours that already hold a realtime
+    score of the current model are not recomputed. With ``shadow``, the
+    shadow model "3.4-gate" is also written for every scored step
+    (``risk_score_shadow``, source=backfill), from the same inputs.
+
+    Returns the number of v3.4 scores computed (stored when ``store=True``).
     """
     from app.services import influx_client
+
+    if not 1 <= int(step_hours) <= MAX_RISK_STEP_HOURS:
+        raise ValueError(f"step_hours must be in [1, {MAX_RISK_STEP_HOURS}]")
+    if chunk_days <= 0:
+        raise ValueError("chunk_days must be positive")
 
     settings = get_settings()
     s = to_utc_naive(start)
     e = to_utc_naive(end)
-
-    period_days = (e - s).days
-    if period_days <= 7:
-        step = timedelta(hours=1)
-    elif period_days <= 30:
-        step = timedelta(hours=3)
-    else:
-        step = timedelta(hours=6)
+    step = timedelta(hours=int(step_hours))
+    chunk_span = timedelta(days=chunk_days)
 
     max_age = settings.risk_level_max_age_hours
     rate_window = settings.risk_rate_window_hours
     # The backwater level (v3.4 tide gate, shadow gate) needs 12.5 h of history
     lookback = timedelta(hours=max(max_age, rate_window, risk_core.BACKWATER_WINDOW_H) + 1)
 
-    logger.info("Risk backfill v%s: loading data for %s -> %s (step=%s)", MODEL_VERSION, s, e, step)
+    logger.info(
+        "Risk backfill v%s: %s -> %s (step=%s, windows of %s days)",
+        MODEL_VERSION, s, e, step, chunk_days,
+    )
 
     configs = [
         StationConfig.from_settings_dict(c) for c in settings.hubeau_stations
         if c.get("weight", 0) > 0
     ]
-    station_points: dict[str, list[risk_core.LevelPoint]] = {}
-    for cfg in configs:
-        rows = await influx_client.query_river_levels(cfg.station_id, s - lookback, e + timedelta(hours=1))
-        pts = _level_points(rows)
-        if pts:
-            station_points[cfg.station_id] = pts
-
-    if not station_points:
-        logger.warning("Risk backfill: no river data for any station, cannot compute scores")
-        return 0
-
-    rain_rows = await influx_client.query_rainfall(s - timedelta(hours=169), e + timedelta(hours=1))
-    rain_hourly = rain_hourly_from_records(rain_rows)
-
-    tide_window = timedelta(hours=TIDE_WINDOW_H)
-    tide_rows = await load_tide_rows(s - tide_window, e + tide_window)
-    high_tides, coef_records = tide_inputs_from_records(tide_rows)
-
-    live_hours: set[datetime] = set()
-    if skip_live_hours:
-        try:
-            live_hours = await _hours_with_live_scores(s, e)
-        except Exception as exc:  # degrade to a plain backfill
-            logger.warning("Risk backfill: cannot read existing scores: %s", exc)
-
-    logger.info(
-        "Risk backfill: %d stations, %d rain hours, %d high tides",
-        len(station_points), len(rain_hourly), len(high_tides),
-    )
 
     computed = 0
+    stored = 0
     skipped = 0
-    points = []
-    shadow_points = []
+    shadow_computed = 0
+    shadow_stored = 0
+    windows_with_rivers = 0
     current = _ceil_hour(s)
     while current <= e:
-        if current in live_hours:
-            skipped += 1
-            current += step
-            continue
-        tide_state = risk_core.tide_at(current, high_tides, coefficient_records=coef_records)
-        features = risk_core.build_historical_features(
-            current, configs, station_points, settings.hubeau_primary_station,
-            rain_hourly, tide_state, max_age_hours=max_age, rate_window_h=rate_window,
-        )
-        if features.stations:
+        window_end = current + chunk_span
+        steps = []
+        t = current
+        while t <= e and t < window_end:
+            steps.append(t)
+            t += step
+        next_start = t
+
+        inputs = await _load_backfill_inputs(configs, steps[0], steps[-1], lookback)
+        if inputs.station_points:
+            windows_with_rivers += 1
+
+        live_hours: set[datetime] = set()
+        if skip_live_hours and inputs.station_points:
+            try:
+                live_hours = await _hours_with_live_scores(steps[0], steps[-1])
+            except Exception as exc:  # degrade to a plain backfill
+                logger.warning("Risk backfill: cannot read existing scores: %s", exc)
+
+        points = []
+        shadow_points = []
+        for t in steps if inputs.station_points else ():
+            if t in live_hours:
+                skipped += 1
+                continue
+            tide_state = risk_core.tide_at(t, inputs.high_tides, coefficient_records=inputs.coef_records)
+            features = risk_core.build_historical_features(
+                t, configs, inputs.station_points, settings.hubeau_primary_station,
+                inputs.rain_hourly, tide_state, max_age_hours=max_age, rate_window_h=rate_window,
+            )
+            if not features.stations:
+                continue
             risk = breakdown_to_risk_score(compute_risk(features))
             computed += 1
             if store:
@@ -1114,14 +1170,26 @@ async def backfill_risk_scores(
                 sp = shadow_risk_point(features, risk, features.backwater_level_m, influx_client.RISK_SOURCE_BACKFILL)
                 if sp is not None:
                     shadow_points.append(sp)
-        current += step
+        del inputs
 
-    stored = await influx_client.write_points_batch(points) if points else 0
+        if points:
+            stored += await influx_client.write_points_batch(points)
+        if shadow:
+            shadow_computed += len(shadow_points)
+            if store and shadow_points:
+                shadow_stored += await influx_client.write_points_batch(shadow_points)
+        current = next_start
+        # CPU-bound loop: let the API serve requests between windows
+        await asyncio.sleep(0)
+
+    if not windows_with_rivers:
+        logger.warning("Risk backfill: no river data for any station, cannot compute scores")
+        return 0
+
     if shadow:
-        shadow_stored = await influx_client.write_points_batch(shadow_points) if store and shadow_points else 0
         logger.info(
             "Risk backfill %s (shadow): computed %d, stored %d scores",
-            risk_shadow.SHADOW_MODEL_VERSION, len(shadow_points), shadow_stored,
+            risk_shadow.SHADOW_MODEL_VERSION, shadow_computed, shadow_stored,
         )
     logger.info(
         "Risk backfill v%s: computed %d, stored %d scores (%d hours kept from realtime)",

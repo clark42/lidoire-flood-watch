@@ -161,7 +161,7 @@ async def test_shadow_backfill_flag_reaches_risk_backfill(monkeypatch):
 
     seen = {}
 
-    async def fake_backfill(start, end, shadow=False):
+    async def fake_backfill(start, end, shadow=False, **kwargs):
         seen["shadow"] = shadow
         return 0
 

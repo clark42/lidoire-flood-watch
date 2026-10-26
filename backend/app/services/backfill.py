@@ -204,6 +204,7 @@ async def recalculate_risk_scores(
     start_date: datetime,
     end_date: datetime,
     shadow: bool = False,
+    step_hours: int = 1,
 ) -> int:
     """
     Recalculate risk scores with the current model for the backfilled period.
@@ -213,18 +214,19 @@ async def recalculate_risk_scores(
       3h; rate by regression on points <= t), hourly rain windows ending
       at t (mean per hour across sources), tide predictions;
     - calls risk_core.compute_risk;
-    - stores the scores in one batched write, tagged model_version and
-      source=backfill (re-runs overwrite; realtime points are preferred on
-      read for an hour that has both).
+    - stores the scores in one batched write per 30-day window, tagged
+      model_version and source=backfill (re-runs overwrite; realtime points
+      are preferred on read for an hour that has both).
 
-    ``shadow=True`` also writes the shadow model "3.3-gate"
+    Steps are ``step_hours`` apart (hourly by default, whatever the range).
+    ``shadow=True`` also writes the shadow model "3.4-gate"
     (``risk_score_shadow``) for the same steps.
     """
     from app.services.risk_v2 import backfill_risk_scores
 
-    logger.info("Recalculating risk scores %s -> %s", start_date, end_date)
+    logger.info("Recalculating risk scores %s -> %s (step %dh)", start_date, end_date, step_hours)
 
-    total = await backfill_risk_scores(start_date, end_date, shadow=shadow)
+    total = await backfill_risk_scores(start_date, end_date, shadow=shadow, step_hours=step_hours)
 
     logger.info("Total risk scores stored: %d", total)
     return total
@@ -239,6 +241,7 @@ async def run_full_backfill(
     skip_soil: bool = False,
     skip_risk: bool = False,
     risk_shadow: bool = False,
+    risk_step_hours: int = 1,
 ) -> dict:
     """
     Run complete backfill of all data sources.
@@ -249,7 +252,8 @@ async def run_full_backfill(
         start_date: Start of backfill (default: 2022-11-01)
         end_date: End of backfill (default: now)
         skip_*: Skip specific data sources
-        risk_shadow: Also backfill the shadow model 3.3-gate (off by default)
+        risk_shadow: Also backfill the shadow model 3.4-gate (off by default)
+        risk_step_hours: Step of the risk score recalculation (default 1 h)
 
     Returns:
         Summary of all backfill operations
@@ -296,7 +300,9 @@ async def run_full_backfill(
     # 5. Recalculate risk scores
     if not skip_risk:
         _update_progress("risk: recalculating v3.4 scores (slowest step)...")
-        results["risk_scores"] = await recalculate_risk_scores(start_date, end_date, shadow=risk_shadow)
+        results["risk_scores"] = await recalculate_risk_scores(
+            start_date, end_date, shadow=risk_shadow, step_hours=risk_step_hours,
+        )
 
     _update_progress("done")
 

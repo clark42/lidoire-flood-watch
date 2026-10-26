@@ -354,6 +354,7 @@ async def _run_backfill_task(
     skip_soil: bool,
     skip_risk: bool,
     risk_shadow: bool = False,
+    risk_step_hours: int = 1,
 ):
     """Background task for backfill."""
     global _backfill_status
@@ -367,6 +368,7 @@ async def _run_backfill_task(
             skip_soil=skip_soil,
             skip_risk=skip_risk,
             risk_shadow=risk_shadow,
+            risk_step_hours=risk_step_hours,
         )
         _backfill_status["result"] = results
         _backfill_status["finished_at"] = _utcnow().isoformat()
@@ -388,6 +390,9 @@ async def trigger_backfill(
     skip_soil: bool = Query(False, description="Skip soil data backfill"),
     skip_risk: bool = Query(False, description="Skip risk score recalculation"),
     risk_shadow: bool = Query(False, description="Also backfill the shadow model 3.4-gate"),
+    risk_step_hours: int = Query(
+        1, ge=1, le=24, description="Step of the risk score recalculation in hours (default hourly)",
+    ),
 ):
     """
     Trigger comprehensive data backfill as a background task.
@@ -402,7 +407,8 @@ async def trigger_backfill(
     - Open-Meteo: Soil moisture and temperature
 
     Then recalculates risk scores using the v3.4 model (and, with
-    ``risk_shadow=true``, the shadow model 3.4-gate).
+    ``risk_shadow=true``, the shadow model 3.4-gate), one score every
+    ``risk_step_hours`` (hourly by default, whatever the range).
 
     Example: POST /api/episodes/backfill?start_date=2022-11-01T00:00:00
     """
@@ -434,6 +440,7 @@ async def trigger_backfill(
         skip_soil=skip_soil,
         skip_risk=skip_risk,
         risk_shadow=risk_shadow,
+        risk_step_hours=risk_step_hours,
     ))
 
     return {
