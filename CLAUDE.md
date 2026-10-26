@@ -304,6 +304,20 @@ Pour ajouter un tooltip : ajouter une entree dans `TOOLTIPS` (tooltipContent.ts)
 
 Ports lies a `${BIND_ADDRESS:-127.0.0.1}`. Pour exposer les bases en local : `docker-compose.override.yml` (gitignore, exemple en tete de `docker-compose.yml`) sur 127.0.0.1:5532 / 8186 / 6479.
 
+## Deploiement Kubernetes
+
+Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhosting`, contexte `admin@sharedhosting-production`, toujours en fin de commande). Images GHCR `ghcr.io/clark42/lidoire-flood-watch-{backend,frontend}` construites par `.github/workflows/images.yml` (push `main` / tags `v*` : amd64 + arm64, tags `sha-<7>`, `main`, semver ; PR : build amd64 sans push).
+
+- Prerequis : stack Terraform `11-lidoire` appliquee (namespace `lidoire` PSS restricted, NetworkPolicies, secrets Scaleway `lidoire-generated`, `lidoire-external-apis`, `lidoire-backup-s3`) et images publiees.
+- Deploiement : `helm upgrade --install lidoire deploy/helm/lidoire-flood-watch -n lidoire --set image.tag=sha-<7> --kube-context admin@sharedhosting-production`. Verification : `helm lint` + `helm template ... | kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.35.0 -summary`.
+- Le chart ne cree ni namespace ni NetworkPolicy. Noms de Services fixes (`backend` impose par `frontend/nginx.conf`) : une release par namespace.
+- Secrets : ExternalSecrets (`ClusterSecretStore` `scaleway-secret-manager`, `external-secrets.io/v1beta1`, cle `name:<secret>`). `lidoire-generated` (mots de passe bruts, sans `API_KEY`) et `lidoire-backend` (`DATABASE_URL`, `REDIS_URL` assembles par le template ESO avec `urlquery`, `INFLUXDB_TOKEN` = jeton admin, `API_KEY`). `INFLUXDB_ADMIN_*` jamais passes au backend. `lidoire-external-apis` derriere `externalApis.enabled` (envFrom optionnel).
+- Backend : 1 replique, `Recreate` obligatoire (APScheduler), sondes `/api/health`, initContainer d'attente TCP des dependances, PVC `backend-data` 1 Gi (`helm.sh/resource-policy: keep`). StatefulSets `postgres` (5 Gi) et `influxdb` (10 Gi) sur `sbs-default-retain`, Redis sans persistance.
+- PSS restricted partout, rootfs en lecture seule + emptyDir : uid 10001 (backend), 101 (nginx), 70 (postgres, `PGDATA` en sous-dossier), 1000 (influxdb, entrypoint non root), 999/1000 (redis).
+- Acces `http://lidoire.ts.kamorion.cloud` via tailnet (Service `frontend` ClusterIP fixe `10.32.0.100`) ; Ingress optionnel desactive.
+- Installation neuve : reconstituer via `POST /api/episodes/backfill?start_date=2022-11-01&end_date=<aujourd'hui>` avec `X-API-Key` (Secret `lidoire-backend`, cle `API_KEY`).
+- Sauvegarde : CronJob `backup` (pg_dump + `influx backup`, upload rclone vers S3 Scaleway, retention `backup.retentionDays`). Restauration (`pg_restore`, `influx restore --full`) : voir README.
+
 ## Securite
 
 - `POST`/`PUT`/`PATCH`/`DELETE` sur `/api/*` : en-tete `X-API-Key` compare en temps constant a `API_KEY` (401 sinon). `GET` public. `API_KEY` vide = mode dev (avertissement au demarrage). Le backend refuse de demarrer si un secret vaut un placeholder connu (`change-me`, ...).
