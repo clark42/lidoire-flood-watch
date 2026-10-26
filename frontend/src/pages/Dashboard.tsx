@@ -45,6 +45,8 @@ import MetricSparkline from '../components/MetricSparkline'
 import TimeMachineBanner from '../components/TimeMachineBanner'
 import SoilConditionsPanel from '../components/SoilConditionsPanel'
 import NowcastRainChart from '../components/NowcastRainChart'
+import VigilanceBadges from '../components/VigilanceBadges'
+import ObservationQuickForm from '../components/ObservationQuickForm'
 import InfoTooltip from '../components/InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 import { formatAge, formatParis, parseApiDate } from '../utils/time'
@@ -480,6 +482,7 @@ export default function Dashboard() {
 
       {/* Data Sources Status - Compact at top */}
       <DataSourcesStatus sources={sources} loading={loading} />
+      <VigilanceBadges />
 
       {/* Alerts */}
       {data.alerts.length > 0 && (
@@ -523,6 +526,8 @@ export default function Dashboard() {
           />
         </div>
       </div>
+
+      {!timeMachineActive && <ObservationQuickForm />}
 
       {/* Risk Breakdown Panel */}
       <RiskBreakdownPanel risk={data.risk} defaultExpanded={breakdownExpanded} />
