@@ -1,0 +1,38 @@
+{
+ "count": 4,
+ "api_version": "2.0.1",
+ "data": [
+  {
+   "code_station": "P540401002",
+   "date_obs": "2026-10-26T12:45:00Z",
+   "resultat_obs": 69.0,
+   "grandeur_hydro": "Q",
+   "libelle_methode_obs": "Calculée",
+   "libelle_qualification_obs": "Non qualifiée"
+  },
+  {
+   "code_station": "P540401002",
+   "date_obs": "2026-10-26T12:40:00Z",
+   "resultat_obs": 70.0,
+   "grandeur_hydro": "Q",
+   "libelle_methode_obs": "Calculée",
+   "libelle_qualification_obs": "Non qualifiée"
+  },
+  {
+   "code_station": "P540401002",
+   "date_obs": "2026-10-26T12:35:00Z",
+   "resultat_obs": 71.0,
+   "grandeur_hydro": "Q",
+   "libelle_methode_obs": "Calculée",
+   "libelle_qualification_obs": "Non qualifiée"
+  },
+  {
+   "code_station": "P540401002",
+   "date_obs": "2026-10-26T12:30:00Z",
+   "resultat_obs": null,
+   "grandeur_hydro": "Q",
+   "libelle_methode_obs": "Calculée",
+   "libelle_qualification_obs": "Non qualifiée"
+  }
+ ]
+}
