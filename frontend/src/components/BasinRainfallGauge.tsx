@@ -41,14 +41,24 @@ export default function BasinRainfallGauge({ data, loading }: BasinRainfallGauge
     )
   }
 
-  if (!data) {
+  // available === false: no Netatmo basin station reported, the 0.0 values
+  // are placeholders and must not be shown as measurements.
+  if (!data || data.available === false) {
     return (
       <div className="bg-white rounded-lg shadow p-4">
         <div className="flex items-center gap-2 mb-2">
           <CloudRain className="w-5 h-5 text-gray-400" />
           <h3 className="font-semibold text-gray-600">Pluie Bassin Lidoire</h3>
+          <InfoTooltip {...TOOLTIPS.basinHeader} />
         </div>
-        <p className="text-sm text-gray-400">Pas de donnees</p>
+        <p className="text-sm text-gray-500">
+          {data ? 'Netatmo indisponible : aucune station du bassin ne remonte de donnees.' : 'Pas de donnees'}
+        </p>
+        {data && (
+          <p className="text-xs text-gray-400 mt-1">
+            Pluie du modele : voir Pluie (modele), Open-Meteo et Infoclimat.
+          </p>
+        )}
       </div>
     )
   }
@@ -99,7 +109,7 @@ export default function BasinRainfallGauge({ data, loading }: BasinRainfallGauge
                 {config.label}
               </span>
               <span className="text-xs font-medium w-14 text-right">
-                {posData.avg.toFixed(1)} mm
+                {posData.count > 0 ? `${posData.avg.toFixed(1)} mm` : 'n/d'}
               </span>
               <div className={`flex-1 h-2 rounded-full ${config.bg}`}>
                 <div

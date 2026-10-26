@@ -392,6 +392,8 @@ export interface RainfallStationInfo {
   name: string
   position: 'amont' | 'milieu' | 'aval'
   color: string
+  /** False while the source is not collecting (Netatmo not authorised) */
+  available?: boolean
 }
 
 export interface AvailableSources {
@@ -407,6 +409,9 @@ export interface AvailableSources {
 // Basin Rainfall (aggregated Lidoire basin)
 export interface BasinRainfallData {
   timestamp: string
+  /** False when no Netatmo basin station reported: the averages are 0.0 placeholders */
+  available?: boolean
+  stations_count?: number
   basin_average_1h_mm: number
   basin_average_24h_mm: number
   weighted_average_24h_mm: number
