@@ -197,14 +197,6 @@ export interface InfoclimatData {
   rainfall: InfoclimatRainfall
 }
 
-export interface DataSource {
-  name: string
-  status: 'ok' | 'degraded' | 'error'
-  description: string
-  details?: string
-  url?: string
-}
-
 export interface ForecastPoint {
   timestamp: string
   hours_ahead: number

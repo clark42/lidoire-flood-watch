@@ -16,7 +16,7 @@ import {
   getRealtimeData,
   getNetatmoData,
   getInfoclimatData,
-  getDataSourcesStatus,
+  getStatus,
   getBasinRainfall,
   getRealtimeDataAt,
   getEpisodesList,
@@ -27,7 +27,7 @@ import type {
   RiskLevel,
   NetatmoData,
   InfoclimatData,
-  DataSource,
+  SystemStatus,
   BasinRainfallData,
   FloodEpisode,
   UnifiedTimelineData,
@@ -78,7 +78,8 @@ const SPARKLINE_SEED_RETRY_MS = 5 * 60_000
 const SPARKLINE_RAIN_SOURCE = 'open-meteo:Moulin-Lidoire'
 const SPARKLINE_SERIES = {
   river: `river:${PESSAC_STATION_ID}`,
-  tide: 'tide:LIBOURNE',
+  // Tide estimated at the Lidoire confluence (tide_port_confluence)
+  tide: 'tide:LIDOIRE',
   rain: `rainfall:${SPARKLINE_RAIN_SOURCE}`,
   risk: 'risk:score',
 } as const
@@ -109,22 +110,24 @@ function seriesSparkPoints(data: UnifiedTimelineData, key: string): SparkPoint[]
 }
 
 /**
- * Time of the newest underlying measurement. RealtimeData.timestamp is the
- * request time (always "now"), so freshness uses the station observations:
- * max of stations[].current_level.timestamp, falling back to Pessac / the
- * reference river level.
+ * Time of the last measurement of the primary station (Pessac). RealtimeData
+ * .timestamp is the request time (always "now"), and the max over all stations
+ * would hide a stale Pessac behind a fresh Libourne/Vigicrues point.
  */
-function latestMeasurementDate(d: RealtimeData): Date | null {
-  const candidates: (string | null | undefined)[] = [
-    ...(d.stations?.stations ?? []).map(s => s.current_level?.timestamp),
-    d.river?.current?.timestamp,
-  ]
-  let latest: Date | null = null
-  for (const value of candidates) {
-    const date = parseApiDate(value)
-    if (date && (!latest || date > latest)) latest = date
-  }
-  return latest
+function primaryMeasurementDate(d: RealtimeData): Date | null {
+  const primaryId = d.stations?.primary_station_id || PESSAC_STATION_ID
+  const primary = d.stations?.stations.find(s => s.station_id === primaryId)
+  return parseApiDate(primary?.current_level?.timestamp)
+}
+
+/** Stations whose last point is older than STALE_AFTER_MS (or missing). */
+function staleStationNames(d: RealtimeData, now: number): string[] {
+  return (d.stations?.stations ?? [])
+    .filter(s => {
+      const at = parseApiDate(s.current_level?.timestamp)
+      return !at || now - at.getTime() > STALE_AFTER_MS
+    })
+    .map(s => s.station_name)
 }
 
 const SECONDARY_SOURCE_LABELS = {
@@ -146,7 +149,7 @@ export default function Dashboard() {
   const [data, setData] = useState<RealtimeData | null>(null)
   const [netatmo, setNetatmo] = useState<NetatmoData | null>(null)
   const [infoclimat, setInfoclimat] = useState<InfoclimatData | null>(null)
-  const [sources, setSources] = useState<DataSource[]>([])
+  const [sources, setSources] = useState<SystemStatus['sources'] | null>(null)
   const [selectedStation, setSelectedStation] = useState<string | null>(null)
   const [breakdownExpanded, setBreakdownExpanded] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -232,7 +235,7 @@ export default function Dashboard() {
         getRealtimeData(),
         getNetatmoData(),
         getInfoclimatData(),
-        getDataSourcesStatus(),
+        getStatus(),
         getBasinRainfall(),
         getEpisodesList(),
       ])
@@ -277,7 +280,7 @@ export default function Dashboard() {
       else failed.push('netatmo')
       if (infoclimatResult.status === 'fulfilled') setInfoclimat(infoclimatResult.value)
       else failed.push('infoclimat')
-      if (sourcesResult.status === 'fulfilled') setSources(sourcesResult.value.sources)
+      if (sourcesResult.status === 'fulfilled') setSources(sourcesResult.value.sources ?? null)
       else failed.push('sources')
       if (basinResult.status === 'fulfilled') setBasinRainfall(basinResult.value)
       else failed.push('basin')
@@ -410,11 +413,15 @@ export default function Dashboard() {
   const stations = data.stations?.stations || []
   const pessacStation = stations.find(s => s.station_id === PESSAC_STATION_ID)
 
-  // Freshness is based on the newest measurement, not on the request time
-  const dataDate = latestMeasurementDate(data)
+  // Freshness is based on the primary station measurement, not on the request time
+  const primaryName = stations.find(
+    s => s.station_id === (data.stations?.primary_station_id || PESSAC_STATION_ID)
+  )?.station_name ?? 'Pessac'
+  const dataDate = primaryMeasurementDate(data)
   const dataAgeMs = dataDate ? now - dataDate.getTime() : null
+  const staleStations = timeMachineActive ? [] : staleStationNames(data, now)
   const isStale = !timeMachineActive && (
-    error !== null || (dataAgeMs !== null && dataAgeMs > STALE_AFTER_MS)
+    error !== null || dataAgeMs === null || dataAgeMs > STALE_AFTER_MS
   )
 
   return (
@@ -429,8 +436,13 @@ export default function Dashboard() {
           <div className="flex-1 text-sm text-red-800">
             <p className="font-medium">
               Donnees non actualisees
-              {dataDate ? ` — derniere mesure ${formatAge(dataDate, now)}` : ''}
+              {dataDate
+                ? ` — derniere mesure ${primaryName} ${formatAge(dataDate, now)}`
+                : ` — aucune mesure ${primaryName}`}
             </p>
+            {staleStations.length > 0 && (
+              <p className="mt-1">Stations sans mesure depuis 3 h : {staleStations.join(', ')}</p>
+            )}
             {error && (
               <p className="mt-1">
                 Echec du chargement temps reel
@@ -479,7 +491,12 @@ export default function Dashboard() {
       )}
 
       {/* Data Sources Status - Compact at top */}
-      <DataSourcesStatus sources={sources} loading={loading} />
+      <DataSourcesStatus
+        sources={sources}
+        nextHighTide={data.tide.next_high_tide?.timestamp}
+        now={now}
+        loading={loading}
+      />
 
       {/* Alerts */}
       {data.alerts.length > 0 && (
@@ -759,9 +776,14 @@ export default function Dashboard() {
           <span>
             {timeMachineActive && timeMachineDate
               ? `Mode TimeMachine - ${formatParis(timeMachineDate, 'dd/MM/yyyy HH:mm')}`
-              : `Derniere mesure : ${dataDate ? `${formatParis(dataDate, 'dd/MM/yyyy HH:mm:ss')} (${formatAge(dataDate, now)})` : '-'}`}
+              : `Derniere mesure ${primaryName} : ${dataDate ? `${formatParis(dataDate, 'dd/MM/yyyy HH:mm:ss')} (${formatAge(dataDate, now)})` : '-'}`}
           </span>
           {isStale && <span className="text-red-600 font-medium">perimees</span>}
+          {!isStale && staleStations.length > 0 && (
+            <span className="text-orange-600" title="Sans mesure depuis 3 h">
+              perimees : {staleStations.join(', ')}
+            </span>
+          )}
         </div>
         <button
           onClick={() => fetchData()}
