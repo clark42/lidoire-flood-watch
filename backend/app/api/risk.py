@@ -8,7 +8,7 @@ score.
 import logging
 from fastapi import APIRouter, HTTPException, Query
 
-from app.models.schemas import RiskScore
+from app.models.schemas import ForecastSkill, RiskOutlook, RiskScore
 from app.services.risk_core import MODEL_VERSION
 from app.services.risk_v2 import compute_current_risk, calculate_risk_from_values
 from app.services.forecast import get_risk_forecast_v2
@@ -53,6 +53,52 @@ async def get_risk_forecast_endpoint(
     except Exception as e:
         logger.exception("Error generating risk forecast")
         raise HTTPException(status_code=500, detail=f"Risk forecast failed: {e}")
+
+
+@router.get("/outlook", response_model=RiskOutlook)
+async def get_risk_outlook():
+    """
+    Outlook over the next 6 h, 24 h and 72 h ("do I need to act, and when?").
+
+    Per horizon: max score, level and time, and the top contributing factors
+    of the max hour in plain French. Also the next estimated high water at
+    the confluence, data-confidence notes and the action checklist of the
+    highest level (app/data/action_plan.json). Built from the cached
+    168 h forecast; cached in Redis for 10 minutes. Never stores anything.
+    """
+    from app.services.outlook import get_outlook
+
+    try:
+        return await get_outlook()
+    except Exception as e:
+        logger.exception("Error building risk outlook")
+        raise HTTPException(status_code=500, detail=f"Risk outlook failed: {e}")
+
+
+@router.get("/forecast-skill", response_model=ForecastSkill)
+async def get_forecast_skill_endpoint(
+    lead_hours: str = Query("6,24,72", description="Comma-separated leads in hours (0-168, max 10)"),
+    days: int = Query(30, ge=1, le=180, description="Archived runs of the last N days"),
+):
+    """
+    Archived forecasts (forecast_runs) vs the stored realtime score.
+
+    Each run's score at H+lead is paired with the realtime risk_score nearest
+    to run_at + lead (within 35 min). Returns the pairs, MAE / bias and a
+    hit / miss / false-alarm table at the orange threshold per lead. Empty
+    (n_runs = 0) until runs accumulate.
+    """
+    from app.services.forecast_archive import get_forecast_skill, parse_leads
+
+    try:
+        leads = parse_leads(lead_hours)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid lead_hours: {e}")
+    try:
+        return await get_forecast_skill(leads=leads, days=days)
+    except Exception as e:
+        logger.exception("Error computing forecast skill")
+        raise HTTPException(status_code=503, detail=f"Forecast skill unavailable: {e}")
 
 
 @router.get("/forecast/multi-model")

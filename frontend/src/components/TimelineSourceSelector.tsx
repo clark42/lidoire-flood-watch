@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
-import { Check, Droplets, Waves, AlertTriangle, Anchor, Sprout, Wind, Radio } from 'lucide-react'
-import type { RiverStationInfo, RainfallStationInfo } from '../types'
+import { Check, Droplets, Waves, AlertTriangle, Anchor, Sprout, Wind, Radio, Gauge } from 'lucide-react'
+import type { RiverStationInfo, RainfallStationInfo, IndicatorSeriesInfo } from '../types'
 import { formatDistanceKm } from '../utils/format'
 
 interface TimelineSourceSelectorProps {
@@ -27,6 +27,21 @@ interface TimelineSourceSelectorProps {
   onWindToggle?: () => void
   forecastEnabled?: boolean
   onForecastToggle?: () => void
+  indicatorSeries?: IndicatorSeriesInfo[]
+  selectedIndicators?: string[]
+  onIndicatorToggle?: (seriesId: string) => void
+}
+
+const INDICATOR_GROUPS: { label: string; match: (s: IndicatorSeriesInfo) => boolean }[] = [
+  { label: 'Affluents', match: (s) => s.type === 'flow_tributary' },
+  { label: 'Dordogne', match: (s) => s.type === 'flow_dordogne' },
+  { label: 'Nappe', match: (s) => s.type === 'groundwater' },
+  { label: 'Maree obs.', match: (s) => s.type === 'tide_observed' },
+]
+
+/** "Debit Eyraud a La Force" -> "Eyraud a La Force" (the group already says what it is). */
+function shortIndicatorName(s: IndicatorSeriesInfo): string {
+  return s.name.replace(/^(Debit|Nappe|Maree observee) /, '')
 }
 
 export default function TimelineSourceSelector({
@@ -53,6 +68,9 @@ export default function TimelineSourceSelector({
   onWindToggle,
   forecastEnabled,
   onForecastToggle,
+  indicatorSeries = [],
+  selectedIndicators = [],
+  onIndicatorToggle,
 }: TimelineSourceSelectorProps) {
   // Group river stations by river
   const stationsByRiver = useMemo(() => {
@@ -221,6 +239,52 @@ export default function TimelineSourceSelector({
         </div>
       </div>
 
+      {/* Hydrological indicators (outside the risk model) */}
+      {onIndicatorToggle && indicatorSeries.length > 0 && (
+        <div className="border rounded-lg p-3 bg-teal-50/30">
+          <div className="flex items-center gap-2 mb-2">
+            <Gauge className="w-4 h-4 text-teal-600" />
+            <span className="text-sm font-medium text-teal-700">
+              Indicateurs hydrologiques
+            </span>
+            <span className="text-xs text-gray-500">hors modele v3.4</span>
+          </div>
+          <div className="space-y-2">
+            {INDICATOR_GROUPS.map(({ label, match }) => {
+              const series = indicatorSeries.filter(match)
+              if (series.length === 0) return null
+              return (
+                <div key={label} className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium text-gray-500 w-20">{label}:</span>
+                  {series.map((s) => {
+                    const isSelected = selectedIndicators.includes(s.id)
+                    return (
+                      <button
+                        key={s.id}
+                        onClick={() => onIndicatorToggle(s.id)}
+                        title={`${s.name} (${s.unit})`}
+                        className={`flex items-center gap-1 px-2 py-1 text-xs rounded-full border transition-all ${
+                          isSelected ? 'border-2' : 'border-gray-200 bg-white hover:bg-gray-50'
+                        }`}
+                        style={
+                          isSelected
+                            ? { backgroundColor: `${s.color}20`, borderColor: s.color, color: s.color }
+                            : undefined
+                        }
+                      >
+                        {isSelected && <Check className="w-3 h-3" />}
+                        {shortIndicatorName(s)}
+                        <span className="opacity-60">({formatDistanceKm(s.distance_km)})</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Tide & Risk Score Toggles */}
       <div className="flex flex-wrap gap-3">
         <button
@@ -357,6 +421,9 @@ export default function TimelineSourceSelector({
         )}
         {forecastEnabled && (
           <span className="font-medium text-purple-600">+ previsions</span>
+        )}
+        {selectedIndicators.length > 0 && (
+          <span className="font-medium text-teal-600">+ {selectedIndicators.length} indicateur{selectedIndicators.length > 1 ? 's' : ''}</span>
         )}
       </div>
     </div>

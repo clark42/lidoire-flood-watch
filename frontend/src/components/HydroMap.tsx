@@ -9,6 +9,8 @@ import {
   Polyline,
 } from 'react-leaflet'
 import { DivIcon, type LatLngExpression } from 'leaflet'
+// Loaded with this lazy chunk only (HydroMap is the single leaflet user)
+import 'leaflet/dist/leaflet.css'
 import type {
   StationData,
   NetatmoStation,
@@ -17,6 +19,7 @@ import type {
   Tendency,
 } from '../types'
 import { formatDistanceKm } from '../utils/format'
+import BasinLayer from './BasinLayer'
 
 interface HydroMapProps {
   stations: StationData[]
@@ -180,6 +183,9 @@ export default function HydroMap({
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
+
+        {/* Lidoire catchment (Sandre BD TOPAGE) */}
+        <BasinLayer />
 
         {/* River polylines */}
         {Object.entries(RIVER_PATHS).map(([name, { points, color }]) => (
@@ -380,6 +386,10 @@ export default function HydroMap({
         <div className="flex items-center gap-1.5">
           <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#2563eb]" />
           <span>Maree (estimee)</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="inline-block w-2.5 h-2.5 rounded-sm border border-[#0d9488] bg-[#14b8a6]/20" />
+          <span>Bassin versant Lidoire</span>
         </div>
       </div>
     </div>
