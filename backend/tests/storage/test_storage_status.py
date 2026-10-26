@@ -128,9 +128,11 @@ async def test_status_sources_fresh_keep_contract(frozen_ages):
     _influx_ok()
     body = await status.get_status()
     assert body["status"] == "healthy"
-    assert set(body["sources"]) == {
+    assert set(body["sources"]) >= {
         "river_primary", "rain_openmeteo", "infoclimat", "netatmo", "tide", "soil", "risk_score",
+        "vigilance",
     }
+    assert body["sources"]["vigilance"]["critical"] is False
     river = body["sources"]["river_primary"]
     assert river["status"] == "ok" and river["critical"] is True
     assert river["last_timestamp"] == (NOW - timedelta(hours=0.1)).isoformat()

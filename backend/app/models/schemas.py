@@ -539,3 +539,72 @@ class AvailableSources(BaseModel):
     has_infoclimat: bool = True
     has_wind: bool = True
     has_soil: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Official vigilance (Vigicrues, Meteo-France): informative, not a model input
+# ---------------------------------------------------------------------------
+
+
+class VigilanceWindow(BaseModel):
+    """Validity window of one Meteo-France colour (level 1-4)."""
+    begin: UtcDatetime
+    end: UtcDatetime
+    level: int = Field(..., ge=1, le=4)
+
+
+class VigilanceTroncon(BaseModel):
+    """Vigicrues flood vigilance of one troncon (level 1 vert .. 4 rouge)."""
+    code: str
+    name: str
+    level: Optional[int] = Field(None, ge=1, le=4, description="None when missing from the feed")
+    color: Optional[str] = None  # vert | jaune | orange | rouge
+    url: str
+    station_url: Optional[str] = None
+
+
+class VigicruesVigilance(BaseModel):
+    available: bool = False
+    issued_at: Optional[UtcDatetime] = None
+    fetched_at: Optional[UtcDatetime] = None
+    troncons: list[VigilanceTroncon] = []
+    url: str
+
+
+class VigilancePhenomenon(BaseModel):
+    """Meteo-France colour of one phenomenon on the current (J) map."""
+    id: str
+    key: str  # pluie-inondation | crues | orages | vent ...
+    label: str
+    level: Optional[int] = Field(None, ge=1, le=4)
+    color: Optional[str] = None
+    level_tomorrow: Optional[int] = Field(None, ge=1, le=4)
+    # Windows above green (J and J1), in time order
+    windows: list[VigilanceWindow] = []
+
+
+class VigilanceDepartment(BaseModel):
+    code: str
+    name: str
+    max_level: Optional[int] = Field(None, ge=1, le=4, description="Max over every phenomenon (J)")
+    phenomena: list[VigilancePhenomenon] = []
+    url: str
+
+
+class MeteoFranceVigilance(BaseModel):
+    available: bool = False
+    issued_at: Optional[UtcDatetime] = None
+    fetched_at: Optional[UtcDatetime] = None
+    valid_from: Optional[UtcDatetime] = None
+    valid_to: Optional[UtcDatetime] = None
+    departments: list[VigilanceDepartment] = []
+    url: str
+
+
+class VigilanceStatus(BaseModel):
+    """GET /api/vigilance: official colours, read from the collector cache."""
+    timestamp: UtcDatetime
+    vigicrues: VigicruesVigilance
+    meteofrance: MeteoFranceVigilance
+    note: str = "Vigilance officielle, informative : elle n'entre pas dans le score de risque."
+
