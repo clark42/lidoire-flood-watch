@@ -463,6 +463,11 @@ export type SourceFreshnessName =
   | 'tide'
   | 'soil'
   | 'risk_score'
+  | 'radar_opera'
+  | 'glofas'
+  | 'ensemble_rain'
+  | 'vigilance'
+  | `indicator_${string}`
 
 export interface SourceFreshness {
   label: string
