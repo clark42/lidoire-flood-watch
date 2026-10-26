@@ -47,7 +47,7 @@ async def test_reviewfix_realtime_score_is_tagged_source_realtime(monkeypatch):
     ))
     assert await risk_v2.store_risk_score(risk)
     tags = api.records[0].to_line_protocol().split(" ")[0]
-    assert tags == "risk_score,model_version=3.3,source=realtime"
+    assert tags == f"risk_score,model_version={risk_core.MODEL_VERSION},source=realtime"
 
 
 def test_reviewfix_prefer_realtime_rows_per_hour_and_version():
@@ -282,7 +282,7 @@ async def test_reviewfix_risk_backfill_never_writes_point_by_point(monkeypatch):
     assert await risk_v2.backfill_risk_scores(sc.t0 - timedelta(hours=5), sc.t0) == 6
     assert len(batches) == 1
     assert {p["tags"]["source"] for p in batches[0]} == {"backfill"}
-    assert {p["tags"]["model_version"] for p in batches[0]} == {"3.3"}
+    assert {p["tags"]["model_version"] for p in batches[0]} == {risk_core.MODEL_VERSION}
 
 
 # --- Netatmo coverage query is non-blocking ---------------------------------

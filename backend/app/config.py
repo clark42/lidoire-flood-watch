@@ -203,7 +203,7 @@ class Settings(BaseSettings):
     risk_dordogne_level_red: float = 4.5     # (was 5.0)
     risk_tide_coef_high: int = 85  # (was 90)
 
-    # Risk model v3.3 parameters (single source for app/services/risk_core.py).
+    # Risk model v3.4 parameters (single source for app/services/risk_core.py).
     # Weights are the v3.2 calibration (14 annotated episodes) - unchanged.
     risk_weights: dict[str, float] = {
         "river": 0.28,

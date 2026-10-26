@@ -234,6 +234,9 @@ class RiskFactors(BaseModel):
     tide_available: bool = True
     unavailable_factors: list[str] = []
     notes: list[str] = []
+    # v3.4: gate (0-1) applied to tide_score / tide_phase_score, and its input
+    tide_gate: float = Field(1.0, ge=0, le=1)
+    backwater_level_m: Optional[float] = None
 
 
 class RiskScore(BaseModel):

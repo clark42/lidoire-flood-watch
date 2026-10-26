@@ -1,4 +1,4 @@
-"""Pure flood risk scoring core (model v3.3).
+"""Pure flood risk scoring core (model v3.4).
 
 This module is the ONE implementation of the risk score. It has no I/O:
 no HTTP, no database, no ``utcnow()``. Every caller (realtime dashboard,
@@ -24,6 +24,17 @@ mechanisms, see CLAUDE.md):
   builders must NOT pre-multiply rainfall millimetres.
 - Single tide-phase table.
 
+v3.4 = v3.3 + correct tide phase + tide factors gated by the Dordogne level:
+
+- Tide times are estimated at the Lidoire confluence (source time + phase
+  lag, applied by the tide collector; no change here).
+- The ``tide`` and ``tide_phase`` contributions are multiplied by
+  :func:`tide_gate` of the backwater level H (max of the primary station,
+  Pessac, over the trailing 12.5 h): 0 at or below its yellow threshold,
+  1 from its orange threshold, linear in between. The tide only hinders
+  the drainage when the Dordogne is already high. The conjunction branch
+  "high water + river > 0.5" keeps the ungated phase (as evaluated).
+
 The pure feature-building helpers at the bottom (rate regression, latest
 level, hourly rain buckets, tide lookup, historical features) only use
 points at or before ``t`` for observed series (no future leakage).
@@ -39,7 +50,10 @@ from typing import Iterable, Mapping, Optional, Sequence
 
 from app.models.schemas import RiskLevel, Tendency
 
-MODEL_VERSION = "3.3"
+MODEL_VERSION = "3.4"
+
+# Trailing window (h) of the backwater level H that gates the tide factors
+BACKWATER_WINDOW_H = 12.5
 
 # A station is "rising" above this rate (cm/h). Shared by momentum,
 # conjunction, dampener and the tendency enum.
@@ -77,6 +91,9 @@ class ModelParams:
     # Share of the forecast rain added to observed rain (anticipation)
     forecast_rain_24h_blend: float = 0.5
     forecast_rain_72h_blend: float = 0.3
+    # Backwater level (m) at which the tide gate opens / is fully open:
+    # yellow / orange thresholds of the primary station (Pessac)
+    tide_gate_thresholds: tuple[float, float] = (3.0, 3.8)
 
 
 def params_from_settings(settings) -> ModelParams:
@@ -85,6 +102,12 @@ def params_from_settings(settings) -> ModelParams:
     missing = [k for k in WEIGHT_KEYS if k not in weights]
     if missing:
         raise ValueError(f"risk_weights is missing keys: {missing}")
+    primary = next(
+        (c for c in settings.hubeau_stations if c.get("id") == settings.hubeau_primary_station), None,
+    )
+    if primary is None:
+        raise ValueError(f"primary station {settings.hubeau_primary_station!r} is not configured")
+    primary_th = primary.get("thresholds", {})
     return ModelParams(
         weights=weights,
         rain_24h_thresholds=(
@@ -118,6 +141,7 @@ def params_from_settings(settings) -> ModelParams:
             settings.risk_dordogne_level_orange,
             settings.risk_dordogne_level_red,
         ),
+        tide_gate_thresholds=(float(primary_th["yellow"]), float(primary_th["orange"])),
     )
 
 
@@ -192,6 +216,20 @@ def tendency_score_from_rate(rate_cm_h: float) -> float:
     if rate_cm_h < 20:
         return 0.85
     return 1.0
+
+
+def tide_gate(level_m: Optional[float], thresholds: Sequence[float]) -> float:
+    """Tide gate (0-1) from the backwater level: 0 at <= yellow, 1 at >= orange.
+
+    ``None`` (no primary station level at all) leaves the tide factors
+    ungated (1.0), as in v3.3.
+    """
+    if level_m is None:
+        return 1.0
+    low, full = thresholds[0], thresholds[1]
+    if full <= low:
+        return 1.0 if level_m >= full else 0.0
+    return min(1.0, max(0.0, (level_m - low) / (full - low)))
 
 
 def tide_phase_score(hours_to_nearest_high: Optional[float]) -> float:
@@ -414,6 +452,10 @@ class RiskFeatures:
     tide_available: bool = True
     tide_coefficient: Optional[int] = None
     hours_to_high_tide: Optional[float] = None  # signed, nearest high tide
+    # Backwater level H (m): max of the primary station over the trailing
+    # BACKWATER_WINDOW_H (points <= t), gates the tide factors. None = not
+    # computed: compute_risk falls back to the current primary level.
+    backwater_level_m: Optional[float] = None
     # Optional inputs (None = unavailable, excluded from the denominator)
     westerly_wind_kmh: Optional[float] = None
     soil_saturation_factor: Optional[float] = None
@@ -481,6 +523,9 @@ class RiskBreakdown:
     weights: Mapping[str, float]
     unavailable: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
+    # v3.4: tide gate applied to tide_score / tide_phase_score above, and its input
+    tide_gate: float = 1.0
+    backwater_level_m: Optional[float] = None
 
 
 def select_primary_station(
@@ -586,6 +631,19 @@ def compute_risk(
         phase_score = 0.0
         notes.append("tide data unavailable or estimated: tide factors set to 0")
 
+    # --- Tide gate (v3.4): backwater level H, else the current primary level ---
+    gate_level = features.backwater_level_m
+    if gate_level is None:
+        current = next((s for s in features.stations if s.station_id == features.primary_station_id), None)
+        if current is not None:
+            gate_level = current.height_m
+            notes.append("tide gate: backwater level unavailable, current primary level used")
+    gate = tide_gate(gate_level, p.tide_gate_thresholds)
+    # The conjunction keeps the ungated phase; contributions use the gated scores
+    conjunction_phase = phase_score
+    tide_score *= gate
+    phase_score *= gate
+
     # --- Video ---
     if features.video_level is None:
         video_score = None
@@ -597,7 +655,7 @@ def compute_risk(
     mom_score = momentum_score(n_rising, river_score, n_total=max(n_active, 1))
     conjunction = conjunction_multiplier(
         river_score=river_score,
-        tide_phase=phase_score,
+        tide_phase=conjunction_phase,
         tendency=tendency,
         n_rising=n_rising,
         n_above_orange=n_above_orange,
@@ -673,6 +731,8 @@ def compute_risk(
         weights=dict(w),
         unavailable=tuple(unavailable),
         notes=tuple(notes),
+        tide_gate=gate,
+        backwater_level_m=gate_level,
     )
 
 
@@ -827,6 +887,24 @@ def rate_cm_per_hour(
         return 0.0
     sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
     return (sxy / sxx) * 100.0
+
+
+def backwater_level(
+    points: Iterable,
+    t: datetime,
+    window_h: float = BACKWATER_WINDOW_H,
+) -> Optional[float]:
+    """Max level over ``[t - window_h, t]`` (points <= t), None without points.
+
+    Applied to the primary station (Pessac): the 12.5 h max removes its own
+    tidal oscillation. Same semantics as ``risk_shadow.backwater_level``
+    (backwater gate shadow scoring): dedupe when both exist.
+    """
+    if not _is_level_point_sequence(points):
+        points = as_level_points(points)
+    t = to_utc_naive(t)
+    window = points[_index_from(points, t - timedelta(hours=window_h)):_index_after(points, t)]
+    return max(h for _, h in window) if window else None
 
 
 def aggregate_hourly_rain(
@@ -1006,7 +1084,9 @@ def build_historical_features(
     """Features at a past instant ``t`` from stored series (backfill, TimeMachine).
 
     Observed series (levels, rain) only contribute points at or before ``t``.
-    No forecast rain (historical), no wind/soil/video (not archived).
+    No forecast rain (historical), no wind/soil/video (not archived). The
+    caller must load at least BACKWATER_WINDOW_H of primary-station history
+    before ``t`` for the tide gate.
     """
     stations = []
     for cfg in station_configs:
@@ -1030,6 +1110,7 @@ def build_historical_features(
         tide_available=tide.available,
         tide_coefficient=tide.coefficient,
         hours_to_high_tide=tide.hours_to_high_tide,
+        backwater_level_m=backwater_level(station_points.get(primary_station_id, ()), t),
     )
 
 
@@ -1052,6 +1133,7 @@ __all__ = [
     "aggregate_hourly_rain",
     "apply_curve",
     "as_level_points",
+    "backwater_level",
     "build_historical_features",
     "compute_risk",
     "conjunction_multiplier",
@@ -1069,6 +1151,7 @@ __all__ = [
     "tendency_from_rate",
     "tendency_score_from_rate",
     "tide_at",
+    "tide_gate",
     "tide_phase_score",
     "to_utc_naive",
 ]

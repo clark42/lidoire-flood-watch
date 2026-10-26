@@ -6,7 +6,7 @@ Fetches historical data from all sources since November 2022:
 - Tides from Open-Meteo Marine (hourly)
 - Soil moisture from Open-Meteo (hourly)
 
-Then recalculates risk scores with the current model (risk_core, v3.3):
+Then recalculates risk scores with the current model (risk_core, v3.4):
 features at each step only use observed points at or before that step.
 """
 
@@ -289,7 +289,7 @@ async def run_full_backfill(
 
     # 5. Recalculate risk scores
     if not skip_risk:
-        _update_progress("risk: recalculating v3.3 scores (slowest step)...")
+        _update_progress("risk: recalculating v3.4 scores (slowest step)...")
         results["risk_scores"] = await recalculate_risk_scores(start_date, end_date)
 
     _update_progress("done")

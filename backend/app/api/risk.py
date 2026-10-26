@@ -1,6 +1,6 @@
 """Risk scoring endpoints.
 
-All scores come from the single v3.3 scoring core (risk_core.compute_risk).
+All scores come from the single v3.4 scoring core (risk_core.compute_risk).
 Reads never persist anything: the hourly scheduler job stores the realtime
 score.
 """
@@ -126,7 +126,7 @@ async def simulate_risk(
     n_rising_stations: int = Query(0, ge=0, le=7, description="Nombre de stations en hausse"),
 ):
     """
-    Simulate risk score with custom values (v3.3 model, nothing is stored).
+    Simulate risk score with custom values (v3.4 model, nothing is stored).
 
     Every input is used: the Dordogne level is scored as a single aggregate
     station with the Pessac thresholds, the rising-station count drives

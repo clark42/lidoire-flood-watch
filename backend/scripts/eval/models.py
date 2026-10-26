@@ -1,4 +1,4 @@
-"""Model interface for the evaluation, the v3.3 model and simple baselines.
+"""Model interface for the evaluation, the production model and simple baselines.
 
 A candidate model is any object with:
 
@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from app.config import get_settings
-from app.services.risk_core import ModelParams, compute_risk, get_model_params
+from app.services.risk_core import MODEL_VERSION, ModelParams, compute_risk, get_model_params
 from scripts.eval.contingency import ContingencyConfig, ContingencyResult, evaluate_scores
 from scripts.eval.dataset import EvalDataset, FeatureRow
 from scripts.eval.hourly import HourlyResult, HourlyTargetConfig, hourly_metrics, hourly_targets
@@ -95,7 +95,7 @@ class V33Model:
     """
 
     params: Optional[ModelParams] = None
-    name: str = "v3.3"
+    name: str = f"v{MODEL_VERSION}"
     kind: str = "score"
 
     def score(self, row: FeatureRow) -> Optional[float]:

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from app.models.schemas import EpisodeOutcome
-from app.services.risk_core import RiskFeatures
+from app.services.risk_core import MODEL_VERSION, RiskFeatures
 from scripts.eval import FeatureRow
 from scripts.eval import candidates as C
 from scripts.eval.contingency import ContingencyConfig, evaluate_scores
@@ -180,7 +180,7 @@ def test_models_run_end_to_end(tmp_path):
     ds = _dataset()
     payload = C.run(ds, tmp_path, EVENTS, PERIOD, crosscheck=True, sensitivity=False)
     names = {r["model"] for r in payload["rows"]}
-    assert {"v3.3", "pessac_level", "v3.3+backwater", "bw_rule_api_cv", "lr_api_haval_cv",
+    assert {f"v{MODEL_VERSION}", "pessac_level", "v3.3+backwater", "bw_rule_api_cv", "lr_api_haval_cv",
             "bw_rule_gr4h_apriori", "lr_gr4h_haval_cv"} <= names
     cv_rows = [r for r in payload["rows"] if r["model"] == "bw_rule_rain24_cv" and r["level"] == "orange"]
     assert cv_rows and cv_rows[0]["n_floods"] == 3

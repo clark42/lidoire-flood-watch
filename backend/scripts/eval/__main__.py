@@ -128,9 +128,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.sensitivity:
         sens = []
         for label, opts in (
-            ("v3.3 [interp levels]", replace(options, level_mode="interp")),
-            ("v3.3 [no tide]", replace(options, use_tide=False)),
-            ("v3.3 [oracle rain forecast]", replace(options, forecast_rain="oracle")),
+            (f"{V33Model().name} [interp levels]", replace(options, level_mode="interp")),
+            (f"{V33Model().name} [no tide]", replace(options, use_tide=False)),
+            (f"{V33Model().name} [oracle rain forecast]", replace(options, forecast_rain="oracle")),
         ):
             ds = build_dataset(args.start, args.end, opts, raw=raw, sources_meta=sources_meta)
             model = V33Model(name=label)

@@ -1,4 +1,4 @@
-"""Risk scoring service (model v3.3) - adapters around risk_core.
+"""Risk scoring service (model v3.4) - adapters around risk_core.
 
 The score itself is computed ONLY by :func:`app.services.risk_core.compute_risk`.
 This module:
@@ -339,6 +339,8 @@ def breakdown_to_factors(bd: RiskBreakdown) -> RiskFactors:
         tide_available=bd.tide_available,
         unavailable_factors=list(bd.unavailable),
         notes=list(bd.notes),
+        tide_gate=bd.tide_gate,
+        backwater_level_m=bd.backwater_level_m,
     )
 
 
@@ -452,6 +454,23 @@ def station_features_from_multi(
     return tuple(out)
 
 
+def primary_level_points(
+    stations_data: Optional[MultiStationData],
+    primary_levels=(),
+) -> list[risk_core.LevelPoint]:
+    """Primary-station series: stored points plus the latest Hub'Eau level (sorted)."""
+    points = risk_core.as_level_points(primary_levels)
+    primary_id = stations_data.primary_station_id if stations_data else get_settings().hubeau_primary_station
+    current = next(
+        (s for s in (stations_data.stations if stations_data else []) if s.station_id == primary_id), None,
+    )
+    if current is not None:
+        latest = (to_utc_naive(current.current_level.timestamp), float(current.current_level.height_m))
+        if latest not in points:
+            points = sorted(points + [latest])
+    return points
+
+
 def build_realtime_features(
     stations_data: Optional[MultiStationData],
     tide: Optional[TideForecast],
@@ -460,8 +479,14 @@ def build_realtime_features(
     westerly_wind_kmh: Optional[float] = 0.0,
     soil_saturation_factor: Optional[float] = 1.0,
     video_level: Optional[float] = None,
+    primary_levels=(),
 ) -> RiskFeatures:
-    """Features for 'now' from realtime collector outputs (pure)."""
+    """Features for 'now' from realtime collector outputs (pure).
+
+    ``primary_levels``: stored primary-station (Pessac) points of the last
+    BACKWATER_WINDOW_H, merged with the latest Hub'Eau level for the
+    backwater level that gates the tide factors (v3.4).
+    """
     t = to_utc_naive(timestamp)
     tide_state = tide_state_from_forecast(tide, t)
     primary_id = (
@@ -480,6 +505,7 @@ def build_realtime_features(
         tide_available=tide_state.available,
         tide_coefficient=tide_state.coefficient,
         hours_to_high_tide=tide_state.hours_to_high_tide,
+        backwater_level_m=risk_core.backwater_level(primary_level_points(stations_data, primary_levels), t),
         westerly_wind_kmh=westerly_wind_kmh,
         soil_saturation_factor=soil_saturation_factor,
         video_level=video_level,
@@ -567,6 +593,9 @@ class RealtimeInputs:
     soil_saturation_factor: float = 1.0
     westerly_wind_kmh: float = 0.0
     video_level: Optional[float] = None
+    # Primary station (Pessac) points of the last BACKWATER_WINDOW_H, stored
+    # + latest Hub'Eau (tide gate input, shared with the forecast)
+    primary_levels: tuple = ()
 
     def features(self) -> RiskFeatures:
         return build_realtime_features(
@@ -574,6 +603,7 @@ class RealtimeInputs:
             westerly_wind_kmh=self.westerly_wind_kmh,
             soil_saturation_factor=self.soil_saturation_factor,
             video_level=self.video_level,
+            primary_levels=self.primary_levels,
         )
 
 
@@ -583,6 +613,18 @@ async def _safe(coro, default, name: str):
     except Exception as e:  # optional source: degrade gracefully
         logger.warning("risk inputs: %s unavailable: %s", name, e)
         return default
+
+
+async def load_primary_levels(now: datetime) -> list[risk_core.LevelPoint]:
+    """Stored primary-station points over the backwater window ending at ``now``."""
+    from app.services import influx_client
+
+    rows = await influx_client.query_river_levels(
+        get_settings().hubeau_primary_station,
+        now - timedelta(hours=risk_core.BACKWATER_WINDOW_H),
+        now + timedelta(minutes=1),
+    )
+    return _level_points(rows)
 
 
 async def gather_realtime_inputs(now: Optional[datetime] = None) -> RealtimeInputs:
@@ -597,7 +639,7 @@ async def gather_realtime_inputs(now: Optional[datetime] = None) -> RealtimeInpu
     now = now or _utcnow()
 
     (
-        tide, rainfall, stations, soil_wind, meteo_agricole, netatmo, infoclimat,
+        tide, rainfall, stations, soil_wind, meteo_agricole, netatmo, infoclimat, stored_primary,
     ) = await asyncio.gather(
         get_current_tide_data(),
         get_rainfall_summary(),
@@ -606,6 +648,7 @@ async def gather_realtime_inputs(now: Optional[datetime] = None) -> RealtimeInpu
         _safe(get_meteo_agricole_cached(), None, "meteo agricole"),
         _safe(get_basin_rainfall(), {}, "netatmo"),
         _safe(get_basin_rainfall_infoclimat(), {}, "infoclimat"),
+        _safe(load_primary_levels(now), [], "stored primary levels"),
     )
     soil_wind = soil_wind or {}
     netatmo = netatmo or {}
@@ -626,6 +669,7 @@ async def gather_realtime_inputs(now: Optional[datetime] = None) -> RealtimeInpu
             rainfall.soil_saturation_factor, soil_wind, meteo_agricole,
         ),
         westerly_wind_kmh=compute_westerly_wind(soil_wind, meteo_agricole),
+        primary_levels=tuple(primary_level_points(stations, stored_primary or [])),
     )
 
 
@@ -949,7 +993,7 @@ async def backfill_risk_scores(
 
     max_age = settings.risk_level_max_age_hours
     rate_window = settings.risk_rate_window_hours
-    lookback = timedelta(hours=max(max_age, rate_window) + 1)
+    lookback = timedelta(hours=max(max_age, rate_window, risk_core.BACKWATER_WINDOW_H) + 1)
 
     logger.info("Risk backfill v%s: loading data for %s -> %s (step=%s)", MODEL_VERSION, s, e, step)
 

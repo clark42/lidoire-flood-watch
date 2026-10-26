@@ -56,7 +56,13 @@ def timemachine(monkeypatch):
         # Stored tides read by load_tide_rows (+/-13h, Bordeaux first)
         return [r for r in sc.tide_rows if start <= r["timestamp"] <= end] if port == "LIDOIRE" else []
 
+    async def fake_river_levels(station_id, start, end):
+        # Primary levels of the trailing 12.5h (tide gate), beyond the +/-6h snapshot
+        return [{"timestamp": ts.replace(tzinfo=timezone.utc), "height_m": h}
+                for ts, h in sc.station_points.get(station_id, []) if start <= ts <= end]
+
     monkeypatch.setattr(influx_client, "query_tides", fake_tides)
+    monkeypatch.setattr(influx_client, "query_river_levels", fake_river_levels)
     monkeypatch.setattr(realtime_api, "query_historical_snapshot", fake_snapshot)
     monkeypatch.setattr(realtime_api, "query_rainfall", fake_rainfall)
     monkeypatch.setattr(realtime_api, "write_river_levels_batch", forbidden)
@@ -70,7 +76,7 @@ async def test_risk_timemachine_does_not_write(timemachine):
     sc, writes = timemachine
     data = await realtime_api.get_realtime_data_at(sc.t0.isoformat())
     assert writes == []
-    assert data.risk.model_version == "3.3"
+    assert data.risk.model_version == risk_v2.MODEL_VERSION
     assert data.timestamp == sc.t0
     assert data.risk.timestamp == sc.t0
 
@@ -120,7 +126,7 @@ async def test_risk_simulate_uses_every_input_and_never_stores(monkeypatch):
         other = (await risk_api.simulate_risk(**{**base, key: value}))["risk"]
         assert other.score > ref.score, key
     out = await risk_api.simulate_risk(**base)
-    assert out["model_version"] == "v3.3"
+    assert out["model_version"] == f"v{risk_v2.MODEL_VERSION}"
     assert out["risk"].factors.unavailable_factors == ["video"]
     assert writes == []
 

@@ -143,7 +143,7 @@ async def test_risk_get_forecast_h0_equals_realtime(monkeypatch):
     result = await forecast_mod.get_risk_forecast_v2(hours=24)
     realtime = risk_v2.risk_from_inputs(inputs)
     assert result["forecasts"][0]["score"] == realtime.score
-    assert result["model_version"] == "3.3"
+    assert result["model_version"] == risk_v2.MODEL_VERSION
     assert len(result["forecasts"]) == 25
     # Future rain keys are strictly after t0 (no collision with past hours)
     assert result["forecasts"][0]["rain_24h_mm"] == pytest.approx(sc.rainfall.last_24h_mm, abs=0.05)

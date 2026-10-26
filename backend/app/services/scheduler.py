@@ -100,7 +100,7 @@ async def collect_nowcast_rain_job():
 
 
 async def compute_risk_job():
-    """Job to compute the realtime risk score and store it (model v3.3)."""
+    """Job to compute the realtime risk score and store it (model v3.4)."""
     try:
         from app.services.risk_v2 import compute_current_risk
 

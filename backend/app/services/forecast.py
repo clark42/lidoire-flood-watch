@@ -24,12 +24,14 @@ v1.0 (Jan 2026): initial implementation (Feb 2024 calibration).
 v2.0 (Jan 2026): v3.0 model weights with momentum/dampener.
 v3.3 (Oct 2026): uses risk_core; timezone, calibration, rain re-injection
 and H+0 consistency fixes.
+v3.4 (Oct 2026): backwater level (observed + projected Pessac) gates the tide.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Mapping, Optional, Sequence
@@ -150,6 +152,9 @@ class ForecastInputs:
     soil_saturation_factor: Optional[float] = None
     westerly_wind_kmh: Optional[float] = None
     westerly_wind_hourly: Mapping[datetime, float] = field(default_factory=dict)
+    # Observed primary-station points (stored + latest Hub'Eau) of the last
+    # BACKWATER_WINDOW_H: tide gate input, as in realtime
+    primary_levels: Sequence[tuple[datetime, float]] = ()
 
 
 def calibrate_past_rain(
@@ -247,6 +252,30 @@ def _project_level(
     return max(0.0, station.height_m + min(trend_m + rain_rise, MAX_RISE_M))
 
 
+def forecast_backwater_level(fi: ForecastInputs, h: int) -> Optional[float]:
+    """Backwater level at H+h: trailing max over observed + projected primary levels.
+
+    Observed points in [t_h - window, t0], projected hourly levels in
+    (t0, t_h] within the window. H+0 is the realtime value.
+    """
+    window_h = risk_core.BACKWATER_WINDOW_H
+    values = []
+    if h < window_h:
+        observed = risk_core.backwater_level(fi.primary_levels, fi.t0, window_h - h)
+        if observed is not None:
+            values.append(observed)
+    primary = next((s for s in fi.stations if s.station_id == fi.primary_station_id), None)
+    if primary is not None and h > 0:
+        base = floor_hour(fi.t0)
+        saturation = fi.soil_saturation_factor if fi.soil_saturation_factor is not None else 1.0
+        delay = fi.station_delays.get(primary.station_id, 0.0)
+        values += [
+            _project_level(primary, delay, k, fi.rain_hourly, base, saturation)
+            for k in range(max(1, math.ceil(h - window_h)), h + 1)
+        ]
+    return max(values) if values else None
+
+
 def build_forecast_features(fi: ForecastInputs, h: int) -> tuple[RiskFeatures, Optional[float]]:
     """Risk features at H+h, plus the projected primary level (display)."""
     base = floor_hour(fi.t0)
@@ -324,6 +353,7 @@ def build_forecast_features(fi: ForecastInputs, h: int) -> tuple[RiskFeatures, O
         tide_available=tide_available,
         tide_coefficient=tide.coefficient,
         hours_to_high_tide=tide.hours_to_high_tide,
+        backwater_level_m=forecast_backwater_level(fi, h),
         westerly_wind_kmh=wind,
         soil_saturation_factor=fi.soil_saturation_factor,
         n_rising_override=n_rising,
@@ -565,6 +595,7 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
         soil_saturation_factor=inputs.soil_saturation_factor if inputs else None,
         westerly_wind_kmh=inputs.westerly_wind_kmh if inputs else None,
         westerly_wind_hourly=wind_hourly,
+        primary_levels=inputs.primary_levels if inputs else (),
     )
 
     forecasts = build_forecast(fi, hours)

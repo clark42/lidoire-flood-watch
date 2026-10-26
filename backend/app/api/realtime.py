@@ -29,6 +29,7 @@ from app.services.risk_v2 import (
     TIDE_WINDOW_H,
     breakdown_to_risk_score,
     gather_realtime_inputs,
+    load_primary_levels,
     load_tide_rows,
     rain_hourly_from_records,
     risk_from_inputs,
@@ -537,10 +538,13 @@ async def get_realtime_data_at(timestamp: str):
     # Tides over +/-13h (same window and port rule as backfill_risk_scores):
     # the nearest high tide can be ~6h12 away, outside the +/-6h snapshot.
     tide_window = timedelta(hours=TIDE_WINDOW_H)
-    snapshot, rain_rows, tide_rows = await asyncio.gather(
+    # Primary levels over the trailing 12.5h (tide gate, v3.4): longer than
+    # the -6h of the snapshot.
+    snapshot, rain_rows, tide_rows, primary_rows = await asyncio.gather(
         query_historical_snapshot(target_time, window_hours=6),
         query_rainfall(target_time - timedelta(hours=169), target_time + timedelta(minutes=1)),
         load_tide_rows(target_time - tide_window, target_time + tide_window),
+        load_primary_levels(target_time),
     )
 
     # === CACHE-THROUGH (inputs only) ===
@@ -555,6 +559,8 @@ async def get_realtime_data_at(timestamp: str):
 
     # === FEATURES (same builder as backfill) ===
     station_points = _snapshot_station_points(snapshot)
+    primary_id = settings.hubeau_primary_station
+    station_points[primary_id] = sorted(set(station_points.get(primary_id, [])) | set(primary_rows))
     configs = [risk_core.StationConfig.from_settings_dict(c) for c in settings.hubeau_stations]
     # query_tides rows carry aware timestamps (display code compares naive)
     tide_rows = [

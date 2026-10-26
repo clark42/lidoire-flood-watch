@@ -102,7 +102,7 @@ async def test_reviewfix_same_score_realtime_backfill_just_after_high_tide(realt
     rt, bf = compute_risk(realtime), compute_risk(backfill)
     assert rt.score == bf.score
     assert rt.tide_phase_score == bf.tide_phase_score
-    assert rt.tide_phase_score > 0.9
+    assert risk_core.tide_phase_score(rt.hours_to_high_tide) > 0.9  # before the v3.4 tide gate
     assert rt.tide_score == bf.tide_score
 
     # Old behaviour (future highs only) understated the phase for ~6h
