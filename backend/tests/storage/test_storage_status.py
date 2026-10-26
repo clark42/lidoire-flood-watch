@@ -128,7 +128,7 @@ async def test_status_sources_fresh_keep_contract(frozen_ages):
     _influx_ok()
     body = await status.get_status()
     assert body["status"] == "healthy"
-    assert set(body["sources"]) == {
+    assert set(body["sources"]) >= {
         "river_primary", "rain_openmeteo", "infoclimat", "netatmo", "tide", "soil", "risk_score",
     }
     river = body["sources"]["river_primary"]

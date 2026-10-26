@@ -836,6 +836,8 @@ async def get_unified_timeline(
     include_wind: bool = Query(False, description="Include wind speed/direction data"),
     include_forecast: bool = Query(False, description="Include 7-day risk forecast overlay"),
     include_risk_shadow: bool = Query(False, description="Include the shadow risk score (v3.4 + backwater gate)"),
+    include_radar: bool = Query(False, description="Include the OPERA radar basin rain (radar:LIDOIRE)"),
+    include_glofas: bool = Query(False, description="Include the GloFAS Lidoire discharge median (glofas:LIDOIRE)"),
     resolution: str = Query("1h", description="Data resolution: 15m, 1h, 6h, 12h, 1d"),
 ):
     """
@@ -846,6 +848,8 @@ async def get_unified_timeline(
     - Rainfall stations (Netatmo Lidoire, Open-Meteo)
     - Tide data (Libourne port)
     - Risk score history
+    - OPERA radar basin rain (``radar:LIDOIRE``) and GloFAS Lidoire discharge
+      median (``glofas:LIDOIRE``): stored series only, never read by the model
 
     Constraints: start < end, period <= 400 days, ids must come from
     ``/timeline/sources`` (422 otherwise). Missing data is backfilled in
@@ -1124,6 +1128,48 @@ async def get_unified_timeline(
             )
         }
 
+    async def radar_series() -> dict[str, TimelineSeries]:
+        # Stored series only (scheduler, 24 h rolling upstream): no cache-through
+        if not include_radar:
+            return {}
+        from app.services.probabilistic_store import aggregate_radar_series, query_radar_points
+
+        try:
+            rows = await query_radar_points(start, end)
+        except Exception as e_radar:
+            logger.warning("Radar timeline failed: %r", e_radar)
+            return {}
+        points = aggregate_radar_series(rows, resolution)
+        if not points:
+            return {}
+        return {
+            "radar:LIDOIRE": TimelineSeries(
+                type="rainfall", name="Pluie radar bassin (OPERA, CC BY 4.0)", unit=rain_unit,
+                color="#0891b2", data=_points(points),
+            )
+        }
+
+    async def glofas_series() -> dict[str, TimelineSeries]:
+        # Median of the most recent stored run for each day (no cache-through)
+        if not include_glofas:
+            return {}
+        from app.services.probabilistic_store import latest_run_per_day, query_glofas_rows
+
+        try:
+            rows = await query_glofas_rows(start, end, fields=("p50",))
+        except Exception as e_glofas:
+            logger.warning("GloFAS timeline failed: %r", e_glofas)
+            return {}
+        points = latest_run_per_day(rows, "p50")
+        if not points:
+            return {}
+        return {
+            "glofas:LIDOIRE": TimelineSeries(
+                type="river_discharge", name="Debit Lidoire GloFAS (mediane)", unit="m³/s",
+                color="#0f766e", data=_points(points),
+            )
+        }
+
     async def forecast_series() -> dict[str, TimelineSeries]:
         if not include_forecast:
             return {}
@@ -1173,6 +1219,8 @@ async def get_unified_timeline(
         risk_series(),
         risk_shadow_series(),
         forecast_series(),
+        radar_series(),
+        glofas_series(),
     )
     series: dict[str, TimelineSeries] = {}
     for part in parts:

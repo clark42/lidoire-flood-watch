@@ -242,6 +242,10 @@ async def start_scheduler():
     from app.services.notifier import schedule_notifier
     schedule_notifier(_scheduler, first_run=now + RISK_JOB_FIRST_RUN_DELAY)
 
+    # Radar, GloFAS and ensemble rain (new series only, not read by the risk model)
+    from app.services.probabilistic_jobs import schedule_probabilistic_jobs
+    schedule_probabilistic_jobs(_scheduler, now)
+
     # Camera: every minute (configurable)
     from app.config import get_settings
     settings = get_settings()

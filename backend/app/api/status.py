@@ -163,6 +163,31 @@ def source_specs() -> dict[str, dict]:
             "tags": {"location": ["moulin"]},
             "max_age_hours": 3.0,
         },
+        # Probabilistic / observed-rain series: informative, never critical
+        "radar_opera": {
+            "label": "Pluie radar bassin (OPERA)",
+            "measurement": "radar_rain",
+            "tags": {"source": ["opera"]},
+            "field": "basin_mean_mm",
+            "max_age_hours": 1.0,
+            "note": None if settings.radar_enabled else "desactive (RADAR_ENABLED=false)",
+        },
+        "glofas": {
+            "label": "Debit GloFAS Lidoire (run du jour)",
+            "measurement": "glofas_forecast",
+            "tags": {"lead": ["0"]},
+            "field": "p50",
+            "max_age_hours": 48.0,
+            "note": None if settings.glofas_enabled else "desactive (GLOFAS_ENABLED=false)",
+        },
+        "ensemble_rain": {
+            "label": "Pluie d'ensemble (Open-Meteo)",
+            "measurement": "ensemble_rain",
+            "tags": {"window": ["run"]},
+            "field": "members",
+            "max_age_hours": 12.0,
+            "note": None if settings.ensemble_rain_enabled else "desactive (ENSEMBLE_RAIN_ENABLED=false)",
+        },
         "risk_score": {
             "label": f"Score de risque v{MODEL_VERSION} (temps reel)",
             "measurement": "risk_score",

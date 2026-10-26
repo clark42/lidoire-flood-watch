@@ -11,6 +11,8 @@ from app.api.episodes import router as episodes_router
 from app.api.risk import router as risk_router
 from app.api.auth import router as auth_router
 from app.api.notify import router as notify_router
+from app.api.forecast_ensemble import router as forecast_ensemble_router
+from app.api.geo import router as geo_router
 
 # Every route below inherits the API key check: safe methods (GET/HEAD/OPTIONS)
 # stay public, state-changing methods require the X-API-Key header.
@@ -23,3 +25,5 @@ router.include_router(episodes_router, prefix="/episodes", tags=["Episodes"])
 router.include_router(risk_router, prefix="/risk", tags=["Risk"])
 router.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 router.include_router(notify_router, prefix="/notify", tags=["Notifications"])
+router.include_router(forecast_ensemble_router, prefix="/forecast", tags=["Forecast"])
+router.include_router(geo_router, prefix="/geo", tags=["Geo"])
