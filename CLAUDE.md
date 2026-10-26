@@ -65,21 +65,22 @@ app/
 ├── api/                 # Routes FastAPI (toutes sous /api)
 │   ├── deps.py          # require_api_key_for_writes : X-API-Key sur POST/PUT/PATCH/DELETE
 │   ├── status.py        # /api/status (checks reels Influx/Postgres/Redis + fraicheur des sources), /api/health
-│   ├── realtime.py      # /api/realtime + TimeMachine /at
+│   ├── realtime.py      # /api/realtime + TimeMachine /at, /radar, /radar/frame.png|json
 │   ├── timeline.py      # /api/timeline/sources, /api/timeline/unified
-│   ├── episodes.py      # /api/episodes : CRUD, labels, confirm, analyse, backfill, detection
-│   ├── risk.py          # /api/risk : score, previsions, outlook, forecast-skill, simulation
+│   ├── episodes.py      # /api/episodes : CRUD, labels, drivers, confirm, analyse, backfill, detection
+│   ├── risk.py          # /api/risk : score, previsions, outlook, forecast-skill, simulation, analogs
 │   ├── notify.py        # /api/notify/test (message de test, X-API-Key)
 │   ├── vigilance.py     # /api/vigilance (couleurs officielles, lecture du cache)
 │   ├── observations.py  # /api/observations (+ photo), /api/episodes/{id}/observations
 │   ├── indicators.py    # /api/indicators (indicateurs hydrologiques hors modele)
 │   ├── forecast_ensemble.py  # /api/forecast/ensemble (pluie d'ensemble + GloFAS, hors score)
-│   ├── geo.py           # /api/geo/basin (polygone du bassin)
+│   ├── geo.py           # /api/geo/basin (polygone du bassin), /api/geo/profile (profil en long, Z_c, remous)
 │   └── auth.py          # /api/auth/netatmo (OAuth2)
 ├── data/
 │   ├── episodes_labels.json  # Verite terrain des 14 episodes (source unique)
 │   ├── action_plan.json # Actions par niveau (jaune/orange/rouge), modifiable par le proprietaire
-│   └── lidoire_basin.geojson # Bassin versant topographique (BD TOPAGE, 230.8 km2)
+│   ├── lidoire_basin.geojson # Bassin versant topographique (BD TOPAGE, 230.8 km2)
+│   └── lidoire_profile.json  # Profil en long moulin -> confluence (TOPAGE + RGE ALTI, 100 m)
 ├── models/
 │   ├── schemas.py       # Modeles Pydantic (RiskScore, EpisodeOutcome, EpisodeLabelSet...)
 │   ├── probabilistic.py # api_json (dates UTC Z) des routes radar/ensemble
@@ -110,6 +111,9 @@ app/
     ├── probabilistic_jobs.py   # Jobs radar (15 min), GloFAS et ensemble (6 h)
     ├── indicators.py    # Catalogue des series indicateurs, lectures Influx, payload /api/indicators
     ├── climatology.py   # PUR : percentile_of, tendance, seuils (indicateurs)
+    ├── lidoire_profile.py  # PUR : profil en long, Z_c estime, portee du remous (plan d'eau horizontal)
+    ├── episode_drivers.py  # Valeurs aux crues, percentiles, analogues, payload /api/geo/profile (lit Influx)
+    ├── radar_frame.py   # Image PNG OPERA recadree sur le bassin (PNG zlib maison, cache par image)
     └── collectors/
         ├── hubeau.py        # Hub'Eau (temps reel) + Hydroportail (historique)
         ├── vigicrues.py     # Vigicrues (Libourne, metres)
@@ -139,10 +143,11 @@ scripts/eval/            # Harnais d'evaluation (python -m scripts.eval build|re
 ├── loeo.py              # Leave-one-event-out
 ├── report.py            # summary.md, metrics.json, CSV
 └── candidates.py        # Comparaison des modeles candidats (LOEO bloque)
+scripts/build_lidoire_profile.py  # Construit data/lidoire_profile.json (Sandre WFS + API altimetrie IGN, reseau)
 tests/
 ├── risk/  storage/  security/  collectors/
 ├── groundtruth/  evaluation/  models/  followups/  notifier/  indicators/ (fixtures/ JSON enregistres)  outlook/
-├── vigilance/ (fixtures/ : reponses enregistrees)  observations/  probabilistic/ (fixtures/)
+├── vigilance/ (fixtures/ : reponses enregistrees)  observations/  probabilistic/ (fixtures/)  api360/
 ```
 
 Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episodes.py` (remplaces par `scripts/eval/`), `services/episode_analyzer.py` (analyseur v1) et les fonctions sans appelant de `data_store.py` (`get_timeline_data`, `get_multi_station_timeline`, `get_historical_river_levels`, `get_historical_rainfall` et son repli Netatmo, `store_*`, `get_episodes_in_range`).
@@ -250,6 +255,18 @@ Nouvelles series et routes, JAMAIS lues par le modele v3.4 (test `test_risk_mode
 - **Pluie d'ensemble** (`ensemble_rain.py`) : Open-Meteo Ensemble, `icon_d2` (20 membres, ~2.5 j), `icon_eu` (40, ~5.5 j), `ecmwf_ifs025` (51, 15 j), 3 points du bassin ponderes par l'aire des sous-bassins (`ensemble_rain_points`). Pluie horaire = cumul de l'heure precedente, fenetre (debut, fin]. P(24 h > 25/40/60 mm) et P(72 h > 50/80/120 mm) (seuils lus dans `get_model_params`), quantiles ; `blend` = moyenne des modeles couvrant la fenetre. Stockage de chaque run (`ensemble_rain`, tags `model`, `run` = `YYYY-MM-DDTHHZ`, `window` = `24h`/`72h`/`run`, `lead` en heures), fenetres ancrees sur l'init du run ; `meta.json` DWD perime => run ancre sur l'heure de collecte (`run_init_known=0`).
 - `GET /api/forecast/ensemble` : `rain.horizons["24h"|"72h"]` (fenetres depuis l'heure courante, par modele + `blend`) et `glofas.days` ; cache-through 3 h en memoire, la route n'ecrit jamais. Frontend `EnsemblePanel` (tableau des probabilites, eventail GloFAS, bande radar) sous `ForecastPanel`.
 - Timeline : `include_radar=true` (`radar:LIDOIRE`, images aux heures pleines, sommes par fenetre au-dela de 1 h) et `include_glofas=true` (`glofas:LIDOIRE`, mediane du run le plus recent par jour) ; series stockees seulement, pas de cache-through.
+
+### Profil en long, valeurs aux crues, analogues, image radar (hors modele)
+
+Affichage seulement, JAMAIS lu par v3.4 (`tests/api360/test_api360_v34_unchanged.py`). Lecture Influx uniquement, aucune API externe sauf l'image radar (bucket OPERA public).
+- **Constat physique** : terrain du moulin ~12.0 m NGF (RGE ALTI, 11.6-12.7 m a 60 m) ; confluence ~3.9 km au SO, 2.4-3.4 m NGF ; zeros Pessac 3.33 m NGF, Libourne -1.17 m NGF. En crue (Pessac 3.8 m = 7.1 m NGF), la Dordogne a la confluence reste ~5 m sous le terrain du moulin : pas de coupe confluence contre plancher, mais le profil en long de la Lidoire.
+- **Profil** : `app/data/lidoire_profile.json` (`python -m scripts.build_lidoire_profile`), trace TOPAGE CdOH 05C0000002000889946 de ~1 km en amont du moulin (d = 5833 m) a la confluence (d = 0), pas 100 m ; `z_m` = minimum RGE ALTI sur une section de +/- 30 m (7 points), `z_line_m` = sur le trace. Licence Ouverte (Sandre, IGN) dans `metadata`. Marches a ~2.5 km (7.5 m) et ~3.05 km (6.2 -> 9.0 m, seuil probable).
+- **Z_c** (estime) = (1 - alpha) x (3.33 + max Pessac 12.5 h) + alpha x (-1.17 + max Libourne 12.5 h), alpha = 0.2, points <= t ; Libourne absent => Pessac seul (note). Config : `ngf_station_zeros_m`, `confluence_downstream_weight`, `confluence_envelope_hours`, `mill_ground_z_m_ngf` (12.0, terrain, pas le plancher).
+- **Remous** (approximation plan d'eau horizontal) : `distance_m` = point le plus en amont du profil avec z <= Z_c (interpole, borne haute qui peut sauter un seuil), `connected_distance_m` = s'arrete au premier point au-dessus de Z_c en remontant ; distances sous le moulin. Ignore le debit propre de la Lidoire et la pente de la ligne d'eau. 2024-02-26 11:00 : Z_c 6.55 m, front a 3.0 km (connecte 2.46 km), 2.8 km sous le moulin ; 2026-02-12 16:00 : Z_c 8.62 m, 3.09 km. Le front ne franchit la marche de 3.05 km qu'au-dela de ~9 m NGF.
+- `GET /api/geo/profile?at=&points=` : profil, moulin, `confluence` (Z_c enveloppe + `instant`), `backwater` (+ `instant`), `margin` (terrain moulin - Z_c), config exposee ; 422 si `at` invalide ou futur ; cache 60 s (1 h pour t > 1 j), pas de cache en cas d'erreur Influx.
+- `GET /api/episodes/drivers` : pour chaque label, a `peak_time` (precision au jour) : Pessac et Eyraud Q max sur 12.5 h, pluie Open-Meteo moulin 72 h, piezometre (dernier point <= t, 48 h), GloFAS p50 si stocke, Z_c ; percentiles (`climatology.percentile_of`) contre l'historique stocke depuis 2022-11 (max journaliers Pessac/Eyraud, cumuls 3 j octobre-avril, moyennes journalieres nappe). Fenetres explicites dans `windows`. Cache 6 h, `partial` (non cache) si une requete echoue.
+- `GET /api/risk/analogs?at=&k=3` : distance = RMS des ecarts de percentile sur `analog_axes` (Pessac, Eyraud Q, pluie 72 h, nappe ; >= `analog_min_axes` = 2 axes communs) ; k plus proches avec issue, hauteur, notes, percentiles, ecarts, nombre d'observations (et photos) a pic +/- 36 h ; `nothing_close` + `message` si le plus proche > `analog_distance_threshold` (30, comme le prototype).
+- `GET /api/realtime/radar/frame.png?t=latest|<iso>` : image ACRR (cumul 1 h) recadree sur le bassin + `radar_frame_margin_km` (10 km), reechantillonnee au plus proche voisin sur une grille lon/lat reguliere (`radar_frame_pixel_deg` 0.005, 132 x 62 px), transparente a 0 mm, rampe bleu -> violet, gris translucide hors couverture ; bbox dans `X-Radar-Bbox` et `/radar/frame.json` (heure, legende, attribution CC BY 4.0, stats). Lecteur COG maison (`opera_radar`), PNG ecrit avec zlib, aucune dependance ; cache par heure d'image (26 h), `latest` = derniere image stockee (`radar_rain`) sinon listing ; 404 hors des 24 h glissantes, 503 si le bucket ne repond pas (CircuitBreaker). Meme origine : passe la CSP `img-src 'self'`.
 
 ### Notifications
 
