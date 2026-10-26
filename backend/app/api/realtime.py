@@ -38,9 +38,11 @@ from app.services.collectors.tide import get_current_tide_data
 from app.services.collectors.vigicrues import get_current_river_level
 from app.services.collectors.weather import get_rainfall_summary
 from app.services.collectors.hubeau import get_multi_station_data, fetch_episode_context
-from app.services.collectors.netatmo import get_basin_rainfall
-from app.services.collectors.infoclimat import find_stations_near, get_basin_rainfall_infoclimat
-from app.services.collectors.meteo_agricole import get_nowcast_rain_cached
+# Optional sources are read from the caches filled by the scheduler (peek_*):
+# no request awaits Netatmo, Infoclimat or Meteo Agricole.
+from app.services.collectors.netatmo import peek_basin_rainfall
+from app.services.collectors.infoclimat import find_stations_near, peek_basin_rainfall_infoclimat
+from app.services.collectors.meteo_agricole import peek_nowcast_rain
 from app.services.influx_client import (
     make_rainfall_point,
     query_basin_rainfall_sparkline,
@@ -91,11 +93,11 @@ async def get_realtime_data():
     The risk is computed from the same fused inputs as /api/risk and the
     hourly scheduler job; this read endpoint never stores the score.
     """
-    inputs, river_data, nowcast_rain_data = await asyncio.gather(
+    inputs, river_data = await asyncio.gather(
         gather_realtime_inputs(),
         get_current_river_level(),
-        get_nowcast_rain_cached(),
     )
+    nowcast_rain_data = peek_nowcast_rain()
     now = inputs.timestamp
     risk = risk_from_inputs(inputs)
 
@@ -177,8 +179,8 @@ async def get_all_stations():
 
 @router.get("/netatmo")
 async def get_netatmo_rainfall():
-    """Get rainfall data from Netatmo stations."""
-    return await get_basin_rainfall()
+    """Get rainfall data from Netatmo stations (last scheduler collection)."""
+    return peek_basin_rainfall()
 
 
 @router.get("/tide", response_model=TideForecast)
@@ -204,15 +206,16 @@ async def get_infoclimat_data():
     """Get Infoclimat stations and rainfall data."""
     settings = get_settings()
 
-    # Get nearby stations
+    # Nearby stations from the already loaded list (never fetched here)
     stations = await find_stations_near(
         lat=settings.moulin_lat,
         lon=settings.moulin_lon,
-        radius_km=50
+        radius_km=50,
+        fetch=False,
     )
 
-    # Try to get rainfall data (may fail due to IP restrictions)
-    rainfall = await get_basin_rainfall_infoclimat()
+    # Last scheduler collection (may be unavailable: IP restriction, outage)
+    rainfall = peek_basin_rainfall_infoclimat()
 
     return {
         "stations_found": len(stations),
@@ -258,7 +261,7 @@ async def get_data_sources_status():
 
     # Netatmo
     try:
-        netatmo_data = await get_basin_rainfall()
+        netatmo_data = peek_basin_rainfall()
         sources.append({
             "name": "Netatmo Weather",
             "status": "ok" if netatmo_data.get("available") else "degraded",
@@ -277,9 +280,9 @@ async def get_data_sources_status():
     # Infoclimat
     try:
         infoclimat_stations = await find_stations_near(
-            settings.moulin_lat, settings.moulin_lon, 50
+            settings.moulin_lat, settings.moulin_lon, 50, fetch=False,
         )
-        infoclimat_rainfall = await get_basin_rainfall_infoclimat()
+        infoclimat_rainfall = peek_basin_rainfall_infoclimat()
         sources.append({
             "name": "Infoclimat",
             "status": "ok" if infoclimat_rainfall.get("available") else "degraded",
@@ -344,7 +347,7 @@ async def get_data_sources_status():
 async def get_basin_rainfall_summary():
     """Get aggregated rainfall data for the Lidoire basin."""
     settings = get_settings()
-    netatmo_data = await get_basin_rainfall()
+    netatmo_data = peek_basin_rainfall()
 
     # Group lidoire stations by position
     by_position = {"amont": {"total": 0, "count": 0}, "milieu": {"total": 0, "count": 0}, "aval": {"total": 0, "count": 0}}

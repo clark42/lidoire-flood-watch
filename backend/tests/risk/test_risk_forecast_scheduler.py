@@ -158,8 +158,8 @@ async def test_risk_scheduler_starts_without_blocking(monkeypatch):
         calls.append(1)
 
     for name in ("collect_tide_job", "collect_river_job", "collect_weather_job", "collect_netatmo_job",
-                 "collect_meteo_agricole_job", "collect_nowcast_rain_job", "compute_risk_job",
-                 "collect_camera_job"):
+                 "collect_infoclimat_job", "collect_meteo_agricole_job", "collect_nowcast_rain_job",
+                 "compute_risk_job", "collect_camera_job"):
         monkeypatch.setattr(scheduler, name, noop)
 
     await scheduler.start_scheduler()
