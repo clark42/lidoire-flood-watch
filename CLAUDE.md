@@ -67,19 +67,22 @@ app/
 │   ├── realtime.py      # /api/realtime + TimeMachine /at
 │   ├── timeline.py      # /api/timeline/sources, /api/timeline/unified
 │   ├── episodes.py      # /api/episodes : CRUD, labels, confirm, analyse, backfill, detection
-│   ├── risk.py          # /api/risk : score, previsions, simulation
+│   ├── risk.py          # /api/risk : score, previsions, outlook, forecast-skill, simulation
 │   ├── notify.py        # /api/notify/test (message de test, X-API-Key)
 │   └── auth.py          # /api/auth/netatmo (OAuth2)
 ├── data/
-│   └── episodes_labels.json  # Verite terrain des 14 episodes (source unique)
+│   ├── episodes_labels.json  # Verite terrain des 14 episodes (source unique)
+│   └── action_plan.json # Actions par niveau (jaune/orange/rouge), modifiable par le proprietaire
 ├── models/
 │   ├── schemas.py       # Modeles Pydantic (RiskScore, EpisodeOutcome, EpisodeLabelSet...)
-│   └── orm.py           # Tables PostgreSQL
+│   └── orm.py           # Tables PostgreSQL (flood_episodes, notifier_state, forecast_runs)
 └── services/
     ├── risk_core.py     # Coeur de scoring PUR, modele v3.4 (compute_risk, aucune I/O)
     ├── risk_shadow.py   # Modele shadow 3.4-gate (gate de remous, PUR), stocke, jamais affiche
     ├── risk_v2.py       # Construction des features (temps reel, simulation, backfill), stockage
     ├── forecast.py      # Previsions horaires (features par heure -> compute_risk)
+    ├── outlook.py       # Horizons 6/24/72 h, pourquoi, checklist, notes de confiance (PUR + cache)
+    ├── forecast_archive.py  # Archive forecast_runs (job horaire) + prevu vs observe
     ├── backfill.py      # Backfill historique (rivers, rain, tides, soil, risk)
     ├── episode_detector.py  # Detection automatique d'episodes par seuil
     ├── episode_analyzer.py / episode_analyzer_v2.py  # Contexte hydro-meteo des episodes
@@ -116,7 +119,7 @@ scripts/eval/            # Harnais d'evaluation (python -m scripts.eval build|re
 └── candidates.py        # Comparaison des modeles candidats (LOEO bloque)
 tests/
 ├── risk/  storage/  security/  collectors/
-├── groundtruth/  evaluation/  models/  followups/  notifier/
+├── groundtruth/  evaluation/  models/  followups/  notifier/  outlook/
 ```
 
 Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episodes.py` (remplaces par `scripts/eval/`).
@@ -138,6 +141,7 @@ src/
 │   └── Configuration.tsx # Statut, simulation, cle API
 └── components/
     ├── RiskGauge.tsx, RiskBreakdownPanel.tsx, StationsPanel.tsx, RainfallPanel.tsx
+    ├── OutlookPanel.tsx (haut du Dashboard), ForecastSkillPanel.tsx (Configuration)
     ├── ForecastPanel.tsx, BasinRainfallGauge.tsx, SoilConditionsPanel.tsx, NowcastRainChart.tsx
     ├── HydroMap.tsx, MetricSparkline.tsx, TimeMachineBanner.tsx, TimelineSourceSelector.tsx
     ├── InfoTooltip.tsx, DataCard.tsx, DataSourcesStatus.tsx
@@ -189,6 +193,14 @@ Service dans `backend/app/services/forecast.py` :
 - Niveaux projetes : tendance actuelle (12 h max) + reponse a la pluie tombee apres t0, decalee par `delay_hours` de chaque station
 - Nombre de stations en hausse : decroissance lineaire sur 48 h, plus apport de la pluie projetee
 - Cache Redis 30 min ; overlay Timeline via `include_forecast=true`
+- Le payload ajoute `horizons` (6/24/72 h, voir Outlook), `high_tides` (PM estimees a la confluence) et `inputs_summary` (pluie prevue apres t0 sur 24/72 h, max projete de Pessac sur 72 h, gate maree et H de H+0). `use_cache=False` recalcule (job d'archive) et rafraichit le cache.
+
+### Outlook et archive des previsions
+
+- `GET /api/risk/outlook` (`services/outlook.py`) : pour 6, 24 et 72 h (H+0 inclus), score max, niveau, heure du max, premiere heure a ce niveau, et pourquoi = top 3 des facteurs du RiskBreakdown de l'heure max, en points du score (poids x score / denominateur x conjonction x amortisseur x 100, ramenes a 100 si plafond ; somme = score), textes en francais, plus multiplicateurs et gate maree. Aussi : prochaine PM estimee a la confluence, confiance (`good`/`reduced`/`low` : facteurs indisponibles, maree estimee, sources de `/api/status` perimees, entrees de prevision en erreur ; `low` si source critique ou riviere/pluie prevue absente) et checklist du niveau le plus haut (`act_before` = premiere heure a ce niveau). Lit la prevision 168 h en cache, cache Redis 10 min (`forecast:outlook`, purge avec `invalidate_forecast_cache`), n'ecrit rien.
+- `app/data/action_plan.json` : actions courtes par niveau (`yellow`/`orange`/`red`, vert = aucune). Une copie dans `/app/data/action_plan.json` (PVC `backend-data`) remplace le defaut sans reconstruire l'image ; un fichier invalide est ignore (log).
+- Table PostgreSQL `forecast_runs` (creee par `init_db`) : une ligne par run horaire, `run_at` (UTC naif), `model_version`, `horizon_hours`, listes JSON `scores` / `levels` / `pessac_levels_m` indexees par echeance (0 = H+0), `rain_forecast_24h_mm`, `rain_forecast_72h_mm`, `pessac_projected_max_m`, `tide_gate`, `inputs` (resume + statut des sources), unique (`run_at`, `model_version`). Ecrite seulement par le job `forecast_archiver` (toutes les heures, 2 min apres `risk_scorer`, via `get_risk_forecast_v2(168, use_cache=False)` : meme chemin v3.4, aucun modele duplique ; un echec n'affecte jamais le score). Retention : tout garder (~3-4 Ko par ligne, ~30 Mo par an), la verification prospective porte sur plusieurs saisons.
+- `GET /api/risk/forecast-skill?lead_hours=6,24,72&days=30` (`days` 1-180, 0-168 h, 10 echeances max, 422 sinon) : chaque run archive de la version courante, score a H+L apparie au `risk_score` temps reel stocke (source `realtime`, meme version) le plus proche de `run_at` + L a 35 min pres. Renvoie les paires, MAE, biais (prevu - observe) et table detection / manque / fausse alerte / rejet correct au seuil orange (POD, FAR, CSI) par echeance. Paires horaires, pas des evenements. Vide mais bien forme (`n_runs` = 0) tant que l'archive se remplit ; 503 si Postgres ou Influx en echec.
 
 ### Notifications
 
@@ -219,7 +231,7 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 - **Sol** : Open-Meteo (humidite, temperature, ET0) + Meteo Agricole (bilan hydrique). Deux modeles distincts en "best match" : le temps reel (`/api/realtime` `soil`, entree du modele) lit les couches 0-1/1-3/3-9 cm et 9-27/27-81 cm servies par DWD ICON ; la Timeline (`soil_timeline`) lit 0-7/7-28/28-100 cm servies par ECMWF IFS (ERA5 en archive), nettement plus humides (ex. 0.195 vs 0.311 m3/m3 a la meme heure). Les series Timeline ne melangent jamais les deux (seul ET0 peut venir du temps reel).
 - **Camera** : Flux RTSP configurable via `CAMERA_RTSP_URL`
 
-Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), camera si configuree.
+Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `forecast_archiver` 1 h (2 min apres `risk_scorer`), `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), camera si configuree.
 
 APIs externes hors du chemin des requetes :
 - Netatmo, Infoclimat, Meteo Agricole et nowcast ne sont jamais appeles par une route ni par `gather_realtime_inputs` : lecture seule des caches remplis par les jobs (`peek_*`, perimes au-dela de 1 h pour Netatmo/Infoclimat, 15 min pour le nowcast, 12 h pour Meteo Agricole ; au-dela => indisponible, comme un echec).
@@ -375,3 +387,4 @@ Installation existante : conserver l'ancien mot de passe Postgres et l'ancien je
 - Pluie radar (COMEPHORE, ANTILOPE) comme entree d'un modele pluie-debit.
 - Gate de remous sur v3.4 en mode shadow pendant une saison : en place (serie `risk_score_shadow`, version `3.4-gate`, voir Stockage) ; comparer les deux courbes et labelliser les periodes ci-dessus avant toute bascule.
 - Regression logistique / GR4H seulement quand davantage d'episodes seront labellises.
+- Archiver aussi le shadow `3.4-gate` dans `forecast_runs` (une ligne par version) et ajouter les scores evenementiels (POD/FAR par episode) a `forecast-skill`.
