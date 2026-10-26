@@ -11,6 +11,7 @@ import {
 import type { NetatmoData, NetatmoStation, InfoclimatStation, InfoclimatRainfall } from '../types'
 import InfoTooltip from './InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
+import { netatmoAuthUrl } from '../api'
 
 interface RainfallPanelProps {
   netatmo: NetatmoData | null
@@ -280,7 +281,7 @@ export default function RainfallPanel({
 
                 {!netatmo.available && (
                   <div className="p-3 text-sm text-gray-500">
-                    <a href="/api/auth/netatmo" className="text-indigo-600 hover:underline">
+                    <a href={netatmoAuthUrl(netatmo.auth_url)} className="text-indigo-600 hover:underline">
                       Connecter Netatmo
                     </a>
                   </div>

@@ -33,7 +33,7 @@ export interface RiverLevel {
 export interface RiverLevelForecast {
   current: RiverLevel
   tendency: Tendency
-  forecast_scenarios: any[]
+  forecast_scenarios: unknown[]
 }
 
 export interface RainfallSummary {
@@ -163,6 +163,8 @@ export interface NetatmoData {
   closest_station?: NetatmoStation
   lidoire_stations?: NetatmoStation[]
   stations?: NetatmoStation[]
+  /** OAuth start path, returned when no account is linked */
+  auth_url?: string
 }
 
 export interface InfoclimatStation {
@@ -350,7 +352,7 @@ export interface EpisodeAnalysis {
   context: EpisodeContext
   tides: TideData[]
   river_levels: RiverLevel[]
-  rainfall: any[]
+  rainfall: unknown[]
   video_data: VideoAnalysis[]
   matched_criteria: string[]
 }
@@ -410,4 +412,120 @@ export interface BasinRainfallData {
   weighted_average_24h_mm: number
   by_position: Record<string, { total: number; count: number; avg: number }>
   sparkline_24h: { timestamp: string; value: number }[]
+}
+
+// /api/status: real dependency checks (database/influxdb/redis)
+export type DependencyState = 'connected' | 'error' | 'timeout'
+
+export interface DependencyCheck {
+  status: DependencyState
+  latency_ms: number
+  error?: string
+}
+
+export type DependencyName = 'database' | 'influxdb' | 'redis'
+
+export interface SystemStatus {
+  status: 'healthy' | 'degraded'
+  timestamp: string
+  version: string
+  location: { lat: number; lon: number; name: string }
+  services: {
+    database: DependencyState
+    influxdb: DependencyState
+    redis: DependencyState
+    checks: Partial<Record<DependencyName, DependencyCheck>>
+    collectors: Record<string, string>
+  }
+}
+
+// POST /api/risk/simulate
+export interface RiskSimulationResult {
+  simulated_values: Record<string, number>
+  risk: RiskScore
+  model_version: string
+}
+
+// /api/sources-detail (exhaustive config, display only)
+export interface SourcesDetailRiverStation {
+  id: string
+  name: string
+  river: string
+  distance_km: number
+  delay_hours: number
+  weight: number
+  lat?: number | null
+  lon?: number | null
+  thresholds?: { yellow?: number; orange?: number; red?: number }
+}
+
+export interface SourcesDetailNetatmoStation {
+  city: string
+  lat: number
+  lon: number
+  position: string
+}
+
+export interface SourcesDetailPoint {
+  id?: string
+  name: string
+  lat: number
+  lon: number
+}
+
+export interface SourcesDetailLevels {
+  yellow: number
+  orange: number
+  red: number
+}
+
+export interface SourcesDetail {
+  location?: { name: string; lat: number; lon: number }
+  primary_station?: string
+  sources?: {
+    river?: { name: string; description: string; api_url: string; stations?: SourcesDetailRiverStation[] }
+    netatmo?: {
+      name: string
+      description: string
+      api_url?: string
+      configured: boolean
+      search_radius_km: number
+      priority_stations?: SourcesDetailNetatmoStation[]
+    }
+    infoclimat?: {
+      name: string
+      description: string
+      configured: boolean
+      search_radius_km: number
+      max_stations: number
+      note?: string
+    }
+    open_meteo?: {
+      name: string
+      description: string
+      api_forecast: string
+      api_archive: string
+      fields?: string[]
+      basin_points?: SourcesDetailPoint[]
+    }
+    tide?: {
+      name: string
+      description: string
+      ports?: SourcesDetailPoint[]
+      reference_point?: SourcesDetailPoint
+    }
+    meteo_agricole?: { name: string; description: string; url?: string; fields?: string[] }
+    camera?: { name: string; description: string; configured: boolean }
+  }
+  risk_model?: {
+    version: string
+    weights: Record<string, string>
+    conjunction_multiplier?: string
+    stability_dampener?: string
+    thresholds?: {
+      rain_24h?: SourcesDetailLevels
+      dordogne_level?: SourcesDetailLevels
+      tide_coef_high?: number | null
+    }
+  }
 }
