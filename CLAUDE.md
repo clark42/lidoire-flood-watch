@@ -71,6 +71,7 @@ app/
 │   ├── notify.py        # /api/notify/test (message de test, X-API-Key)
 │   ├── vigilance.py     # /api/vigilance (couleurs officielles, lecture du cache)
 │   ├── observations.py  # /api/observations (+ photo), /api/episodes/{id}/observations
+│   ├── indicators.py    # /api/indicators (indicateurs hydrologiques hors modele)
 │   └── auth.py          # /api/auth/netatmo (OAuth2)
 ├── data/
 │   └── episodes_labels.json  # Verite terrain des 14 episodes (source unique)
@@ -95,6 +96,8 @@ app/
     ├── photo_safety.py  # Octets magiques, retrait GPS (JPEG/PNG/WebP), sans lib image
     ├── video_analyzer.py    # Detection niveau d'eau via camera
     ├── models_experimental.py  # Modeles candidats, importes par AUCUN code de production
+    ├── indicators.py    # Catalogue des series indicateurs, lectures Influx, payload /api/indicators
+    ├── climatology.py   # PUR : percentile_of, tendance, seuils (indicateurs)
     └── collectors/
         ├── hubeau.py        # Hub'Eau (temps reel) + Hydroportail (historique)
         ├── vigicrues.py     # Vigicrues (Libourne, metres)
@@ -103,7 +106,8 @@ app/
         ├── netatmo.py       # Netatmo (stations citoyennes du bassin)
         ├── infoclimat.py    # Infoclimat StatIC
         ├── meteo_agricole.py # Meteo Agricole (bilan hydrique, nowcast)
-        └── vigilance.py     # Vigilance Vigicrues (DO5, DO22) + Meteo-France (33, 24)
+        ├── vigilance.py     # Vigilance Vigicrues (DO5, DO22) + Meteo-France (33, 24)
+        └── hydro_indicators.py # Debits, piezometre, maree observee (hors modele)
 ```
 
 ### Scripts et tests (`backend/`)
@@ -123,6 +127,7 @@ tests/
 ├── risk/  storage/  security/  collectors/
 ├── groundtruth/  evaluation/  models/  followups/  notifier/
 ├── vigilance/ (fixtures/ : reponses enregistrees)  observations/
+├── groundtruth/  evaluation/  models/  followups/  notifier/  indicators/ (fixtures/ JSON enregistres)
 ```
 
 Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episodes.py` (remplaces par `scripts/eval/`).
@@ -131,7 +136,7 @@ Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episod
 
 ```
 src/
-├── App.tsx              # Router principal, navigation
+├── App.tsx              # Router principal, navigation, pages en React.lazy (un chunk par route)
 ├── api.ts               # Client API (fetchJson, X-API-Key depuis localStorage 'lfw_api_key')
 ├── types.ts             # Types TypeScript (miroir des schemas backend)
 ├── utils/time.ts        # parseApiDate (UTC) + formatParis : tout l'affichage en Europe/Paris
@@ -139,15 +144,16 @@ src/
 ├── utils/observations.ts # Libelles et couleurs des types d'observation
 ├── tooltipContent.ts    # Dictionnaire centralise des textes de tooltips
 ├── pages/
-│   ├── Dashboard.tsx    # Vue temps reel avec score de risque + TimeMachine
+│   ├── Dashboard.tsx    # Vue temps reel avec score de risque + TimeMachine ; fraicheur = station primaire (Pessac), HydroMap (leaflet) en lazy
 │   ├── Timeline.tsx     # Graphiques historiques multi-sources + forecast overlay
 │   ├── Episodes.tsx     # Liste/creation/analyse/issue des episodes
-│   └── Configuration.tsx # Statut, simulation, cle API
+│   └── Configuration.tsx # Statut, simulation, cle API ; version du modele lue dans l'API (`risk_model.version`, sinon `RiskScore.model_version`)
 └── components/
-    ├── RiskGauge.tsx, RiskBreakdownPanel.tsx, StationsPanel.tsx, RainfallPanel.tsx
+    ├── RiskGauge.tsx, RiskBreakdownPanel.tsx (contributions = poids x score / denominateur x conjonction x amortisseur, gate maree), StationsPanel.tsx, RainfallPanel.tsx
     ├── ForecastPanel.tsx, BasinRainfallGauge.tsx, SoilConditionsPanel.tsx, NowcastRainChart.tsx
     ├── HydroMap.tsx, MetricSparkline.tsx, TimeMachineBanner.tsx, TimelineSourceSelector.tsx
-    ├── InfoTooltip.tsx, DataCard.tsx, DataSourcesStatus.tsx
+    ├── InfoTooltip.tsx, DataCard.tsx, DataSourcesStatus.tsx (bandeau des sources = `/api/status.sources`)
+    ├── IndicatorsPanel.tsx  # Indicateurs hydrologiques (Dashboard, autonome, /api/indicators)
     ├── VigilanceBadges.tsx, ObservationQuickForm.tsx (Dashboard)
     ├── ObservationList.tsx, EpisodeObservationsPanel.tsx (Episodes)
     └── ApiKeyPanel.tsx  # Saisie de la cle API (localStorage)
@@ -199,6 +205,15 @@ Service dans `backend/app/services/forecast.py` :
 - Nombre de stations en hausse : decroissance lineaire sur 48 h, plus apport de la pluie projetee
 - Cache Redis 30 min ; overlay Timeline via `include_forecast=true`
 
+### Indicateurs hydrologiques (hors modele)
+
+Series pour l'affichage, l'evaluation et un futur v4, SANS effet sur v3.4 : blocs de config separes `indicator_flow_stations`, `indicator_groundwater_stations`, `indicator_tide_gauges` (jamais dans `hubeau_stations`, que le modele itere) ; aucun module du modele ne les lit (`tests/indicators/test_indicators_v34_unchanged.py` : sorties `compute_risk` dorees, parametres identiques avec/sans ces blocs, snapshot de `hubeau_stations`). Collecteur `collectors/hydro_indicators.py`, tag `key` commun :
+- `river_flow` (`q_m3s`, `h_m` pour l'Eyraud) : Eyraud P540401002 (73,5 km2, analogue du ruissellement de la Lidoire : ses 6 plus gros debits journaliers depuis 2022-11 = les 6 crues du moulin), Caudeau P524401001, Pessac P555001001, Lamonzie P532001001 (substitut de Bergerac, sans Q temps reel), Argentat P135001001 (laches EDF). Hub'Eau `observations_tr` (Q l/s, H mm, 5 min ; fenetre 24 h car latence Eyraud ~7 h), historique Hydroportail (`source=hydroportail`), repli `obs_elab` QmnJ journalier. Seuils sur la moyenne journaliere (comparee a la moyenne 24 h) : `watch` = p99 QmnJ 2022-11 -> 2026-10, Eyraud `alert` 17,5 m3/s (en echantillon).
+- `groundwater` (`level_m_ngf`, `depth_m`) : piezometre alluvial Mouliets-et-Villemartin 08048X0088/P (p99-p100 a chaque crue, record 7,47 m NGF le 2026-02-12), `niveaux_nappes/chroniques_tr` (horaire, latence ~12 h) et `chroniques` (journalier). Seuil `watch` 7,0 m NGF.
+- `tide_observed` (`height_m`) : SHOM REFMAR Bordeaux 196 (sans cle, 1 min moyenne a 10 min, zero hydrographique) et Hub'Eau Bec d'Ambes P916000101 (5 min). Maree reelle (surcote et debit compris), jamais une entree de v3.4.
+
+Jobs : `indicator_flow_collector` et `tide_observed_collector` 15 min, `groundwater_collector` 3 h (EXTERNAL_TIMEOUT_S, un CircuitBreaker par amont : Hub'Eau, niveaux_nappes, SHOM). Aucune route n'appelle d'API externe : `GET /api/indicators` lit Influx (cache 2 min, historique journalier cache 6 h) et renvoie `runoff`, `dordogne`, `groundwater`, `tide_observed` : valeur, tendance, `percentile` (rang de la moyenne 24 h, du niveau ou du max 24 h parmi les agregats journaliers depuis 2022-11, `climatology.percentile_of`), distance aux seuils, `model_input=false`. Timeline : ids `flow:EYRAUD`, `gw:MOULIETS`, `tide_obs:BORDEAUX`... (`/timeline/sources.indicator_series`, `/timeline/unified?indicators=`, series stockees seulement, pas de cache-through). `/api/status.sources.indicator_*` informatifs (jamais critiques). Historique : `POST /api/episodes/backfill?...&indicators=true` (off par defaut, ~10-20 min depuis 2022-11, ~1,2 M points).
+
 ### Notifications
 
 `services/notifier.py`, job `notifier` (toutes les heures, 5 min apres `risk_scorer`), canal ntfy (`POST <NTFY_URL>/<NTFY_TOPIC>`, bearer `NTFY_TOKEN` optionnel, interface `Channel` pour d'autres canaux). Sans `NTFY_URL`/`NTFY_TOPIC` : aucun job, un log info au demarrage. Declencheurs : dernier score temps reel stocke passant en orange/rouge (immediat ; jaune seulement si `NOTIFY_YELLOW`), baisse envoyee apres `NOTIFY_DOWNGRADE_HOLD_HOURS` (3 h, le score oscille avec la maree) vers le plus haut niveau vu pendant l'attente ; max de la prevision sur `NOTIFY_FORECAST_HOURS` (48 h) en orange/rouge, une fois par evenement (nouvel envoi si escalade en rouge, fin apres la meme attente) ; Pessac sans point depuis 3 h ou aucun score stocke depuis 2 h (une alerte, un retablissement). Etat persistant en JSON dans la table PostgreSQL `notifier_state` (Redis non persistant en prod) ; une transition n'est acquittee qu'une fois le message delivre (reessai a l'execution suivante), un redemarrage ne renvoie rien. Messages en francais (niveau, score, Pessac, pluie 72 h, prochaine pleine mer, lien `FRONTEND_URL`). `POST /api/notify/test` envoie un message de test. En prod : cles `NTFY_*` dans le secret Scaleway `lidoire-external-apis` (`externalApis.enabled=true`).
@@ -229,7 +244,7 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 - **Camera** : Flux RTSP configurable via `CAMERA_RTSP_URL`
 - **Vigilance officielle** (`collectors/vigilance.py`, informative, PAS une entree du modele) : Vigicrues `services/1/InfoVigiCru.geojson` (~2.2 Mo, sans filtre ni gzip, `NivInfViCr` 1-4 par `CdEntCru`) pour les troncons DO5 "Dordogne aval" (Pessac) et DO22 "Confluence Garonne - Dordogne" (Libourne), SPC 32 ; Meteo-France via le miroir data.gouv `files.data.gouv.fr/meteofrance/data/vigilance/metropole/{AAAA}/{MM}/{JJ}/{HHMMSS}/CDP_CARTE_EXTERNE.json` (pas d'alias latest : index du jour, runs du plus recent au plus ancien, les runs texte seuls n'ont pas de carte), departements 33 et 24, phenomenes 2 pluie-inondation, 4 crues, 3 orages, 1 vent, periodes J/J1. Couleurs 1 vert, 2 jaune, 3 orange, 4 rouge. Aucun historique cote API : mesure Influx `vigilance` (tags `source` vigicrues|meteofrance, `zone` DO5|DO22|33|24, `phenomenon`, champ `level`) ecrite a chaque changement, au premier passage apres demarrage et toutes les 6 h (keepalive). `GET /api/vigilance` lit le cache (`peek_vigilance`, perime a 2 h), liens vers vigicrues.gouv.fr/territoire/32, /station/<code> et vigilance.meteofrance.fr/fr/<departement>.
 
-Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), `vigilance_collector` 30 min, camera si configuree.
+Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), indicateurs (debits et maree observee 15 min, piezometre 3 h), `vigilance_collector` 30 min, camera si configuree.
 
 APIs externes hors du chemin des requetes :
 - Netatmo, Infoclimat, Meteo Agricole, nowcast et vigilance ne sont jamais appeles par une route ni par `gather_realtime_inputs` : lecture seule des caches remplis par les jobs (`peek_*`, perimes au-dela de 1 h pour Netatmo/Infoclimat, 15 min pour le nowcast, 12 h pour Meteo Agricole ; au-dela => indisponible, comme un echec).
@@ -344,7 +359,7 @@ Ports lies a `${BIND_ADDRESS:-127.0.0.1}`. Pour exposer les bases en local : `do
 
 ## Deploiement Kubernetes
 
-Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhosting`, contexte `admin@sharedhosting-production`, toujours en fin de commande). Images GHCR `ghcr.io/clark42/lidoire-flood-watch-{backend,frontend}` construites par `.github/workflows/images.yml` (push `main` / tags `v*` : amd64 + arm64, tags `sha-<7>`, `main`, semver ; PR : build amd64 sans push).
+Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhosting`, contexte `admin@sharedhosting-production`, toujours en fin de commande). Images GHCR `ghcr.io/clark42/lidoire-flood-watch-{backend,frontend}` construites par `.github/workflows/images.yml` (push `main` / tags `v*` : amd64 + arm64, tags `sha-<7>`, `main`, semver ; PR : build amd64 sans push). Avant le push, scan Trivy de l'image amd64 (`aquasecurity/trivy-action` epingle par SHA) : HIGH/CRITICAL dans le resume du job, echec sur CRITICAL corrigeable. Mises a jour : `renovate.json` (hebdomadaire, minor/patch groupes, actions epinglees par digest).
 
 - Prerequis : stack Terraform `11-lidoire` appliquee (namespace `lidoire` PSS restricted, NetworkPolicies, secrets Scaleway `lidoire-generated`, `lidoire-external-apis`, `lidoire-backup-s3`) et images publiees.
 - Deploiement : `helm upgrade --install lidoire deploy/helm/lidoire-flood-watch -n lidoire --set image.tag=sha-<7> --kube-context admin@sharedhosting-production`. Verification : `helm lint` + `helm template ... | kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.35.0 -summary`.
@@ -371,7 +386,7 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 - Netatmo : `/api/realtime/basin-rainfall` expose `available`/`stations_count` (moyennes 0.0 = valeurs de remplissage si `available=false`) ; `/api/timeline/sources` marque les stations Netatmo `available=false` tant que Netatmo n'est pas autorise. La Timeline part par defaut sur Open-Meteo (Moulin) + Infoclimat.
 
 - `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`.
-- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score, vigilance}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, vigilance 7 h (keepalive 6 h, informative), maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives. `services.collectors` reste une declaration statique (compatibilite).
+- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score, vigilance}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, vigilance 7 h (keepalive 6 h, informative), maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives (dont `indicator_*` : debits 3-12 h, piezometre 36 h, maree observee 3 h). `services.collectors` reste une declaration statique (compatibilite). Le bandeau du Dashboard lit `sources` (seule source de verite, `/api/realtime/sources` n'est plus utilise par le frontend) ; pour la maree il affiche le temps jusqu'a la prochaine PM, jamais un age negatif.
 - `/api/episodes/confirm/{id}` : `outcome` (`flooded`, `false_positive`, `near_miss`, `unknown`) ou ancien `was_flooded` ; remplace l'issue precedente.
 
 ## Variables d'environnement

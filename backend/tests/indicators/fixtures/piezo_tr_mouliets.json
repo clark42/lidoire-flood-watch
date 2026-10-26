@@ -1,0 +1,48 @@
+{
+ "count": 3,
+ "api_version": "1.4.3",
+ "data": [
+  {
+   "code_bss": "08048X0088/P",
+   "urn_bss": "http://services.ades.eaufrance.fr/pointeau/08048X0088/P",
+   "timestamp_mesure": 1792998000000,
+   "niveau_eau_ngf": 5.836,
+   "longitude": -0.0445616638,
+   "latitude": 44.8343511006,
+   "bss_id": "BSS001YPBP",
+   "altitude_station": 9.0,
+   "altitude_repere": 8.06,
+   "date_mesure": "2026-10-26T07:00:00Z",
+   "profondeur_nappe": 2.224,
+   "date_maj": "2026-10-26"
+  },
+  {
+   "code_bss": "08048X0088/P",
+   "urn_bss": "http://services.ades.eaufrance.fr/pointeau/08048X0088/P",
+   "timestamp_mesure": 1792994400000,
+   "niveau_eau_ngf": 5.835,
+   "longitude": -0.0445616638,
+   "latitude": 44.8343511006,
+   "bss_id": "BSS001YPBP",
+   "altitude_station": 9.0,
+   "altitude_repere": 8.06,
+   "date_mesure": "2026-10-26T06:00:00Z",
+   "profondeur_nappe": 2.225,
+   "date_maj": "2026-10-26"
+  },
+  {
+   "code_bss": "08048X0088/P",
+   "urn_bss": "http://services.ades.eaufrance.fr/pointeau/08048X0088/P",
+   "timestamp_mesure": 1792990800000,
+   "niveau_eau_ngf": 5.835,
+   "longitude": -0.0445616638,
+   "latitude": 44.8343511006,
+   "bss_id": "BSS001YPBP",
+   "altitude_station": 9.0,
+   "altitude_repere": 8.06,
+   "date_mesure": "2026-10-26T05:00:00Z",
+   "profondeur_nappe": 2.225,
+   "date_maj": "2026-10-26"
+  }
+ ]
+}

@@ -1,9 +1,21 @@
+import { lazy, Suspense } from 'react'
 import { Routes, Route, NavLink } from 'react-router-dom'
-import { Waves, Clock, Calendar, Settings, AlertTriangle } from 'lucide-react'
-import Dashboard from './pages/Dashboard'
-import Timeline from './pages/Timeline'
-import Episodes from './pages/Episodes'
-import Configuration from './pages/Configuration'
+import { Waves, Clock, Calendar, Settings, AlertTriangle, RefreshCw } from 'lucide-react'
+
+// One chunk per route: recharts (Dashboard, Timeline) and leaflet (HydroMap)
+// stay out of the entry chunk
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const Timeline = lazy(() => import('./pages/Timeline'))
+const Episodes = lazy(() => import('./pages/Episodes'))
+const Configuration = lazy(() => import('./pages/Configuration'))
+
+function PageFallback() {
+  return (
+    <div className="flex items-center justify-center h-64">
+      <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
+    </div>
+  )
+}
 
 function App() {
   return (
@@ -71,12 +83,14 @@ function App() {
 
       {/* Main content */}
       <main className="flex-1 container mx-auto px-4 py-6">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/timeline" element={<Timeline />} />
-          <Route path="/episodes" element={<Episodes />} />
-          <Route path="/config" element={<Configuration />} />
-        </Routes>
+        <Suspense fallback={<PageFallback />}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/timeline" element={<Timeline />} />
+            <Route path="/episodes" element={<Episodes />} />
+            <Route path="/config" element={<Configuration />} />
+          </Routes>
+        </Suspense>
       </main>
 
       {/* Footer */}

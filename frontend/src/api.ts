@@ -10,7 +10,6 @@ import type {
   MultiStationData,
   NetatmoData,
   InfoclimatData,
-  DataSource,
   ForecastData,
   AvailableSources,
   UnifiedTimelineData,
@@ -22,6 +21,7 @@ import type {
   Observation,
   ObservationInput,
   EpisodeObservations,
+  IndicatorsData,
 } from './types'
 
 const API_BASE = '/api'
@@ -282,11 +282,6 @@ export async function getInfoclimatData(): Promise<InfoclimatData> {
   return fetchJson<InfoclimatData>(`${API_BASE}/realtime/infoclimat`)
 }
 
-// Data sources status
-export async function getDataSourcesStatus(): Promise<{ sources: DataSource[] }> {
-  return fetchJson<{ sources: DataSource[] }>(`${API_BASE}/realtime/sources`)
-}
-
 // Forecast
 export async function getForecast(hours: number = 168): Promise<ForecastData> {
   return fetchJson<ForecastData>(`${API_BASE}/risk/forecast?hours=${hours}`)
@@ -318,6 +313,7 @@ export async function getUnifiedTimeline(
   includeForecast?: boolean,
   signal?: AbortSignal,
   includeRiskShadow?: boolean,
+  indicatorSeries?: string[],
 ): Promise<UnifiedTimelineResult> {
   const params = new URLSearchParams({ resolution })
   if (start) params.set('start', start)
@@ -336,6 +332,9 @@ export async function getUnifiedTimeline(
   if (includeWind) params.set('include_wind', 'true')
   if (includeForecast) params.set('include_forecast', 'true')
   if (includeRiskShadow) params.set('include_risk_shadow', 'true')
+  if (indicatorSeries && indicatorSeries.length > 0) {
+    params.set('indicators', indicatorSeries.join(','))
+  }
 
   const response = await fetchResponse(`${API_BASE}/timeline/unified?${params}`, { signal })
   const data: UnifiedTimelineData = await response.json()
@@ -463,4 +462,9 @@ export async function getObservationPhoto(photoUrl: string): Promise<Blob> {
 
 export async function getEpisodeObservations(episodeId: number): Promise<EpisodeObservations> {
   return fetchJson<EpisodeObservations>(`${API_BASE}/episodes/${episodeId}/observations`)
+}
+
+// Hydrological indicators (flows, groundwater, observed tide), outside the risk model
+export async function getIndicators(): Promise<IndicatorsData> {
+  return fetchJson<IndicatorsData>(`${API_BASE}/indicators`)
 }

@@ -6,42 +6,81 @@ import {
   CheckCircle,
   XCircle,
   AlertCircle,
-  ExternalLink,
+  HelpCircle,
 } from 'lucide-react'
+import type { SourceFreshness, SourceFreshnessName, SourceFreshnessState } from '../types'
+import { formatAge, formatParis, parseApiDate } from '../utils/time'
 
-interface DataSource {
-  name: string
-  status: 'ok' | 'degraded' | 'error'
-  description: string
-  lastUpdate?: string
-  details?: string
-  url?: string
-}
-
+// Single source of truth: /api/status.sources (freshness of the last stored point)
 interface DataSourcesStatusProps {
-  sources: DataSource[]
+  sources?: Partial<Record<SourceFreshnessName, SourceFreshness>> | null
+  /** Next high water at the confluence (/api/realtime tide), for the tide row */
+  nextHighTide?: string | null
+  now?: number
   loading?: boolean
 }
 
-const STATUS_ICONS = {
+const STATUS_ICONS: Record<SourceFreshnessState, JSX.Element> = {
   ok: <CheckCircle className="w-4 h-4 text-green-500" />,
-  degraded: <AlertCircle className="w-4 h-4 text-yellow-500" />,
-  error: <XCircle className="w-4 h-4 text-red-500" />,
+  stale: <AlertCircle className="w-4 h-4 text-yellow-500" />,
+  unavailable: <XCircle className="w-4 h-4 text-red-500" />,
+  unknown: <HelpCircle className="w-4 h-4 text-gray-400" />,
 }
 
-const STATUS_COLORS = {
+const STATUS_COLORS: Record<SourceFreshnessState, string> = {
   ok: 'border-green-200 bg-green-50',
-  degraded: 'border-yellow-200 bg-yellow-50',
-  error: 'border-red-200 bg-red-50',
+  stale: 'border-yellow-200 bg-yellow-50',
+  unavailable: 'border-red-200 bg-red-50',
+  unknown: 'border-gray-200 bg-gray-50',
+}
+
+const STATUS_LABELS: Record<SourceFreshnessState, string> = {
+  ok: 'a jour',
+  stale: 'perime',
+  unavailable: 'indisponible',
+  unknown: 'inconnu',
+}
+
+/** "dans 1 h 32" (future) */
+function formatUntil(target: Date, now: number): string {
+  const minutes = Math.max(0, Math.round((target.getTime() - now) / 60_000))
+  if (minutes < 60) return `dans ${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest > 0 ? `dans ${hours} h ${rest.toString().padStart(2, '0')}` : `dans ${hours} h`
+}
+
+/**
+ * Freshness text. The tide source stores future extremes (its age is negative):
+ * show the time to the next high water instead of an age.
+ */
+function freshnessText(
+  name: string,
+  source: SourceFreshness,
+  nextHighTide: string | null | undefined,
+  now: number,
+): string {
+  if (name === 'tide') {
+    const pm = parseApiDate(nextHighTide)
+    if (pm && pm.getTime() > now) {
+      return `prochaine PM ${formatUntil(pm, now)} (${formatParis(pm, 'HH:mm')})`
+    }
+  }
+  const last = parseApiDate(source.last_timestamp)
+  if (!last) return source.status === 'unknown' ? 'non verifie' : 'aucune donnee (30 j)'
+  if (last.getTime() > now) return `donnees jusqu'au ${formatParis(last, 'dd/MM HH:mm')}`
+  return `derniere donnee ${formatAge(last, now)}`
 }
 
 export default function DataSourcesStatus({
   sources,
+  nextHighTide,
+  now = Date.now(),
   loading,
 }: DataSourcesStatusProps) {
   const [expanded, setExpanded] = useState(false)
 
-  if (loading) {
+  if (loading && !sources) {
     return (
       <div className="bg-white rounded-lg shadow p-3">
         <div className="animate-pulse flex items-center gap-2">
@@ -52,9 +91,14 @@ export default function DataSourcesStatus({
     )
   }
 
-  const okCount = sources.filter((s) => s.status === 'ok').length
-  const degradedCount = sources.filter((s) => s.status === 'degraded').length
-  const errorCount = sources.filter((s) => s.status === 'error').length
+  const entries = Object.entries(sources ?? {}).filter(
+    (e): e is [string, SourceFreshness] => e[1] != null
+  )
+  const count = (state: SourceFreshnessState) => entries.filter(([, s]) => s.status === state).length
+  const okCount = count('ok')
+  const staleCount = count('stale')
+  const errorCount = count('unavailable')
+  const unknownCount = count('unknown')
 
   return (
     <div className="bg-white rounded-lg shadow overflow-hidden">
@@ -73,10 +117,10 @@ export default function DataSourcesStatus({
                 {okCount}
               </span>
             )}
-            {degradedCount > 0 && (
+            {staleCount > 0 && (
               <span className="flex items-center gap-1 text-xs text-yellow-600">
                 <AlertCircle className="w-3 h-3" />
-                {degradedCount}
+                {staleCount}
               </span>
             )}
             {errorCount > 0 && (
@@ -84,6 +128,15 @@ export default function DataSourcesStatus({
                 <XCircle className="w-3 h-3" />
                 {errorCount}
               </span>
+            )}
+            {unknownCount > 0 && (
+              <span className="flex items-center gap-1 text-xs text-gray-500">
+                <HelpCircle className="w-3 h-3" />
+                {unknownCount}
+              </span>
+            )}
+            {entries.length === 0 && (
+              <span className="text-xs text-gray-400">statut indisponible</span>
             )}
           </div>
         </div>
@@ -97,37 +150,38 @@ export default function DataSourcesStatus({
       {/* Expanded details */}
       {expanded && (
         <div className="border-t p-3 space-y-2">
-          {sources.map((source) => (
+          {entries.map(([name, source]) => (
             <div
-              key={source.name}
-              className={`p-3 rounded border ${STATUS_COLORS[source.status]}`}
+              key={name}
+              className={`p-3 rounded border ${STATUS_COLORS[source.status] ?? STATUS_COLORS.unknown}`}
             >
-              <div className="flex items-start justify-between">
+              <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  {STATUS_ICONS[source.status]}
+                  {STATUS_ICONS[source.status] ?? STATUS_ICONS.unknown}
                   <div>
-                    <div className="font-medium text-sm">{source.name}</div>
-                    <div className="text-xs text-gray-600">{source.description}</div>
+                    <div className="font-medium text-sm">
+                      {source.label}
+                      {source.critical && (
+                        <span className="ml-1 text-xs text-gray-400">(critique)</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-600">
+                      {freshnessText(name, source, nextHighTide, now)}
+                    </div>
                   </div>
                 </div>
-                {source.url && (
-                  <a
-                    href={source.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-gray-400 hover:text-gray-600"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
-                )}
+                <span className="text-xs text-gray-500 shrink-0">
+                  {STATUS_LABELS[source.status] ?? source.status}
+                </span>
               </div>
-              {source.details && (
-                <div className="mt-2 text-xs text-gray-500">{source.details}</div>
+              {(source.error ?? source.note) && (
+                <div className={`mt-2 text-xs ${source.error ? 'text-red-600' : 'text-gray-500'}`}>
+                  {source.error ?? source.note}
+                </div>
               )}
-              {source.lastUpdate && (
+              {source.max_age_hours > 0 && (
                 <div className="mt-1 text-xs text-gray-400">
-                  Derniere maj: {source.lastUpdate}
+                  Perime au-dela de {source.max_age_hours} h
                 </div>
               )}
             </div>
