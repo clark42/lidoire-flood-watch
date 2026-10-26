@@ -8,7 +8,7 @@ Protocol (every number of a FITTED model is out-of-sample):
 
 - Blocked leave-one-event-out cross-validation: the timeline is cut into
   blocks, one per group of evaluable labelled events (events whose peaks are
-  less than ``group_days`` apart form one group, e.g. 2023-12-01 and
+  less than ``group_days`` apart form one group, e.g. 2023-11-30 and
   2023-12-11, so that one hydrological episode is never split between the
   training and the test side); block boundaries are the midpoints between
   groups. For each block, the model is fitted on the labels AND the hours of
@@ -202,9 +202,10 @@ class TrainingFrame:
               train_mask: Optional[np.ndarray]) -> "TrainingFrame":
         times = dataset.times
         n = len(times)
-        flood_idx = [i for i in (dataset.index_of(e.peak_time) for e in train_events if e.positive is True)
+        # hour_index: peaks from the owner's answers carry minutes (e.g. 22:15)
+        flood_idx = [i for i in (dataset.hour_index(e.peak_time) for e in train_events if e.positive is True)
                      if i is not None]
-        other_idx = [i for i in (dataset.index_of(e.peak_time) for e in train_events if e.positive is None)
+        other_idx = [i for i in (dataset.hour_index(e.peak_time) for e in train_events if e.positive is None)
                      if i is not None]
         if period is not None:
             period_mask = np.array([period.contains(t) for t in times])
@@ -648,8 +649,9 @@ def has_feature(table: Mapping[str, np.ndarray], name: str) -> bool:
 
 V4_HEADLINE = "v4a_joint"
 TIMING_WINDOWS = {
-    "2025-04 flood (label peak 2025-04-23 16:00)": (datetime(2025, 4, 18), datetime(2025, 4, 25, 23)),
-    "2026-02 Pessac record (unlabelled)": (datetime(2026, 2, 8), datetime(2026, 2, 17, 23)),
+    "2025-04 flood (label peak 2025-04-21 01:30 UTC +/- 1 h)": (datetime(2025, 4, 18), datetime(2025, 4, 25, 23)),
+    "2026-02 flood (label peak 2026-02-12 16:00 UTC +/- 2 h) and Pessac record": (
+        datetime(2026, 2, 8), datetime(2026, 2, 17, 23)),
 }
 
 
@@ -721,7 +723,7 @@ EXTRA_PERIODS = {
     "U 2023-11-03 (Ciaran)": datetime(2023, 11, 3, 12),
     "U 2024-05-15": datetime(2024, 5, 15, 12),
     "U 2025-01-28": datetime(2025, 1, 28, 12),
-    "U 2026-02-14 (Pessac record)": datetime(2026, 2, 14, 11),
+    "U 2026-02-14 (Pessac record, 2 days after the 2026-02-12 flood)": datetime(2026, 2, 14, 11),
 }
 
 
@@ -843,7 +845,10 @@ def run(dataset: EvalDataset, out_dir: Path, events=None, period=None, crosschec
         "# Candidate models vs v3.3 and baselines (hourly causal replay)",
         "",
         f"- Period {dataset.meta.get('start')} -> {dataset.meta.get('end')} ({len(dataset)} hours); labels "
-        f"{period.start:%Y-%m-%d} -> {period.end:%Y-%m-%d}; 5 floods, 8 labelled negatives, 1 unknown."
+        f"{period.start:%Y-%m-%d} -> {period.end:%Y-%m-%d}; "
+        f"{sum(1 for e in events if e.positive is True)} floods, "
+        f"{sum(1 for e in events if e.positive is False)} labelled negatives, "
+        f"{sum(1 for e in events if e.positive is None)} unknown."
         if period else "",
         "- Fitted models: blocked leave-one-event-out (blocks: " + ", ".join(b.key for b in blocks)
         + "); every metric below is out-of-sample for them.",

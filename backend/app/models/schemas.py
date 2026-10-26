@@ -342,10 +342,25 @@ class FloodEpisodeCreate(BaseModel):
     outcome_source: Optional[str] = Field(None, max_length=100)
 
 
+class LabelStatement(BaseModel):
+    """A dated statement that set or changed a label (who said what, when)."""
+    date: str = Field(..., description="Date of the statement, YYYY-MM-DD")
+    source: str = Field(..., description="Who made the statement, e.g. owner")
+    text: str = Field(..., description="What was stated (verbatim or summarised)")
+    local_time: Optional[str] = Field(
+        None, description="Peak time as stated, in local time (Europe/Paris), before conversion to UTC"
+    )
+
+
 class EpisodeLabel(BaseModel):
     """One annotated reference episode (from app/data/episodes_labels.json)."""
     key: str = Field(..., description="Stable key: peak date YYYY-MM-DD")
     peak_time: UtcDatetime = Field(..., description="Approximate peak time (naive, UTC assumed)")
+    peak_time_precision_hours: Optional[float] = Field(
+        None,
+        gt=0,
+        description="Half-width of the uncertainty on peak_time (hours, +/-); None = not stated",
+    )
     outcome: EpisodeOutcome
     severity: int = Field(..., ge=1, le=5)
     water_height_cm: Optional[float] = Field(None, ge=0)
@@ -360,6 +375,9 @@ class EpisodeLabel(BaseModel):
     )
     legacy_stored_score: Optional[float] = Field(
         None, description="Stored risk score at peak per validate_model.py (not ground truth)"
+    )
+    statements: list[LabelStatement] = Field(
+        default_factory=list, description="Dated statements that set or changed this label"
     )
 
 

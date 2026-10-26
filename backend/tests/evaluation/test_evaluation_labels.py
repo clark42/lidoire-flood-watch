@@ -22,18 +22,24 @@ def test_evaluation_binary_outcome_mapping(outcome, expected):
 def test_evaluation_reference_labels_split():
     events, period = load_events()
     groups = split_events(events)
-    assert len(events) == 14
+    assert len(events) == 15
     assert [e.key for e in groups["positive"]] == [
-        "2023-03-11", "2023-12-01", "2023-12-11", "2024-02-26", "2025-04-23",
+        "2023-03-11", "2023-11-30", "2024-02-26", "2025-04-21", "2026-02-12",
     ]
     assert {e.key for e in groups["negative"] if e.outcome == EpisodeOutcome.NEAR_MISS} == {
-        "2024-03-30", "2025-11-25",
+        "2023-12-11", "2024-03-30", "2025-11-25",
     }
-    assert len(groups["negative"]) == 8
+    assert len(groups["negative"]) == 9
     assert [e.key for e in groups["excluded"]] == ["2026-01-28"]
     assert not groups["excluded"][0].evaluable
     assert period.start == datetime(2022, 11, 1, 0)
-    assert period.end == datetime(2026, 1, 31, 23)
+    assert period.end == datetime(2026, 2, 28, 23)
+    # hour-precision peaks from the owner's answers reach the evaluation
+    by_key = {e.key: e for e in events}
+    assert by_key["2023-11-30"].peak_time == datetime(2023, 11, 30, 22, 15)
+    assert by_key["2023-11-30"].peak_time_precision_hours == 0.5
+    assert by_key["2025-04-21"].peak_time == datetime(2025, 4, 21, 1, 30)
+    assert by_key["2026-02-12"].peak_time_precision_hours == 2
     assert all(period.contains(e.peak_time) for e in events)
     assert [e.peak_time for e in events] == sorted(e.peak_time for e in events)
 
@@ -71,3 +77,18 @@ def test_evaluation_label_file_without_period(tmp_path):
     path.write_text(json.dumps(payload), encoding="utf-8")
     events, period = load_events(path)
     assert events == [] and period is None
+
+
+def test_evaluation_peak_with_minutes_maps_to_its_hour_row():
+    # owner peaks carry minutes (2023-11-30T22:15): the row of 22:00 is the peak row
+    from datetime import timedelta
+
+    from scripts.eval.dataset import EvalDataset, FeatureRow
+
+    t0 = datetime(2023, 11, 30, 20)
+    rows = [FeatureRow(timestamp=t0 + timedelta(hours=i), features=None, values={}) for i in range(4)]
+    ds = EvalDataset(rows, (), "P555001001")
+    assert ds.index_of(datetime(2023, 11, 30, 22, 15)) is None
+    assert ds.hour_index(datetime(2023, 11, 30, 22, 15)) == 2
+    assert ds.hour_index(datetime(2023, 11, 30, 23)) == 3
+    assert ds.hour_index(datetime(2023, 12, 1, 0)) is None
