@@ -166,3 +166,17 @@ CI), lead per flood, and the budget study rows `v4b >= 15 / 25 / 35 / 45 / 55`, 
 - Residual, not removable: the structure and the Eyraud were chosen after label-based analyses
   (section 0); the long-profile anchors were drawn by the analyst who knew the flood stages of Pessac;
   5 floods (4 runoff floods): one flood = 20-25 points of POD, nothing here is significant.
+
+## Outcome (appended after the evaluation, 2026-10-27; sections 0-5 unchanged, no amendment)
+
+`python -m scripts.eval.v4beta --offline`, merged 12 h, labels v2:
+
+- v4b orange: 8.3 alerts/yr, 5/5 floods, leads 16 / 60 / 20 / 51 h on the runoff floods (median 36 h;
+  2023-03-11: 2 h), 27 raw false alarms (9 labelled). v3.4 red recomputed: 6.3 alerts/yr, 12 / 19 / 18 /
+  51 h (median 18.5 h), 20 raw false alarms (6 labelled).
+- R1, R2, R3 pass; R4a fails (27 > 20 false alarms), R4b fails (27 > 15). **The primary does not beat
+  v3.4 red.** No variant passes at orange either (V1 31, V2 27, V3 27 raw false alarms).
+- Exploratory only (operating point chosen after seeing the results, NOT a pass): v4b red would meet
+  every condition (4.8 alerts/yr, 15 / 16 / 18 / 45 h, 14 raw false alarms); V1 red on the
+  archived-forecast sub-period: 58 / 20 / 48 h and 13 raw false alarms against 19 / 18 / 51 h and 15.
+  To be pre-registered on its own before any use.
