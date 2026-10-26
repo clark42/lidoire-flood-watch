@@ -17,6 +17,7 @@ import type {
   RiskSimulationResult,
   SystemStatus,
   SourcesDetail,
+  IndicatorsData,
 } from './types'
 
 const API_BASE = '/api'
@@ -308,6 +309,7 @@ export async function getUnifiedTimeline(
   includeForecast?: boolean,
   signal?: AbortSignal,
   includeRiskShadow?: boolean,
+  indicatorSeries?: string[],
 ): Promise<UnifiedTimelineResult> {
   const params = new URLSearchParams({ resolution })
   if (start) params.set('start', start)
@@ -326,6 +328,9 @@ export async function getUnifiedTimeline(
   if (includeWind) params.set('include_wind', 'true')
   if (includeForecast) params.set('include_forecast', 'true')
   if (includeRiskShadow) params.set('include_risk_shadow', 'true')
+  if (indicatorSeries && indicatorSeries.length > 0) {
+    params.set('indicators', indicatorSeries.join(','))
+  }
 
   const response = await fetchResponse(`${API_BASE}/timeline/unified?${params}`, { signal })
   const data: UnifiedTimelineData = await response.json()
@@ -397,4 +402,9 @@ export async function confirmEpisode(
 // Reference labels of the annotated episodes (ground truth for evaluation)
 export async function getEpisodeLabels(): Promise<EpisodeLabelSet> {
   return fetchJson<EpisodeLabelSet>(`${API_BASE}/episodes/labels`)
+}
+
+// Hydrological indicators (flows, groundwater, observed tide), outside the risk model
+export async function getIndicators(): Promise<IndicatorsData> {
+  return fetchJson<IndicatorsData>(`${API_BASE}/indicators`)
 }

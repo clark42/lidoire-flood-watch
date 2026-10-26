@@ -530,10 +530,23 @@ class RainfallStationInfo(BaseModel):
     available: bool = True
 
 
+class IndicatorSeriesInfo(BaseModel):
+    """Hydrological indicator series (outside the risk model), timeline id ``kind:KEY``."""
+    id: str  # "flow:EYRAUD", "gw:MOULIETS", "tide_obs:BORDEAUX"
+    kind: str  # "flow" | "groundwater" | "tide_observed"
+    type: str  # TimelineSeries.type: flow_tributary | flow_dordogne | groundwater | tide_observed
+    name: str
+    unit: str
+    color: str
+    role: Optional[str] = None
+    distance_km: float = 0.0
+
+
 class AvailableSources(BaseModel):
     """Available data sources for timeline comparison."""
     river_stations: list[RiverStationInfo] = []
     rainfall_stations: list[RainfallStationInfo] = []
+    indicator_series: list[IndicatorSeriesInfo] = []
     has_tide: bool = True
     has_risk_score: bool = True
     has_infoclimat: bool = True

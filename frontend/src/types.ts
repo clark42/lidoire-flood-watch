@@ -367,7 +367,7 @@ export interface TimelineDataPoint {
 }
 
 export interface TimelineSeries {
-  type: 'river_level' | 'rainfall' | 'rainfall_cumul' | 'tide' | 'risk_score' | 'risk_score_shadow' | 'soil_moisture' | 'soil_temperature' | 'evapotranspiration' | 'wind_speed' | 'wind_westerly' | 'forecast_risk_score' | 'forecast_rainfall' | 'forecast_level'
+  type: 'river_level' | 'rainfall' | 'rainfall_cumul' | 'tide' | 'risk_score' | 'risk_score_shadow' | 'soil_moisture' | 'soil_temperature' | 'evapotranspiration' | 'wind_speed' | 'wind_westerly' | 'forecast_risk_score' | 'forecast_rainfall' | 'forecast_level' | IndicatorSeriesType
   name: string
   unit: string
   color: string
@@ -399,9 +399,25 @@ export interface RainfallStationInfo {
   available?: boolean
 }
 
+// Hydrological indicators (outside the risk model v3.4): flows, groundwater, observed tide
+export type IndicatorSeriesType = 'flow_tributary' | 'flow_dordogne' | 'groundwater' | 'tide_observed'
+
+export interface IndicatorSeriesInfo {
+  id: string // "flow:EYRAUD", "gw:MOULIETS", "tide_obs:BORDEAUX"
+  kind: 'flow' | 'groundwater' | 'tide_observed'
+  type: IndicatorSeriesType
+  name: string
+  unit: string
+  color: string
+  role?: string | null
+  distance_km: number
+}
+
 export interface AvailableSources {
   river_stations: RiverStationInfo[]
   rainfall_stations: RainfallStationInfo[]
+  /** Absent on older backends */
+  indicator_series?: IndicatorSeriesInfo[]
   has_tide: boolean
   has_risk_score: boolean
   has_infoclimat: boolean
@@ -560,4 +576,70 @@ export interface SourcesDetail {
       tide_coef_high?: number | null
     }
   }
+}
+
+// /api/indicators (stored series only, never a model input)
+export interface IndicatorThresholdStatus {
+  exceeded: string[]
+  next: string | null
+  next_value: number | null
+  distance: number | null
+  ratio_to_next: number | null
+}
+
+export type IndicatorTrend = 'rising' | 'falling' | 'stable'
+
+interface IndicatorBase {
+  id: string
+  key: string
+  name: string
+  distance_km?: number | null
+  available: boolean
+  last_timestamp: string | null
+  age_hours: number | null
+  stale: boolean | null
+  percentile: number | null
+  percentile_label: string | null
+  percentile_basis: string
+  history_days: number
+}
+
+export interface FlowIndicator extends IndicatorBase {
+  station_id: string
+  river: string | null
+  role: string | null
+  basin_km2: number | null
+  q_m3s: number | null
+  q_mean_24h_m3s: number | null
+  trend_m3s_per_h: number | null
+  trend: IndicatorTrend | null
+  thresholds_daily_m3s: Record<string, number>
+  threshold: IndicatorThresholdStatus
+}
+
+export interface GroundwaterIndicator extends IndicatorBase {
+  code_bss: string
+  aquifer: string | null
+  level_m_ngf: number | null
+  change_24h_m: number | null
+  trend: IndicatorTrend | null
+  thresholds_m_ngf: Record<string, number>
+  threshold: IndicatorThresholdStatus
+}
+
+export interface TideObservedIndicator extends IndicatorBase {
+  source: string | null
+  datum: string | null
+  height_m: number | null
+  max_24h_m: number | null
+}
+
+export interface IndicatorsData {
+  timestamp: string
+  model_input: false
+  note: string
+  runoff: FlowIndicator[]
+  dordogne: FlowIndicator[]
+  groundwater: GroundwaterIndicator[]
+  tide_observed: TideObservedIndicator[]
 }
