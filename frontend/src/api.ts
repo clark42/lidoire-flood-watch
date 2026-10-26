@@ -313,6 +313,7 @@ export async function getUnifiedTimeline(
   includeWind?: boolean,
   includeForecast?: boolean,
   signal?: AbortSignal,
+  includeRiskShadow?: boolean,
 ): Promise<UnifiedTimelineResult> {
   const params = new URLSearchParams({ resolution })
   if (start) params.set('start', start)
@@ -330,6 +331,7 @@ export async function getUnifiedTimeline(
   if (includeInfoclimat === false) params.set('include_infoclimat', 'false')
   if (includeWind) params.set('include_wind', 'true')
   if (includeForecast) params.set('include_forecast', 'true')
+  if (includeRiskShadow) params.set('include_risk_shadow', 'true')
 
   const response = await fetchResponse(`${API_BASE}/timeline/unified?${params}`, { signal })
   const data: UnifiedTimelineData = await response.json()

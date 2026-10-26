@@ -82,6 +82,8 @@ export default function Timeline() {
   const [infoclimatEnabled, setInfoclimatEnabled] = useState(() => searchParams.get('infoclimat') !== '0')
   const [windEnabled, setWindEnabled] = useState(() => searchParams.get('wind') === '1')
   const [forecastEnabled, setForecastEnabled] = useState(() => searchParams.get('forecast') === '1')
+  // Shadow model 3.3-gate (v3.3 + backwater gate), compared with the displayed score
+  const [riskShadowEnabled, setRiskShadowEnabled] = useState(() => searchParams.get('risk_shadow') === '1')
 
   // Data
   const [unifiedData, setUnifiedData] = useState<UnifiedTimelineData | null>(null)
@@ -125,8 +127,9 @@ export default function Timeline() {
     if (!infoclimatEnabled) params.infoclimat = '0'
     if (windEnabled) params.wind = '1'
     if (forecastEnabled) params.forecast = '1'
+    if (riskShadowEnabled) params.risk_shadow = '1'
     setSearchParams(params, { replace: true })
-  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, setSearchParams])
+  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, setSearchParams])
 
   // Fetch available sources and episodes on mount
   useEffect(() => {
@@ -170,8 +173,9 @@ export default function Timeline() {
         windEnabled,
         forecastEnabled,
         signal,
+        riskShadowEnabled,
       ),
-    [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, resolution],
+    [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, resolution],
   )
 
   // Each run aborts the previous one, so a slow response (uncached period,
@@ -340,7 +344,11 @@ export default function Timeline() {
       }
       if (series.type === 'river_level' || series.type === 'tide' || series.type === 'forecast_level') {
         level.push(info)
-      } else if (series.type === 'risk_score' || series.type === 'forecast_risk_score') {
+      } else if (
+        series.type === 'risk_score' ||
+        series.type === 'risk_score_shadow' ||
+        series.type === 'forecast_risk_score'
+      ) {
         risk.push(info)
       } else if (series.type === 'forecast_rainfall') {
         rain.push(info)
@@ -489,6 +497,8 @@ export default function Timeline() {
               riskEnabled={riskEnabled}
               onTideToggle={() => setTideEnabled((v) => !v)}
               onRiskToggle={() => setRiskEnabled((v) => !v)}
+              riskShadowEnabled={riskShadowEnabled}
+              onRiskShadowToggle={() => setRiskShadowEnabled((v) => !v)}
               soilEnabled={soilEnabled}
               onSoilToggle={() => setSoilEnabled((v) => !v)}
               infoclimatEnabled={infoclimatEnabled}
@@ -825,6 +835,7 @@ export default function Timeline() {
                             strokeDasharray={
                               info.type === 'tide' ? '8 4'
                               : info.type === 'risk_score' ? '5 5'
+                              : info.type === 'risk_score_shadow' ? '2 3'
                               : info.type.startsWith('forecast_') ? '6 3'
                               : undefined
                             }

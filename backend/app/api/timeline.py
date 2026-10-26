@@ -38,6 +38,7 @@ from app.services.influx_client import (
     query_river_levels_multi_station,
     query_tides_timeline,
     query_risk_scores_timeline,
+    query_risk_shadow_timeline,
     query_soil_timeline,
     query_wind_timeline,
     to_naive_utc,
@@ -832,6 +833,7 @@ async def get_unified_timeline(
     include_infoclimat: bool = Query(True, description="Include Infoclimat rainfall data"),
     include_wind: bool = Query(False, description="Include wind speed/direction data"),
     include_forecast: bool = Query(False, description="Include 7-day risk forecast overlay"),
+    include_risk_shadow: bool = Query(False, description="Include the shadow risk score (v3.3 + backwater gate)"),
     resolution: str = Query("1h", description="Data resolution: 15m, 1h, 6h, 12h, 1d"),
 ):
     """
@@ -1106,6 +1108,24 @@ async def get_unified_timeline(
             )
         }
 
+    async def risk_shadow_series() -> dict[str, TimelineSeries]:
+        # Stored series only (scheduler, opt-in backfill): no cache-through
+        if not include_risk_shadow:
+            return {}
+        from app.services.risk_shadow import SHADOW_MODEL_VERSION
+
+        shadow_data = await query_risk_shadow_timeline(
+            start=start, end=end, model_version=SHADOW_MODEL_VERSION, resolution=resolution,
+        )
+        if not shadow_data:
+            return {}
+        return {
+            "risk:shadow": TimelineSeries(
+                type="risk_score_shadow", name="Score shadow (v3.3 + remous)", unit="/100",
+                color="#0d9488", data=_points(shadow_data),
+            )
+        }
+
     async def forecast_series() -> dict[str, TimelineSeries]:
         if not include_forecast:
             return {}
@@ -1153,6 +1173,7 @@ async def get_unified_timeline(
         infoclimat_series(),
         wind_series(),
         risk_series(),
+        risk_shadow_series(),
         forecast_series(),
     )
     series: dict[str, TimelineSeries] = {}
