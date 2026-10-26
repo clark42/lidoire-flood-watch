@@ -3,9 +3,9 @@
 import asyncio
 import inspect
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app.models.schemas import (
     FloodEpisode,
@@ -15,13 +15,15 @@ from app.models.schemas import (
     EpisodeOutcome,
 )
 from app.services.data_store import (
+    episode_status,
+    last_live_risk_score_at,
+    may_be_ongoing,
     get_all_episodes,
     get_episode_by_id,
     create_episode,
     update_episode,
     delete_episode,
 )
-from app.services.episode_analyzer import analyze_episode
 from app.services.episode_analyzer_v2 import (
     analyze_episode as analyze_episode_v2,
     compare_episodes,
@@ -30,6 +32,7 @@ from app.services.episode_analyzer_v2 import (
 from app.services.backfill import run_full_backfill
 from app.services.episode_detector import run_episode_detection
 from app.services.labels import load_label_set, strip_legacy_prefixes
+from app.services.risk_core import to_utc_naive
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,18 @@ _backfill_status: dict = {
 
 router = APIRouter()
 
+# Longest period of the public station-extremes GET (Hub'Eau daily maxima)
+STATION_EXTREMES_MAX_DAYS = 3660
+
+
+async def _with_status(episodes: list[FloodEpisode]) -> list[FloodEpisode]:
+    """Set the derived ``status`` (the live data is only read for recent episodes)."""
+    now = _utcnow()
+    last_live = None
+    if any(may_be_ongoing(ep, now) for ep in episodes):
+        last_live = await last_live_risk_score_at()
+    return [ep.model_copy(update={"status": episode_status(ep, now, last_live)}) for ep in episodes]
+
 
 @router.get("", response_model=list[FloodEpisode])
 async def list_episodes(
@@ -60,7 +75,7 @@ async def list_episodes(
 ):
     """List all recorded flood episodes."""
     episodes = await get_all_episodes(limit=limit, offset=offset, min_severity=min_severity)
-    return episodes
+    return await _with_status(episodes)
 
 
 @router.get("/labels", response_model=EpisodeLabelSet)
@@ -105,14 +120,30 @@ async def analyze_flood_episode(
     3. Identifies matching risk criteria
     4. Returns a comprehensive analysis
 
-    Useful for understanding past events and extracting patterns.
+    Useful for understanding past events and extracting patterns. Same
+    analyzer as ``/analyze-v2`` and ``/analyze/{id}``.
     """
-    analysis = await analyze_episode(
-        date=date,
-        window_before=timedelta(days=window_before_days),
-        window_after=timedelta(days=window_after_days),
+    analysis = await analyze_episode_v2(
+        episode_date=date,
+        hours_before=window_before_days * 24,
+        hours_after=window_after_days * 24,
+        description="Analyse d'épisode",
     )
     return analysis
+
+
+def _stats(values: list[float]) -> Optional[dict]:
+    """min / max / avg / 25th percentile of the known values (None if none)."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    return {
+        "min": ordered[0],
+        "max": ordered[-1],
+        "avg": sum(ordered) / len(ordered),
+        "threshold_suggestion": ordered[len(ordered) // 4],  # 25th percentile
+        "count": len(ordered),
+    }
 
 
 @router.get("/patterns")
@@ -135,59 +166,50 @@ async def extract_patterns(min_episodes: int = Query(3, ge=2, le=20)):
             "patterns": None,
         }
 
-    # Analyze each episode and extract patterns
+    # Analyze each episode around its peak (stored data first, see the analyzer)
     analyses = []
+    failed = []
     for ep in episodes:
         try:
-            analysis = await analyze_episode(
-                date=ep.start_time,
-                window_before=timedelta(days=3),
-                window_after=timedelta(days=1),
+            analysis = await analyze_episode_v2(
+                episode_date=ep.peak_time or ep.start_time,
+                severity=ep.severity,
+                description=ep.description or "",
+                hours_before=72,
+                hours_after=24,
                 episode=ep,
             )
             analyses.append(analysis)
-        except Exception:
-            continue
+        except Exception as e:
+            logger.warning("Pattern extraction: cannot analyze episode %s: %r", ep.id, e)
+            failed.append(ep.id)
 
     if not analyses:
         return {
             "status": "analysis_failed",
             "message": "Could not analyze any episodes",
+            "failed_episodes": failed,
             "patterns": None,
         }
 
-    # Extract patterns from analyses
+    # Extract patterns from analyses (unknown tide coefficients are left out)
     rain_24h = [a.context.rain_24h_before_mm for a in analyses]
     rain_72h = [a.context.rain_72h_before_mm for a in analyses]
     dordogne_max = [a.context.max_dordogne_level_m for a in analyses]
-    tide_coef = [a.context.max_tide_coefficient for a in analyses]
+    tide_coef = [a.context.max_tide_coefficient for a in analyses if a.context.max_tide_coefficient is not None]
+
+    tide_stats = _stats(tide_coef)
+    if tide_stats is not None:
+        tide_stats.pop("threshold_suggestion")
+        tide_stats["high_tide_correlation"] = sum(1 for c in tide_coef if c > 90) / len(tide_coef)
 
     patterns = {
-        "rainfall_24h": {
-            "min": min(rain_24h),
-            "max": max(rain_24h),
-            "avg": sum(rain_24h) / len(rain_24h),
-            "threshold_suggestion": sorted(rain_24h)[len(rain_24h) // 4],  # 25th percentile
-        },
-        "rainfall_72h": {
-            "min": min(rain_72h),
-            "max": max(rain_72h),
-            "avg": sum(rain_72h) / len(rain_72h),
-            "threshold_suggestion": sorted(rain_72h)[len(rain_72h) // 4],
-        },
-        "dordogne_level": {
-            "min": min(dordogne_max),
-            "max": max(dordogne_max),
-            "avg": sum(dordogne_max) / len(dordogne_max),
-            "threshold_suggestion": sorted(dordogne_max)[len(dordogne_max) // 4],
-        },
-        "tide_coefficient": {
-            "min": min(tide_coef),
-            "max": max(tide_coef),
-            "avg": sum(tide_coef) / len(tide_coef),
-            "high_tide_correlation": sum(1 for c in tide_coef if c > 90) / len(tide_coef),
-        },
+        "rainfall_24h": _stats(rain_24h),
+        "rainfall_72h": _stats(rain_72h),
+        "dordogne_level": _stats(dordogne_max),
+        "tide_coefficient": tide_stats,
         "episode_count": len(analyses),
+        "failed_episodes": failed,
     }
 
     return {
@@ -262,7 +284,7 @@ async def compare_flood_episodes(
     rain_24h_values = [c["rain_24h_mm"] for c in comparisons]
     rain_72h_values = [c["rain_72h_mm"] for c in comparisons]
     dordogne_values = [c["dordogne_max_m"] for c in comparisons]
-    tide_values = [c["tide_coef"] for c in comparisons]
+    tide_values = [c["tide_coef"] for c in comparisons if c["tide_coef"] is not None]
 
     summary = {
         "episode_count": len(comparisons),
@@ -281,11 +303,12 @@ async def compare_flood_episodes(
             "max": max(dordogne_values),
             "avg": sum(dordogne_values) / len(dordogne_values),
         },
+        # None when no compared episode has tide data
         "tide_coef": {
             "min": min(tide_values),
             "max": max(tide_values),
             "avg": sum(tide_values) / len(tide_values),
-        },
+        } if tide_values else None,
     }
 
     # Find common criteria
@@ -327,8 +350,20 @@ async def get_station_extremes(
     - Calibrating threshold values
     - Understanding historical ranges
 
+    The period must satisfy start < end and span at most
+    STATION_EXTREMES_MAX_DAYS (422 otherwise): it is a public GET that fans
+    out to Hub'Eau. Results are cached per day pair.
+
     Example: GET /api/episodes/station-extremes?start_date=2020-01-01&end_date=2024-12-31
     """
+    start_date, end_date = to_utc_naive(start_date), to_utc_naive(end_date)
+    if start_date >= end_date:
+        raise HTTPException(status_code=422, detail="start_date must be before end_date")
+    if (end_date - start_date).days > STATION_EXTREMES_MAX_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"period longer than {STATION_EXTREMES_MAX_DAYS} days",
+        )
     max_levels = await get_station_max_levels(start_date, end_date)
 
     return {
@@ -354,6 +389,7 @@ async def _run_backfill_task(
     skip_soil: bool,
     skip_risk: bool,
     risk_shadow: bool = False,
+    risk_step_hours: int = 1,
     indicators: bool = False,
 ):
     """Background task for backfill."""
@@ -368,6 +404,7 @@ async def _run_backfill_task(
             skip_soil=skip_soil,
             skip_risk=skip_risk,
             risk_shadow=risk_shadow,
+            risk_step_hours=risk_step_hours,
             indicators=indicators,
         )
         _backfill_status["result"] = results
@@ -390,6 +427,9 @@ async def trigger_backfill(
     skip_soil: bool = Query(False, description="Skip soil data backfill"),
     skip_risk: bool = Query(False, description="Skip risk score recalculation"),
     risk_shadow: bool = Query(False, description="Also backfill the shadow model 3.4-gate"),
+    risk_step_hours: int = Query(
+        1, ge=1, le=24, description="Step of the risk score recalculation in hours (default hourly)",
+    ),
     indicators: bool = Query(False, description="Also backfill the hydrological indicators (flows, groundwater, observed tide)"),
 ):
     """
@@ -405,7 +445,8 @@ async def trigger_backfill(
     - Open-Meteo: Soil moisture and temperature
 
     Then recalculates risk scores using the v3.4 model (and, with
-    ``risk_shadow=true``, the shadow model 3.4-gate).
+    ``risk_shadow=true``, the shadow model 3.4-gate), one score every
+    ``risk_step_hours`` (hourly by default, whatever the range).
 
     Example: POST /api/episodes/backfill?start_date=2022-11-01T00:00:00
     """
@@ -437,6 +478,7 @@ async def trigger_backfill(
         skip_soil=skip_soil,
         skip_risk=skip_risk,
         risk_shadow=risk_shadow,
+        risk_step_hours=risk_step_hours,
         indicators=indicators,
     ))
 
@@ -523,6 +565,7 @@ async def analyze_existing_episode(episode_id: int):
         description=episode.description or "",
         hours_before=72,
         hours_after=24,
+        episode=episode,
     )
     return analysis
 
@@ -599,7 +642,7 @@ async def get_episode(episode_id: int):
     episode = await get_episode_by_id(episode_id)
     if episode is None:
         raise HTTPException(status_code=404, detail="Episode not found")
-    return episode
+    return (await _with_status([episode]))[0]
 
 
 @router.put("/{episode_id}", response_model=FloodEpisode)

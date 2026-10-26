@@ -121,8 +121,9 @@ async def test_followups_tide_range_batches_hourly_and_events(batch_writes, forb
         200, json={"hourly": {"time": times, "sea_level_height_msl": levels}}))
     stored = await tide.fetch_and_store_tides_range(NOW - timedelta(days=1), NOW)
     assert stored == 16
-    # one write for the hourly heights, one for the PM/BM events
-    assert [len(b) for b in batch_writes] == [16, 3]
+    # one write for the hourly heights (event hours excepted: no duplicate
+    # timestamp), one for the PM/BM events
+    assert [len(b) for b in batch_writes] == [13, 3]
     events = batch_writes[1]
     assert {p["tags"]["tide_type"] for p in events} == {"PM", "BM"}
     assert any(p["fields"].get("coefficient") == 74 for p in events)

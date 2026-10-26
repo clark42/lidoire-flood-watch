@@ -291,6 +291,12 @@ class EpisodeOutcome(str, Enum):
     UNKNOWN = "unknown"
 
 
+class EpisodeStatus(str, Enum):
+    """Derived state of an episode (never stored, see data_store.episode_status)."""
+    ONGOING = "ongoing"
+    CLOSED = "closed"
+
+
 class FloodEpisode(BaseModel):
     """Historical flood episode record."""
     id: Optional[int] = None
@@ -312,6 +318,9 @@ class FloodEpisode(BaseModel):
     outcome_source: Optional[str] = Field(
         None, max_length=100, description="Who/what set the outcome"
     )
+    # Derived by the episodes API: "ongoing" only while the episode is recent
+    # and live data keeps coming, else "closed" (even without end_time)
+    status: Optional[EpisodeStatus] = None
 
 
 class FloodEpisodeCreate(BaseModel):
@@ -375,7 +384,8 @@ class EpisodeContext(BaseModel):
     rain_48h_before_mm: float
     rain_72h_before_mm: float
     max_dordogne_level_m: float
-    max_tide_coefficient: int
+    # None when no tide data covers the episode (unknown, never a default)
+    max_tide_coefficient: Optional[int] = None
     tide_phase_at_peak: Optional[str] = None
     hours_since_high_tide: Optional[float] = None
 
@@ -505,7 +515,9 @@ class UnifiedTimelineData(BaseModel):
     """Unified timeline data combining river levels and rainfall."""
     start: UtcDatetime
     end: UtcDatetime
+    # Served resolution: coarser than requested on long ranges (point cap)
     resolution: str
+    requested_resolution: Optional[str] = None
     series: dict[str, TimelineSeries] = {}  # key: source_id
 
 

@@ -94,7 +94,7 @@ app/
     ├── forecast_archive.py  # Archive forecast_runs (job horaire) + prevu vs observe
     ├── backfill.py      # Backfill historique (rivers, rain, tides, soil, risk)
     ├── episode_detector.py  # Detection automatique d'episodes par seuil
-    ├── episode_analyzer.py / episode_analyzer_v2.py  # Contexte hydro-meteo des episodes
+    ├── episode_analyzer_v2.py  # Contexte hydro-meteo des episodes (seul analyseur : /analyze, /analyze-v2, /analyze/{id}, /patterns, /compare) ; donnees stockees d'abord, coefficient de maree None sans maree
     ├── labels.py        # Chargement des labels, parsing des anciens prefixes [CONFIRMED: ...]
     ├── cache.py         # get_redis() partage, TTLCache en memoire, CircuitBreaker, EXTERNAL_TIMEOUT_S
     ├── influx_client.py # InfluxDB non bloquant, ecritures par lot, validation Flux
@@ -145,7 +145,7 @@ tests/
 ├── vigilance/ (fixtures/ : reponses enregistrees)  observations/  probabilistic/ (fixtures/)
 ```
 
-Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episodes.py` (remplaces par `scripts/eval/`).
+Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episodes.py` (remplaces par `scripts/eval/`), `services/episode_analyzer.py` (analyseur v1) et les fonctions sans appelant de `data_store.py` (`get_timeline_data`, `get_multi_station_timeline`, `get_historical_river_levels`, `get_historical_rainfall` et son repli Netatmo, `store_*`, `get_episodes_in_range`).
 
 ### Frontend (`frontend/src/`)
 
@@ -207,7 +207,7 @@ Somme des poids = 1.00. Score station : lineaire par morceaux (0.33 au seuil jau
 - **Gate momentum** : base selon le nombre de stations en hausse (0 / 0.2 / 0.5 / 0.8 / 1.0) multipliee par 0.2 / 0.4 / 0.7 / 1.0 selon le score riviere normalise (< 0.30 / < 0.40 / < 0.55 / au-dela ; score, pas metres).
 - **Score final** = min(100, somme ponderee x conjonction x amortisseur / denominateur x 100). Niveaux : vert < 15, jaune < 35, orange < 55, rouge.
 
-Stockage : seul le job `risk_scorer` du scheduler (toutes les heures, premier passage 2 min apres le demarrage) ecrit le score temps reel ; les routes de lecture ne stockent jamais. Points `risk_score` : `level` en champ, tag `model_version=3.4` ; les lectures preferent la version courante (puis la plus recente), les anciens points sans tag restent lisibles. Le backfill ecrit la meme serie (pas 1 h jusqu'a 7 jours, 3 h jusqu'a 30 jours, 6 h au-dela).
+Stockage : seul le job `risk_scorer` du scheduler (toutes les heures, premier passage 2 min apres le demarrage) ecrit le score temps reel ; les routes de lecture ne stockent jamais. Points `risk_score` : `level` en champ, tag `model_version=3.4` ; les lectures preferent la version courante (puis la plus recente), les anciens points sans tag restent lisibles. Le backfill ecrit la meme serie, au pas horaire quelle que soit la periode (`risk_step_hours`, 1 a 24, defaut 1, sur `POST /api/episodes/backfill`) ; le pas ne fait que choisir les heures calculees, le score d'une heure n'en depend pas. Fenetres de 30 jours (`BACKFILL_CHUNK_DAYS`, entrees chargees par fenetre avec leur historique, un lot d'ecriture par fenetre, scores identiques a une passe unique). Mesure sur les archives 2022-11 -> 2026-10 (influx simule) : 34 897 scores horaires + shadow en 7.8 s CPU, +11 Mio de pic (passe unique : 34 s, +150 Mio) ; v3.4 identique a l'ancien backfill 6 h sur les 5 817 heures communes.
 
 Shadow `3.4-gate` (`risk_shadow.py`, version = `MODEL_VERSION` + `-gate`) : score v3.4 x gate de remous g(H_aval), H_aval = `backwater_level_m` des features de production (max Pessac sur 12.5 h, points <= t, `risk_core.backwater_level`), g = 0.5 a <= 3.0 m, 1.0 a >= 3.8 m, lineaire entre ; H_aval absent => 1.0. Meme semantique que `V33BackwaterModel` (qui reutilise la fonction de production, test d'equivalence). Ecrit par `risk_scorer` (via `compute_current_risk(store=True)`, un echec n'affecte jamais v3.4) dans la mesure dediee `risk_score_shadow` (tags `model_version=3.4-gate`, les anciens points `3.3-gate` restent en base, `source`, champs `factor_gate`, `factor_h_aval_m`, `factor_base_score`). Toutes les lectures de `risk_score` filtrent la mesure exacte et ecartent aussi toute version suffixee (`is_shadow_risk_version`) : score affiche, API, previsions, detection d'episodes et TimeMachine inchanges. Historique : `POST /api/episodes/backfill?...&risk_shadow=true` (off par defaut). Timeline : `include_risk_shadow=true` (serie `risk:shadow`, bouton "Shadow + remous").
 
@@ -221,6 +221,7 @@ Service dans `backend/app/services/forecast.py` :
 - Pluie Open-Meteo (AROME/ARPEGE + ECMWF) en UTC, pluie passee calibree sur la pluie temps reel multi-sources (facteur borne a [1/3, 3])
 - Niveaux projetes : tendance actuelle (12 h max) + reponse a la pluie tombee apres t0, decalee par `delay_hours` de chaque station
 - Nombre de stations en hausse : decroissance lineaire sur 48 h, plus apport de la pluie projetee
+- Maree connue jusqu'a l'horizon `tide_horizon` (derniere PM connue + 6.21 h, champ du resultat et de `data_sources.tide.horizon`) ; au-dela (H > 0), maree indisponible (`tide_available=false`, `beyond_tide_horizon=true`, facteurs maree a 0) au lieu d'une phase perimee
 - Cache Redis 30 min ; overlay Timeline via `include_forecast=true`
 - Le payload ajoute `horizons` (6/24/72 h, voir Outlook), `high_tides` (PM estimees a la confluence) et `inputs_summary` (pluie prevue apres t0 sur 24/72 h, max projete de Pessac sur 72 h, gate maree et H de H+0). `use_cache=False` recalcule (job d'archive) et rafraichit le cache.
 
@@ -272,7 +273,7 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 
 ## Sources de donnees
 
-- **Marees** : SHOM (cle API, port de Bordeaux) ou Open-Meteo Marine (niveau marin modele au large de l'embouchure, 45.6 / -1.2 ; PM/BM extraites, coefficient estime). Les heures sont decalees une seule fois, a la collecte, de `tide_phase_lag_hours[source]` (Open-Meteo 6 h, SHOM 2 h non mesure) pour estimer la maree a la confluence de la Lidoire, et stockees sous `port=LIDOIRE` (`tide_port_confluence`) ; hauteurs et coefficients restent ceux de la source. PM mesuree apres celle de l'embouchure (archives 2023-06 -> 2025-12) : Libourne +4.0 h, Pessac +7.0 h. Les anciens points `BORDEAUX`/`LIBOURNE` (sans decalage) ne sont plus lus : apres deploiement, re-backfill des marees et des scores. Serie timeline `tide:LIDOIRE`. Marees estimees jamais stockees, `TideForecast.available=False`.
+- **Marees** : SHOM (cle API, port de Bordeaux) ou Open-Meteo Marine (niveau marin modele au large de l'embouchure, 45.6 / -1.2 ; PM/BM extraites, coefficient estime). Les heures sont decalees une seule fois, a la collecte, de `tide_phase_lag_hours[source]` (Open-Meteo 6 h, SHOM 2 h non mesure) pour estimer la maree a la confluence de la Lidoire, et stockees sous `port=LIDOIRE` (`tide_port_confluence`) ; hauteurs et coefficients restent ceux de la source. PM mesuree apres celle de l'embouchure (archives 2023-06 -> 2025-12) : Libourne +4.0 h, Pessac +7.0 h. Les anciens points `BORDEAUX`/`LIBOURNE` (sans decalage) ne sont plus lus : apres deploiement, re-backfill des marees et des scores. Serie timeline `tide:LIDOIRE`. Marees estimees jamais stockees, `TideForecast.available=False`. Un seul point par horodatage : l'heure d'une PM/BM n'est pas reecrite en hauteur horaire non taguee, un lot ne garde qu'un evenement par (port, type, heure), et les lectures (`query_tides_timeline`, `tide_inputs_from_records`) fusionnent les doublons deja en base. Horizon de collecte Open-Meteo Marine : `tide_forecast_days` = 10 (niveau marin servi ~9.5 jours, nulls de fin ignores).
 - **Niveaux rivieres** : Hub'Eau temps reel (30 derniers jours), Hydroportail pour l'historique, Vigicrues pour Libourne (metres)
 - **Meteo prevue** : Open-Meteo (modeles AROME/ARPEGE), timestamps UTC
 - **Meteo locale** : Netatmo (stations citoyennes du bassin Lidoire), Infoclimat StatIC
@@ -303,6 +304,8 @@ Verite terrain : `backend/app/data/episodes_labels.json` (servie par `GET /api/e
 
 En base, l'issue est un champ structure (`outcome`, `observed_at`, `water_height_cm`, `outcome_source`) ; les anciens prefixes `[CONFIRMED: ...]` dans `notes` sont migres au demarrage.
 
+Statut derive (`status`, jamais stocke, `data_store.episode_status`) sur `GET /api/episodes` et `/{id}` : `closed` si `end_time` est passe, si l'episode sans `end_time` a un pic (ou debut) de plus de 72 h, ou si le score temps reel ne remonte plus depuis 3 h (inconnu = `closed`) ; `ongoing` sinon. Le texte "EN COURS" de l'episode 14 est dans sa `description` (saisie manuelle) : a corriger via `PUT /api/episodes/14`.
+
 ```bash
 # Labels de reference
 GET /api/episodes/labels
@@ -316,11 +319,11 @@ POST /api/episodes/analyze-v2?date=2024-02-15T14:00:00&severity=5
 # Comparer plusieurs episodes
 POST /api/episodes/compare?dates=2024-02-15T14:00&dates=2023-12-10T08:00
 
-# Niveaux max par station sur une periode
+# Niveaux max par station sur une periode (<= 3660 jours)
 GET /api/episodes/station-extremes?start_date=2020-01-01&end_date=2024-12-31
 
 # Backfill historique (tache asynchrone, suivi : GET /api/episodes/backfill/status)
-POST /api/episodes/backfill?start_date=2022-11-01&end_date=2026-01-28
+POST /api/episodes/backfill?start_date=2022-11-01&end_date=2026-01-28   # risk_step_hours=1 par defaut
 
 # Detection automatique (threshold 0-100, defaut 35 ; retenu si >= 6 h au-dessus de 35 ou >= 2 h au-dessus de 55)
 # Toute la periode en un appel : lecture Influx par fenetres de 30 jours (DETECTION_CHUNK_DAYS), etat des episodes
@@ -443,7 +446,8 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 - Dates : tous les `datetime` des schemas Pydantic (`UtcDatetime`) sortent en ISO 8601 UTC avec `Z` (naifs = UTC en interne). Quelques payloads dict anciens restent naifs : le frontend les lit en UTC (`parseApiDate`) et affiche tout en Europe/Paris (`formatParis`). Vigicrues est en UTC (`+00:00`) et sur le meme zero que Hub'Eau.
 - Netatmo : `/api/realtime/basin-rainfall` expose `available`/`stations_count` (moyennes 0.0 = valeurs de remplissage si `available=false`) ; `/api/timeline/sources` marque les stations Netatmo `available=false` tant que Netatmo n'est pas autorise. La Timeline part par defaut sur Open-Meteo (Moulin) + Infoclimat.
 
-- `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`.
+- `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`. Sous-echantillonnage serveur : resolution servie = la plus fine >= la demandee gardant <= 3000 points par serie (`MAX_POINTS_PER_SERIES`, ex. 400 j en 15m -> 6h), renvoyee dans `resolution` (demandee dans `requested_resolution`) ; en 6h/12h/1d niveaux, maree et scores = max de la fenetre, pluie = somme, `rainfall_cumul` = total en fin de fenetre.
+- `/api/episodes/station-extremes` : 422 si `start_date >= end_date` ou periode > 3660 jours ; stations en parallele (4 max), cache 6 h par paire de jours.
 - `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score, vigilance}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, vigilance 7 h (keepalive 6 h, informative), maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives (dont `indicator_*` : debits 3-12 h, piezometre 36 h, maree observee 3 h ; `radar_opera` 1 h, `glofas` point lead 0 du dernier run 48 h, `ensemble_rain` ligne `window=run` 12 h). `services.collectors` reste une declaration statique (compatibilite). Le bandeau du Dashboard lit `sources` (seule source de verite, `/api/realtime/sources` n'est plus utilise par le frontend) ; pour la maree il affiche le temps jusqu'a la prochaine PM, jamais un age negatif.
 - `/api/episodes/confirm/{id}` : `outcome` (`flooded`, `false_positive`, `near_miss`, `unknown`) ou ancien `was_flooded` ; remplace l'issue precedente.
 
@@ -458,6 +462,7 @@ Fichier `.env` a la racine (voir `.env.example`) :
 - `NETATMO_CLIENT_ID`, `NETATMO_CLIENT_SECRET`, `NETATMO_REFRESH_TOKEN` (optionnels)
 - `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` (optionnels, notifications) ; reglages `NOTIFY_*` (voir `config.py`)
 - `CAMERA_RTSP_URL` (optionnel), `LOG_LEVEL`
+- `APP_VERSION` (optionnel, defaut `dev`) : version renvoyee par `/api/status` (`version`, plus `model_version` = `MODEL_VERSION`) et `/` ; le chart Helm la fixe au tag d'image (`image.tag`, sinon `appVersion`)
 - `RADAR_ENABLED`, `GLOFAS_ENABLED`, `ENSEMBLE_RAIN_ENABLED` (optionnels, vrais par defaut ; previsions probabilistes et radar, hors score)
 
 Installation existante : conserver l'ancien mot de passe Postgres et l'ancien jeton Influx (`INFLUXDB_ADMIN_TOKEN` = ancien `INFLUXDB_TOKEN`) pour les volumes existants, puis `docker compose run --rm --user root backend chown -R 10001:10001 /app/data`. Detail dans le README.

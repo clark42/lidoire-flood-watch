@@ -1,15 +1,16 @@
-"""Enhanced episode analyzer for flood event reconstruction.
+"""Episode analyzer for flood event reconstruction.
 
-Fetches and correlates historical data from multiple sources to analyze
-past flood events and calibrate the risk model.
-
-Data sources:
-- Hub'Eau: River levels from all stations (Dordogne, Isle, Dronne)
-- Tide data: Historical tide coefficients and times
-- Weather: Rainfall data from Netatmo, Open-Meteo archive
-- Local observations: User-provided notes and photos
+Correlates the data of several sources around a past flood event (single
+analyzer behind every /api/episodes analysis route):
+- River levels of all stations: stored series (InfluxDB), else Hub'Eau /
+  Hydroportail
+- Rainfall: stored series (mean per hour across sources, as the risk model),
+  else the Open-Meteo archive
+- Tides: stored PM/BM events at the Lidoire confluence (``data_store``);
+  without tide data the coefficient is unknown (None), never invented
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -25,7 +26,13 @@ from app.models.schemas import (
     TideType,
     RainfallObservation,
 )
-from app.services.collectors.hubeau import fetch_episode_context, fetch_historical_data
+from app.services.cache import TTLCache
+from app.services.collectors.hubeau import (
+    MAX_CONCURRENT_REQUESTS,
+    fetch_episode_context,
+    fetch_historical_data,
+)
+from app.services.risk_core import to_utc_naive
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +43,7 @@ async def analyze_episode(
     description: str = "",
     hours_before: int = 72,
     hours_after: int = 24,
+    episode: Optional[FloodEpisode] = None,
 ) -> EpisodeAnalysis:
     """
     Analyze a historical flood episode by fetching all available data.
@@ -46,27 +54,25 @@ async def analyze_episode(
         description: User description of the event
         hours_before: Hours of context before the event
         hours_after: Hours of context after the event
+        episode: Stored episode (returned as is, with its id and outcome)
 
     Returns:
         EpisodeAnalysis with all correlated data
     """
-    settings = get_settings()
+    # Naive UTC bounds (aware dates are converted)
+    start = to_utc_naive(episode_date) - timedelta(hours=hours_before)
+    end = to_utc_naive(episode_date) + timedelta(hours=hours_after)
 
-    # Create episode record
-    episode = FloodEpisode(
-        start_time=episode_date - timedelta(hours=hours_before),
-        peak_time=episode_date,
-        end_time=episode_date + timedelta(hours=hours_after),
-        severity=severity,
-        description=description,
-    )
+    if episode is None:
+        episode = FloodEpisode(
+            start_time=start,
+            peak_time=episode_date,
+            end_time=end,
+            severity=severity,
+            description=description,
+        )
 
-    # Fetch river levels from all stations
-    river_data = await fetch_episode_context(
-        episode_date,
-        hours_before=hours_before,
-        hours_after=hours_after,
-    )
+    river_data = await _fetch_river_levels(episode_date, start, end, hours_before, hours_after)
 
     # Flatten river levels into a single list
     all_river_levels = []
@@ -80,17 +86,8 @@ async def analyze_episode(
             max_level = max(levels, key=lambda x: x.height_m)
             max_levels[station_id] = max_level
 
-    # Fetch tide data
-    tides = await _fetch_historical_tides(
-        episode_date - timedelta(hours=hours_before),
-        episode_date + timedelta(hours=hours_after),
-    )
-
-    # Fetch rainfall data
-    rainfall = await _fetch_historical_rainfall(
-        episode_date - timedelta(hours=hours_before),
-        episode_date + timedelta(hours=hours_after),
-    )
+    tides = await _fetch_historical_tides(start, end)
+    rainfall = await _fetch_rainfall(start, end)
 
     # Calculate context
     context = _calculate_episode_context(
@@ -113,26 +110,86 @@ async def analyze_episode(
     )
 
 
+async def _stored_river_levels(start: datetime, end: datetime) -> dict[str, list[RiverLevel]]:
+    """Stored levels of every configured station over [start, end] (empty if none)."""
+    from app.services import influx_client
+
+    out: dict[str, list[RiverLevel]] = {}
+    for station in get_settings().hubeau_stations:
+        rows = await influx_client.query_river_levels(station["id"], start, end + timedelta(seconds=1))
+        levels = [
+            RiverLevel(
+                timestamp=r["timestamp"],
+                station_id=station["id"],
+                station_name=r.get("station_name") or station["name"],
+                river=r.get("river") or station["river"],
+                height_m=float(r["height_m"]),
+            )
+            for r in rows
+            if r.get("height_m") is not None and r.get("timestamp") is not None
+        ]
+        if levels:
+            out[station["id"]] = levels
+    return out
+
+
+async def _fetch_river_levels(
+    episode_date: datetime,
+    start: datetime,
+    end: datetime,
+    hours_before: int,
+    hours_after: int,
+) -> dict[str, list[RiverLevel]]:
+    """Stored levels when the primary station has some, else Hub'Eau / Hydroportail."""
+    try:
+        stored = await _stored_river_levels(start, end)
+    except Exception as e:
+        logger.warning("Stored river levels unavailable: %s", e)
+        stored = {}
+    if stored.get(get_settings().hubeau_primary_station):
+        return stored
+    return await fetch_episode_context(episode_date, hours_before=hours_before, hours_after=hours_after)
+
+
 async def _fetch_historical_tides(
     start: datetime,
     end: datetime,
 ) -> list[TideData]:
-    """
-    Fetch historical tide data for a period.
+    """Stored PM/BM events at the Lidoire confluence over [start, end] ([] if none)."""
+    from app.services.data_store import get_historical_tides
 
-    Uses maree.info archive or SHOM historical data.
-    """
-    # For now, return empty - would need to integrate maree.info historical API
-    # or scrape tide tables
-    tides = []
+    try:
+        return await get_historical_tides(start, end)
+    except Exception as e:
+        logger.warning("Historical tides unavailable: %s", e)
+        return []
 
-    # TODO: Implement historical tide fetching
-    # Options:
-    # 1. maree.info historical data
-    # 2. SHOM historical archives
-    # 3. Calculated from astronomical predictions
 
-    return tides
+async def _stored_rainfall(start: datetime, end: datetime) -> list[RainfallObservation]:
+    """Stored hourly rain rows over [start, end] ([] if none)."""
+    from app.services import influx_client
+
+    rows = await influx_client.query_rainfall(start, end + timedelta(seconds=1))
+    return [
+        RainfallObservation(
+            timestamp=r["timestamp"],
+            source=f"{r.get('source') or 'unknown'}:{r.get('city') or ''}",
+            precipitation_mm_h=float(r["precipitation_mm_h"]),
+            basin_avg=False,
+        )
+        for r in rows
+        if r.get("precipitation_mm_h") is not None and r.get("timestamp") is not None
+    ]
+
+
+async def _fetch_rainfall(start: datetime, end: datetime) -> list[RainfallObservation]:
+    """Stored rain when present, else the Open-Meteo archive."""
+    try:
+        stored = await _stored_rainfall(start, end)
+    except Exception as e:
+        logger.warning("Stored rainfall unavailable: %s", e)
+        stored = []
+    return stored or await _fetch_historical_rainfall(start, end)
 
 
 async def _fetch_historical_rainfall(
@@ -209,7 +266,7 @@ def _calculate_episode_context(
     """Calculate summary context metrics for an episode."""
     settings = get_settings()
 
-    from app.services.risk_core import aggregate_hourly_rain, rain_window_sum, to_utc_naive
+    from app.services.risk_core import aggregate_hourly_rain, rain_window_sum
 
     # Naive UTC (aware values are converted, not just stripped)
     ep_date = to_utc_naive(episode_date)
@@ -234,10 +291,10 @@ def _calculate_episode_context(
         default=0.0,
     )
 
-    # Find max tide coefficient
+    # Max tide coefficient: None (unknown) without tide data, never a default
     max_tide_coef = max(
         (t.coefficient for t in tides if t.coefficient),
-        default=70,
+        default=None,
     )
 
     # Find tide phase at peak
@@ -298,11 +355,12 @@ def _identify_flood_criteria(
     elif context.max_dordogne_level_m > settings.risk_dordogne_level_orange:
         criteria.append(f"Dordogne niveau élevé: {context.max_dordogne_level_m:.2f}m")
 
-    # Check tide
-    if context.max_tide_coefficient > 100:
-        criteria.append(f"Grande marée: coef {context.max_tide_coefficient}")
-    elif context.max_tide_coefficient > settings.risk_tide_coef_high:
-        criteria.append(f"Forte marée: coef {context.max_tide_coefficient}")
+    # Check tide (unknown coefficient: no tide criterion)
+    coef = context.max_tide_coefficient
+    if coef is not None and coef > 100:
+        criteria.append(f"Grande marée: coef {coef}")
+    elif coef is not None and coef > settings.risk_tide_coef_high:
+        criteria.append(f"Forte marée: coef {coef}")
 
     # Check tide phase
     if context.hours_since_high_tide is not None and context.hours_since_high_tide < 2:
@@ -331,8 +389,8 @@ def _identify_flood_criteria(
     conjunction_factors = []
     if context.max_dordogne_level_m > settings.risk_dordogne_level_yellow:
         conjunction_factors.append(f"niveau riviere eleve ({context.max_dordogne_level_m:.1f}m)")
-    if context.max_tide_coefficient > 80:
-        conjunction_factors.append(f"maree forte (coef {context.max_tide_coefficient})")
+    if coef is not None and coef > 80:
+        conjunction_factors.append(f"maree forte (coef {coef})")
     if context.rain_24h_before_mm > settings.risk_rain_24h_yellow:
         conjunction_factors.append(f"pluie 24h significative ({context.rain_24h_before_mm:.0f}mm)")
     if context.rain_72h_before_mm > settings.risk_rain_24h_yellow * 2:
@@ -360,6 +418,11 @@ def _identify_flood_criteria(
     return criteria
 
 
+# Station extremes: whole days, cached (daily maxima of the past barely change)
+STATION_EXTREMES_TTL_S = 6 * 3600
+_station_extremes_cache = TTLCache(STATION_EXTREMES_TTL_S, max_entries=64)
+
+
 async def get_station_max_levels(
     start_date: datetime,
     end_date: datetime,
@@ -368,22 +431,29 @@ async def get_station_max_levels(
     Get maximum recorded levels for each station over a period.
 
     Useful for identifying extreme events and calibrating thresholds.
+    Daily maxima from Hub'Eau, stations fetched concurrently (at most
+    MAX_CONCURRENT_REQUESTS at a time); the result is cached per (start day,
+    end day) for STATION_EXTREMES_TTL_S. The caller bounds the period.
     """
     settings = get_settings()
+    key = (to_utc_naive(start_date).date(), to_utc_naive(end_date).date())
+    cached = _station_extremes_cache.get(key)
+    if cached is not None:
+        return cached
+
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+    async def _one(station: dict):
+        async with semaphore:
+            return station, await fetch_historical_data(
+                station["id"], start_date, end_date, granularity="daily_max",
+            )
+
     results = {}
-
-    for station in settings.hubeau_stations:
-        station_id = station["id"]
-        levels = await fetch_historical_data(
-            station_id,
-            start_date,
-            end_date,
-            granularity="daily_max",
-        )
-
+    for station, levels in await asyncio.gather(*(_one(s) for s in settings.hubeau_stations)):
         if levels:
             max_level = max(levels, key=lambda x: x.height_m)
-            results[station_id] = {
+            results[station["id"]] = {
                 "station_name": station["name"],
                 "river": station["river"],
                 "max_height_m": max_level.height_m,
@@ -391,6 +461,8 @@ async def get_station_max_levels(
                 "count": len(levels),
             }
 
+    if results:
+        _station_extremes_cache.set(key, results)
     return results
 
 

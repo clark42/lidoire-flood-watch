@@ -312,6 +312,8 @@ export interface FloodEpisode {
   observed_at?: string | null // observed peak time at the mill
   water_height_cm?: number | null
   outcome_source?: string | null // who/what labelled the episode
+  // Derived by the API: 'ongoing' only while recent and live data flows
+  status?: 'ongoing' | 'closed' | null
 }
 
 export interface EpisodeLabel {
@@ -345,7 +347,8 @@ export interface EpisodeContext {
   rain_48h_before_mm: number
   rain_72h_before_mm: number
   max_dordogne_level_m: number
-  max_tide_coefficient: number
+  // null when no tide data covers the episode (unknown)
+  max_tide_coefficient: number | null
   tide_phase_at_peak: string | null
   hours_since_high_tide: number | null
 }

@@ -104,7 +104,7 @@ async def fetch_open_meteo_marine() -> list[TideData]:
                     "longitude": MARINE_LON,
                     "hourly": "sea_level_height_msl",
                     "past_days": 2,
-                    "forecast_days": 7,
+                    "forecast_days": get_settings().tide_forecast_days,
                     "timezone": "UTC",
                 },
                 timeout=EXTERNAL_TIMEOUT_S,
@@ -139,6 +139,12 @@ def _extract_tides_from_levels(
     Event times are shifted by ``lag_hours`` (default: the Open-Meteo lag
     of the settings) to the Lidoire confluence.
     """
+    # Leading / trailing nulls (beyond the model horizon) are dropped: an edge
+    # value next to a null must not read as an extremum
+    n = min(len(times), len(levels))
+    first = next((i for i in range(n) if levels[i] is not None), n)
+    last = next((i for i in range(n - 1, -1, -1) if levels[i] is not None), -1)
+    times, levels = times[first:last + 1], levels[first:last + 1]
     if len(times) < 3 or len(levels) < 3:
         return []
     if lag_hours is None:
@@ -409,6 +415,11 @@ async def store_tides_to_influx(tides: list[TideData]) -> int:
     """Store tide data to InfluxDB (one batched write). Estimated tides are always skipped."""
     from app.services import influx_client
 
+    # One point per (port, type, time): the last occurrence wins
+    unique: dict[tuple, TideData] = {}
+    for tide in tides:
+        if tide.source != SOURCE_ESTIMATED:
+            unique[(tide.port, tide.tide_type, _to_naive_utc(tide.timestamp))] = tide
     points = [
         influx_client.make_tide_point(
             port=tide.port,
@@ -417,8 +428,7 @@ async def store_tides_to_influx(tides: list[TideData]) -> int:
             tide_type=tide.tide_type.value if tide.tide_type else None,
             coefficient=tide.coefficient,
         )
-        for tide in tides
-        if tide.source != SOURCE_ESTIMATED
+        for tide in unique.values()
     ]
     if not points:
         return 0
@@ -479,21 +489,25 @@ async def fetch_and_store_tides_range(start: datetime, end: datetime) -> int:
                 logger.info("No tide data from Open-Meteo Marine for %s -> %s", start_str, end_str)
                 return 0
 
-            # Store all hourly height points for continuous timeline (one batch)
+            # PM/BM events with (estimated) coefficients. Their hour is not
+            # written again as an untagged height: a second series at the same
+            # time would duplicate the timeline point.
+            events = _extract_tides_from_levels(times, levels, lag_hours)
+            event_times = {ev.timestamp for ev in events}
+
+            # All other hourly heights for a continuous timeline (one batch)
             stored = await influx_client.write_points_batch([
-                influx_client.make_tide_point(
-                    port=port,
-                    height_m=h,
-                    timestamp=_to_naive_utc(datetime.fromisoformat(t)) + lag,
+                influx_client.make_tide_point(port=port, height_m=h, timestamp=ts)
+                for ts, h in (
+                    (_to_naive_utc(datetime.fromisoformat(t)) + lag, h)
+                    for t, h in zip(times, levels)
+                    if h is not None
                 )
-                for t, h in zip(times, levels)
-                if h is not None
+                if ts not in event_times
             ])
+            stored += await store_tides_to_influx(events)
 
-            # Also extract and store PM/BM events with (estimated) coefficients
-            await store_tides_to_influx(_extract_tides_from_levels(times, levels, lag_hours))
-
-            logger.info("Stored %d hourly tide points for %s -> %s", stored, start_str, end_str)
+            logger.info("Stored %d tide points (hourly + PM/BM) for %s -> %s", stored, start_str, end_str)
             return stored
 
     except Exception as e:

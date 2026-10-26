@@ -53,7 +53,6 @@ FILES = [
     APP / "services" / "backfill.py",
     APP / "services" / "data_store.py",
     APP / "services" / "forecast.py",
-    APP / "services" / "episode_analyzer.py",
     APP / "services" / "episode_analyzer_v2.py",
     APP / "services" / "episode_detector.py",
     APP / "services" / "video_analyzer.py",

@@ -59,6 +59,11 @@ MAX_RANGE_DAYS = 400
 DEFAULT_RANGE_HOURS = 48
 VALID_RESOLUTIONS = ["15m", "1h", "6h", "12h", "1d"]
 COARSE_RESOLUTIONS = ("6h", "12h", "1d")
+RESOLUTION_HOURS = {"15m": 0.25, "1h": 1.0, "6h": 6.0, "12h": 12.0, "1d": 24.0}
+# Server-side cap: a long range is read at the finest resolution (>= the
+# requested one) that keeps each series under this many points. 400 days
+# at 15 min used to return ~250k points (11 MB, 12 s) in one call.
+MAX_POINTS_PER_SERIES = 3000
 
 ENSURE_OK_TTL_S = 600
 ENSURE_ATTEMPT_TTL_S = 3600
@@ -222,6 +227,35 @@ _ensure_cache = TTLCache(ttl_seconds=ENSURE_ATTEMPT_TTL_S, max_entries=1024)
 _inflight: dict[tuple, asyncio.Task] = {}
 _background: set[asyncio.Task] = set()
 _TASK_PREFIX = "timeline-backfill:"
+
+
+def effective_resolution(start: datetime, end: datetime, requested: str) -> str:
+    """Finest resolution >= ``requested`` keeping a series <= MAX_POINTS_PER_SERIES points."""
+    hours = (end - start).total_seconds() / 3600
+    candidates = VALID_RESOLUTIONS[VALID_RESOLUTIONS.index(requested):]
+    for res in candidates:
+        if hours / RESOLUTION_HOURS[res] <= MAX_POINTS_PER_SERIES:
+            return res
+    return candidates[-1]
+
+
+def thin_running_total(points: list[dict], resolution: str) -> list[dict]:
+    """Last value of a running total per window of ``resolution``.
+
+    Windows are aligned on the epoch and labelled by their end, like
+    ``aggregateWindow`` (hour-end input points stay in their window).
+    """
+    step = timedelta(hours=RESOLUTION_HOURS[resolution])
+    if step <= timedelta(hours=1):
+        return points
+    epoch = datetime(1970, 1, 1)
+    out: dict[datetime, dict] = {}
+    for p in points:
+        ts = to_naive_utc(p["timestamp"])
+        n = -((epoch - ts) // step)  # ceil((ts - epoch) / step)
+        label = epoch + n * step
+        out[label] = {"timestamp": label.replace(tzinfo=timezone.utc), "value": p["value"]}
+    return [out[k] for k in sorted(out)]
 
 
 def _task_label(task: asyncio.Task) -> str:
@@ -868,6 +902,12 @@ async def get_unified_timeline(
     6h/12h/1d (sum of hourly means). ``rainfall_cumul`` is the running total
     defined by ``compute_cumulative_rainfall``.
 
+    Long ranges are downsampled server-side: ``resolution`` in the response is
+    the one served, the finest >= the requested one (``requested_resolution``)
+    that keeps each series <= MAX_POINTS_PER_SERIES points. At 6h/12h/1d
+    river levels, tide heights and risk scores are the max of each window
+    (peaks kept), rain the sum, ``rainfall_cumul`` the total at window end.
+
     Example:
     - river_stations=P577001001,P555001001
     - rainfall_sources=netatmo-lidoire:Saint-Rémy,netatmo-lidoire:Flaujagues
@@ -878,6 +918,9 @@ async def get_unified_timeline(
 
     if resolution not in VALID_RESOLUTIONS:
         resolution = "1h"
+    requested_resolution = resolution
+    # Long ranges are downsampled server-side (levels: max, rain: sum)
+    resolution = effective_resolution(start, end, resolution)
 
     station_ids = (
         validate_river_stations([s.strip() for s in river_stations.split(",") if s.strip()])
@@ -898,6 +941,9 @@ async def get_unified_timeline(
     use_sum = resolution in COARSE_RESOLUTIONS
     rain_agg_fn = "sum" if use_sum else "mean"
     rain_unit = "mm" if use_sum else "mm/h"
+    # Coarse windows keep the peaks of levels and scores (a mean would flatten
+    # a flood or a high tide); 15m / 1h keep the mean
+    peak_agg_fn = "max" if use_sum else "mean"
 
     # --- 1. Cache-through checks (concurrent, backfills run in background) ---
     ensure_jobs: dict[str, Awaitable] = {}
@@ -938,7 +984,7 @@ async def get_unified_timeline(
         if not station_ids:
             return {}
         river_data = await query_river_levels_multi_station(
-            start=start, end=end, station_ids=station_ids, resolution=resolution,
+            start=start, end=end, station_ids=station_ids, resolution=resolution, agg_fn=peak_agg_fn,
         )
         out = {}
         for station_id, points in river_data.items():
@@ -1007,7 +1053,9 @@ async def get_unified_timeline(
                 ),
                 wanted,
             )
-        cumul = compute_cumulative_rainfall({k: v for k, v in hourly.items() if k in wanted})
+        cumul = thin_running_total(
+            compute_cumulative_rainfall({k: v for k, v in hourly.items() if k in wanted}), resolution,
+        )
         if cumul:
             out["rainfall_cumul"] = TimelineSeries(
                 type="rainfall_cumul", name="Cumul pluie", unit="mm",
@@ -1022,6 +1070,7 @@ async def get_unified_timeline(
         # Source sea level, times shifted to the Lidoire confluence
         tide_data = await query_tides_timeline(
             start=start, end=end, port=settings.tide_port_confluence, resolution=resolution,
+            agg_fn=peak_agg_fn,
         )
         if not tide_data:
             return {}
@@ -1114,7 +1163,9 @@ async def get_unified_timeline(
     async def risk_series() -> dict[str, TimelineSeries]:
         if not include_risk:
             return {}
-        risk_data = await query_risk_scores_timeline(start=start, end=end, resolution=resolution)
+        risk_data = await query_risk_scores_timeline(
+            start=start, end=end, resolution=resolution, agg_fn=peak_agg_fn,
+        )
         if not risk_data:
             return {}
         return {
@@ -1132,6 +1183,7 @@ async def get_unified_timeline(
 
         shadow_data = await query_risk_shadow_timeline(
             start=start, end=end, model_version=SHADOW_MODEL_VERSION, resolution=resolution,
+            agg_fn=peak_agg_fn,
         )
         if not shadow_data:
             return {}
@@ -1267,5 +1319,6 @@ async def get_unified_timeline(
         start=start,
         end=end,
         resolution=resolution,
+        requested_resolution=requested_resolution,
         series=series,
     )

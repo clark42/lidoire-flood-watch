@@ -18,6 +18,7 @@ from app.api.deps import (
 from app.services.scheduler import start_scheduler, stop_scheduler
 from app.db import init_db, close_db
 from app.services.cache import close_redis
+from app.services.risk_core import MODEL_VERSION
 
 # Application loggers (uvicorn configures only its own "uvicorn.*" loggers).
 logging.basicConfig(
@@ -88,7 +89,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application = FastAPI(
         title="Lidoire Flood Watch",
         description="API de surveillance des inondations de la Lidoire au moulin",
-        version="1.0.0",
+        version=settings.app_version,
         lifespan=lifespan,
     )
 
@@ -102,7 +103,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Root endpoint."""
         return {
             "name": "Lidoire Flood Watch",
-            "version": "1.0.0",
+            "version": settings.app_version,
+            "model_version": MODEL_VERSION,
             "status": "running",
         }
 

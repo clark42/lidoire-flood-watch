@@ -135,6 +135,9 @@ spec:
               value: {{ $c.config.moulinLon | quote }}
             - name: LOG_LEVEL
               value: {{ $c.config.logLevel | quote }}
+            # Reported by /api/status: the deployed image tag
+            - name: APP_VERSION
+              value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
             {{- with $c.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

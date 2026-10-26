@@ -101,7 +101,7 @@ def app_client():
 async def test_unified_shadow_series_is_opt_in(app_client, monkeypatch):
     calls = []
 
-    async def fake_shadow(start, end, model_version, resolution="1h"):
+    async def fake_shadow(start, end, model_version, resolution="1h", agg_fn="mean"):
         calls.append(model_version)
         return [{"timestamp": datetime(2024, 2, 15, 10), "value": 8.5}]
 

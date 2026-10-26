@@ -25,6 +25,12 @@ v2.0 (Jan 2026): v3.0 model weights with momentum/dampener.
 v3.3 (Oct 2026): uses risk_core; timezone, calibration, rain re-injection
 and H+0 consistency fixes.
 v3.4 (Oct 2026): backwater level (observed + projected Pessac) gates the tide.
+
+Tides are only known up to the tide horizon (last known high tide + half a
+tidal period): beyond it, the nearest known high tide is no longer the
+nearest real one, so the tide is marked unavailable (``tide_available``
+False, tide factors 0, ``beyond_tide_horizon`` True) instead of reporting a
+stale phase.
 """
 
 from __future__ import annotations
@@ -52,6 +58,10 @@ from app.services.risk_core import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Half a semi-diurnal tidal period: up to last high + this, the last known
+# high tide is still the nearest one.
+TIDE_HALF_PERIOD_H = 6.21
 
 
 def _utcnow() -> datetime:
@@ -332,8 +342,10 @@ def build_forecast_features(fi: ForecastInputs, h: int) -> tuple[RiskFeatures, O
         fc_24h = rain_window_sum(fi.rain_hourly, t_key, 24, forward=True)
         fc_72h = rain_window_sum(fi.rain_hourly, t_key, 72, forward=True)
 
-    # --- Tide (same rule as realtime) ---
+    # --- Tide (same rule as realtime, unknown beyond the tide horizon) ---
     tide = risk_core.tide_at(t_h, fi.tide_highs, fallback_coefficient=fi.tide_fallback_coefficient)
+    if h > 0 and beyond_tide_horizon(fi, t_h):  # H+0 stays the realtime tide
+        tide = risk_core.TideState(available=False, coefficient=tide.coefficient, hours_to_high_tide=None)
     tide_available = tide.available and fi.tide_reliable
 
     # --- Wind ---
@@ -359,6 +371,18 @@ def build_forecast_features(fi: ForecastInputs, h: int) -> tuple[RiskFeatures, O
         n_rising_override=n_rising,
     )
     return features, primary_level
+
+
+def tide_horizon(fi: ForecastInputs) -> Optional[datetime]:
+    """Last instant whose nearest high tide is known (None without tides)."""
+    if not fi.tide_highs:
+        return None
+    return max(ts for ts, _ in fi.tide_highs) + timedelta(hours=TIDE_HALF_PERIOD_H)
+
+
+def beyond_tide_horizon(fi: ForecastInputs, t: datetime) -> bool:
+    horizon = tide_horizon(fi)
+    return horizon is not None and t > horizon
 
 
 def _display_hours_to_high(fi: ForecastInputs, t_h: datetime, value: Optional[float]) -> float:
@@ -400,6 +424,7 @@ def build_forecast(
             "tide_coefficient": bd.tide_coefficient or params.default_tide_coefficient,
             "hours_to_high_tide": round(_display_hours_to_high(fi, features.timestamp, bd.hours_to_high_tide), 1),
             "tide_available": bd.tide_available,
+            "beyond_tide_horizon": h > 0 and beyond_tide_horizon(fi, features.timestamp),
             "projected_level_m": round(primary_level, 2) if primary_level is not None else 0.0,
             "n_rising": bd.n_rising,
             "conjunction_multiplier": round(bd.conjunction_multiplier, 2),
@@ -662,12 +687,17 @@ async def get_risk_forecast_v2(hours: int = 168, use_cache: bool = True) -> dict
 
     breakdowns: list = []
     forecasts = build_forecast(fi, hours, breakdowns)
+    horizon = tide_horizon(fi)
+    if "tide" in data_sources:
+        data_sources["tide"]["horizon"] = _iso_utc(horizon) if horizon else None
     result = {
         "generated_at": _iso_utc(now),
         "hours_ahead": hours,
         "forecasts": forecasts,
         "data_sources": data_sources,
         "model_version": MODEL_VERSION,
+        # Tide unknown after this instant (null without tide data)
+        "tide_horizon": _iso_utc(horizon) if horizon else None,
         **summarize_forecast(forecasts, hours, data_sources),
         "horizons": summarize_horizons(forecasts, breakdowns),
         "high_tides": upcoming_high_tides(fi, min(hours, 72) + 13),
