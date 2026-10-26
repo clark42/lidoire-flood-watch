@@ -45,6 +45,7 @@ import MetricSparkline from '../components/MetricSparkline'
 import TimeMachineBanner from '../components/TimeMachineBanner'
 import SoilConditionsPanel from '../components/SoilConditionsPanel'
 import NowcastRainChart from '../components/NowcastRainChart'
+import IndicatorsPanel from '../components/IndicatorsPanel'
 import InfoTooltip from '../components/InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 import { formatAge, formatParis, parseApiDate } from '../utils/time'
@@ -626,6 +627,7 @@ export default function Dashboard() {
 
           {/* ForecastPanel v2 - autonomous, fetches its own data */}
           {!timeMachineActive && <ForecastPanel hours={168} autoRefresh={true} />}
+          {!timeMachineActive && <IndicatorsPanel />}
         </div>
       </div>
 
