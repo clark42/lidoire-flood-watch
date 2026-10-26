@@ -1,6 +1,6 @@
 // Sections of the Dashboard, in reading order (redesign spec, section 2):
 // decide (5 s), understand why (30 s), then explore. Sections still to
-// come (flood plan, analogs, 30-day GloFAS) are added with their panels.
+// come (analogs, 30-day GloFAS) are added with their panels.
 
 export interface DashboardSectionDef {
   id: string
@@ -34,9 +34,17 @@ export const DASHBOARD_SECTIONS = [
   },
   {
     id: 'replay',
-    label: 'Replay',
-    title: 'Revoir une date',
-    description: 'TimeMachine : le tableau de bord tel qu’il était à une date passée ou lors d’une crue.',
+    label: 'Coupe & replay',
+    title: 'De la confluence au moulin',
+    description:
+      'Profil en long de la Lidoire en m NGF : jusqu’où remonte la Dordogne. Rejouez 10 jours ou une crue, les séries défilent ensemble.',
+  },
+  {
+    id: 'plan',
+    label: 'Plan des crues',
+    title: 'Plan des crues',
+    description:
+      'Chaque épisode labellisé selon ses deux moteurs : le débit de l’Eyraud (ruissellement, analogue de la Lidoire) et le niveau de Pessac (remous). Le point du jour et sa trace.',
   },
   {
     id: 'carte',
