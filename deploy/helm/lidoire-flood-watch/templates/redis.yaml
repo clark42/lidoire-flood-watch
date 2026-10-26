@@ -1,0 +1,90 @@
+{{- $c := .Values.redis -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "redis") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "redis") | nindent 4 }}
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+# Cache only: no persistence (RDB/AOF disabled), working dir on an emptyDir.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "redis") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "redis") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lfw.labels" (dict "ctx" $ "component" "redis") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        {{- include "lfw.podSecurityContext" $c.securityContext | nindent 8 }}
+      {{- include "lfw.podScheduling" $ | nindent 6 }}
+      containers:
+        - name: redis
+          image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          securityContext:
+            {{- include "lfw.containerSecurityContext" $ | nindent 12 }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfw.generatedSecret" $ }}
+                  key: REDIS_PASSWORD
+          # The password goes to a private config file (not to the process
+          # arguments, so it does not show up in ps).
+          command:
+            - sh
+            - -c
+            - |
+              umask 077
+              printf 'requirepass "%s"\n' "$REDIS_PASSWORD" > /tmp/redis.conf
+              exec redis-server /tmp/redis.conf \
+                --save "" --appendonly no \
+                --maxmemory {{ $c.maxmemory }} --maxmemory-policy allkeys-lru
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

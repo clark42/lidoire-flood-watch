@@ -1,0 +1,75 @@
+{{- $c := .Values.frontend -}}
+# Fixed ClusterIP announced on the headscale tailnet (subnet router 10.32.0.0/20).
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "frontend") | nindent 4 }}
+spec:
+  type: ClusterIP
+  {{- with $c.service.clusterIP }}
+  clusterIP: {{ . }}
+  {{- end }}
+  selector:
+    {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "frontend") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $c.service.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "frontend") | nindent 4 }}
+spec:
+  replicas: {{ $c.replicas }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "frontend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lfw.labels" (dict "ctx" $ "component" "frontend") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        {{- include "lfw.podSecurityContext" $c.securityContext | nindent 8 }}
+      {{- include "lfw.podScheduling" $ | nindent 6 }}
+      containers:
+        - name: frontend
+          image: {{ include "lfw.appImage" (dict "ctx" $ "repository" $c.image.repository) }}
+          imagePullPolicy: {{ include "lfw.appImagePullPolicy" $ }}
+          securityContext:
+            {{- include "lfw.containerSecurityContext" $ | nindent 12 }}
+          env:
+            - name: NGINX_ENTRYPOINT_QUIET_LOGS
+              value: "1"
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /index.html
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /index.html
+              port: http
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            # pid file and proxy/client temp paths of nginx-unprivileged
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

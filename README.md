@@ -310,6 +310,48 @@ Avant le premier `docker compose up --build` avec cette version :
    ```
 3. Le frontend (nginx-unprivileged) ecoute sur 8080 dans le conteneur, publie sur 3100 : garder `Dockerfile`, `nginx.conf` et le mapping `3100:8080` coherents.
 
+## Deploiement Kubernetes
+
+Chart Helm `deploy/helm/lidoire-flood-watch/` pour le cluster Scaleway Kapsule `sharedhosting` (contexte `admin@sharedhosting-production`). Images publiees sur GHCR par `.github/workflows/images.yml` (`ghcr.io/clark42/lidoire-flood-watch-{backend,frontend}`, tags `sha-<7>`, `main`, semver).
+
+Prerequis :
+- stack Terraform `11-lidoire` appliquee : namespace `lidoire` (PSS `restricted`), NetworkPolicies, secrets Scaleway Secret Manager `lidoire-generated`, `lidoire-external-apis` (vide), `lidoire-backup-s3` et bucket de sauvegarde ;
+- images publiees pour le tag deploye (workflow `images` vert sur `main`).
+
+```bash
+helm upgrade --install lidoire deploy/helm/lidoire-flood-watch -n lidoire \
+  --set image.tag=sha-$(git rev-parse --short=7 HEAD) \
+  --kube-context admin@sharedhosting-production
+kubectl get externalsecret,pods,pvc -n lidoire --context=admin@sharedhosting-production
+```
+
+- Le chart ne cree ni le namespace ni les NetworkPolicies. Secrets via External Secrets (`ClusterSecretStore` `scaleway-secret-manager`) : aucun secret dans les values ni dans les manifests ; `DATABASE_URL`/`REDIS_URL` sont assembles par le template ESO (Secret `lidoire-backend`).
+- Backend : 1 replique, strategie `Recreate` (APScheduler embarque, sinon collectes en double). Postgres, InfluxDB : StatefulSets sur `sbs-default-retain` (5 Gi, 10 Gi), `/app/data` du backend : PVC 1 Gi. Redis : cache sans persistance.
+- Cles d'API externes (Netatmo, Infoclimat, SHOM...) : ajouter une version JSON au secret `lidoire-external-apis`, puis `--set externalApis.enabled=true`.
+- Acces : `http://lidoire.ts.kamorion.cloud` via le tailnet headscale (Service `frontend`, ClusterIP fixe `10.32.0.100`). Pas d'Ingress par defaut (`ingress.enabled`).
+
+Reconstitution des donnees apres une installation neuve (InfluxDB vide) :
+```bash
+API_KEY=$(kubectl get secret lidoire-backend -n lidoire -o jsonpath='{.data.API_KEY}' --context=admin@sharedhosting-production | base64 -d)
+curl -X POST -H "X-API-Key: $API_KEY" "http://lidoire.ts.kamorion.cloud/api/episodes/backfill?start_date=2022-11-01&end_date=$(date +%F)"
+curl http://lidoire.ts.kamorion.cloud/api/episodes/backfill/status
+```
+
+Sauvegarde : CronJob `backup` quotidien (03:30 Europe/Paris) : `pg_dump` + `influx backup` vers `s3://<BUCKET>/lidoire-flood-watch/<horodatage UTC>/`, expiration a 30 jours par la regle de cycle de vie du bucket (la cle de sauvegarde n'a pas le droit de supprimer, `backup.retentionDays` reste a 0). Lancement manuel : `kubectl create job --from=cronjob/backup backup-manual -n lidoire --context=admin@sharedhosting-production`.
+
+Restauration (telecharger d'abord `postgres.dump` et le dossier `influxdb/` d'une sauvegarde dans `./restore`, avec les identifiants du secret `lidoire-backup-s3`) :
+```bash
+kubectl scale deploy/backend --replicas=0 -n lidoire --context=admin@sharedhosting-production
+# PostgreSQL
+kubectl exec -i postgres-0 -n lidoire --context=admin@sharedhosting-production -- \
+  pg_restore -U postgres -d lidoire_flood --clean --if-exists --no-owner < restore/postgres.dump
+# InfluxDB (--full : remplace toutes les donnees et metadonnees)
+kubectl cp restore/influxdb lidoire/influxdb-0:/tmp/restore --context=admin@sharedhosting-production
+kubectl exec influxdb-0 -n lidoire --context=admin@sharedhosting-production -- \
+  sh -c 'influx restore /tmp/restore --full --host http://127.0.0.1:8086 --token "$DOCKER_INFLUXDB_INIT_ADMIN_TOKEN" && rm -rf /tmp/restore'
+kubectl scale deploy/backend --replicas=1 -n lidoire --context=admin@sharedhosting-production
+```
+
 ## API Endpoints
 
 Toutes les routes sont sous `/api`. Les methodes d'ecriture exigent `X-API-Key` quand `API_KEY` est defini (y compris les POST d'analyse en lecture seule).

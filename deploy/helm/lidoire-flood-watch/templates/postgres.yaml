@@ -1,0 +1,123 @@
+{{- $c := .Values.postgres -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "postgres") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "postgres") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+# Governing (headless) Service of the StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-headless
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "postgres") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "postgres") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "postgres") | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: postgres-headless
+  selector:
+    matchLabels:
+      {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "postgres") | nindent 6 }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  template:
+    metadata:
+      labels:
+        {{- include "lfw.labels" (dict "ctx" $ "component" "postgres") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        {{- include "lfw.podSecurityContext" $c.securityContext | nindent 8 }}
+      {{- include "lfw.podScheduling" $ | nindent 6 }}
+      containers:
+        - name: postgres
+          image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          securityContext:
+            {{- include "lfw.containerSecurityContext" $ | nindent 12 }}
+          env:
+            - name: POSTGRES_USER
+              value: {{ $c.user | quote }}
+            - name: POSTGRES_DB
+              value: {{ $c.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfw.generatedSecret" $ }}
+                  key: POSTGRES_PASSWORD
+            # Sub-directory: the volume root holds lost+found, initdb wants an empty dir
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          startupProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", 'pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"']
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: run
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "postgres") | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ $c.persistence.storageClass }}
+        resources:
+          requests:
+            storage: {{ $c.persistence.size }}

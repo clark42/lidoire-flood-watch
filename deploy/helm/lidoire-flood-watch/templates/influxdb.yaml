@@ -1,0 +1,138 @@
+{{- $c := .Values.influxdb -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "influxdb") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "influxdb") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8086
+      targetPort: http
+---
+# Governing (headless) Service of the StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb-headless
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "influxdb") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "influxdb") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8086
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: influxdb
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "influxdb") | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: influxdb-headless
+  selector:
+    matchLabels:
+      {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "influxdb") | nindent 6 }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  template:
+    metadata:
+      labels:
+        {{- include "lfw.labels" (dict "ctx" $ "component" "influxdb") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        {{- include "lfw.podSecurityContext" $c.securityContext | nindent 8 }}
+      {{- include "lfw.podScheduling" $ | nindent 6 }}
+      containers:
+        - name: influxdb
+          image: "{{ $c.image.repository }}:{{ $c.image.tag }}"
+          imagePullPolicy: {{ $c.image.pullPolicy }}
+          securityContext:
+            {{- include "lfw.containerSecurityContext" $ | nindent 12 }}
+          env:
+            # DOCKER_INFLUXDB_INIT_* are only used on the very first start
+            # (no influxd.bolt in the volume yet)
+            - name: DOCKER_INFLUXDB_INIT_MODE
+              value: setup
+            - name: DOCKER_INFLUXDB_INIT_USERNAME
+              value: {{ $c.adminUser | quote }}
+            - name: DOCKER_INFLUXDB_INIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfw.generatedSecret" $ }}
+                  key: INFLUXDB_ADMIN_PASSWORD
+            - name: DOCKER_INFLUXDB_INIT_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfw.generatedSecret" $ }}
+                  key: INFLUXDB_ADMIN_TOKEN
+            - name: DOCKER_INFLUXDB_INIT_ORG
+              value: {{ $c.org | quote }}
+            - name: DOCKER_INFLUXDB_INIT_BUCKET
+              value: {{ $c.bucket | quote }}
+            - name: INFLUXD_REPORTING_DISABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8086
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 120
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/influxdb2
+            # Writable config dir (CLI configs written by the setup wrapper)
+            - name: config
+              mountPath: /etc/influxdb2
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          emptyDir:
+            sizeLimit: 16Mi
+        # Also used as scratch space to restore a backup (influx restore)
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "influxdb") | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ $c.persistence.storageClass }}
+        resources:
+          requests:
+            storage: {{ $c.persistence.size }}
