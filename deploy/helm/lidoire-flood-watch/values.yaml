@@ -97,7 +97,11 @@ backend:
     requests:
       cpu: 100m
       memory: 384Mi
+    # Explicit CPU limit everywhere: the namespace LimitRange (stack
+    # 11-lidoire) defaults a missing one to 200m, and the ResourceQuota caps
+    # the sum of limits at 3 CPU (backup Job included).
     limits:
+      cpu: "1"
       memory: 1Gi
 
 # -----------------------------------------------------------------------------
@@ -121,6 +125,7 @@ frontend:
       cpu: 10m
       memory: 32Mi
     limits:
+      cpu: 100m
       memory: 128Mi
 
 # Optional public exposure (disabled: the dashboard is tailnet-only). When
@@ -156,6 +161,7 @@ postgres:
       cpu: 50m
       memory: 128Mi
     limits:
+      cpu: 500m
       memory: 512Mi
 
 # -----------------------------------------------------------------------------
@@ -184,6 +190,7 @@ influxdb:
       cpu: 100m
       memory: 384Mi
     limits:
+      cpu: 800m
       memory: 1Gi
 
 # -----------------------------------------------------------------------------
@@ -205,6 +212,7 @@ redis:
       cpu: 20m
       memory: 32Mi
     limits:
+      cpu: 100m
       memory: 160Mi
 
 # -----------------------------------------------------------------------------
@@ -218,9 +226,10 @@ backup:
   remoteKey: "name:lidoire-backup-s3"
   # Objects land in s3://<BUCKET>/<prefix>/<UTC timestamp>/
   prefix: lidoire-flood-watch
-  # Delete backups older than N days (0 = keep everything, e.g. when a bucket
-  # lifecycle rule already handles expiry).
-  retentionDays: 30
+  # Delete backups older than N days (0 = never delete from the Job). Keep 0 on
+  # sharedhosting: the bucket lifecycle rule expires objects after 30 days and
+  # the lidoire-backup key has no delete permission (stack 11-lidoire).
+  retentionDays: 0
   # Size limit of the scratch emptyDir holding the dumps before upload
   scratchSizeLimit: 2Gi
   activeDeadlineSeconds: 3600
@@ -240,4 +249,5 @@ backup:
       cpu: 50m
       memory: 64Mi
     limits:
+      cpu: 250m
       memory: 256Mi

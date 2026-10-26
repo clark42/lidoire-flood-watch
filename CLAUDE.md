@@ -316,7 +316,7 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 - PSS restricted partout, rootfs en lecture seule + emptyDir : uid 10001 (backend), 101 (nginx), 70 (postgres, `PGDATA` en sous-dossier), 1000 (influxdb, entrypoint non root), 999/1000 (redis).
 - Acces `http://lidoire.ts.kamorion.cloud` via tailnet (Service `frontend` ClusterIP fixe `10.32.0.100`) ; Ingress optionnel desactive.
 - Installation neuve : reconstituer via `POST /api/episodes/backfill?start_date=2022-11-01&end_date=<aujourd'hui>` avec `X-API-Key` (Secret `lidoire-backend`, cle `API_KEY`).
-- Sauvegarde : CronJob `backup` (pg_dump + `influx backup`, upload rclone vers S3 Scaleway, retention `backup.retentionDays`). Restauration (`pg_restore`, `influx restore --full`) : voir README.
+- Sauvegarde : CronJob `backup` (pg_dump + `influx backup`, upload rclone vers S3 Scaleway, expiration a 30 jours par la regle de cycle de vie du bucket, le Job ne supprime rien : `backup.retentionDays: 0`). Restauration (`pg_restore`, `influx restore --full`) : voir README.
 
 ## Securite
 

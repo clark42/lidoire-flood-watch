@@ -337,7 +337,7 @@ curl -X POST -H "X-API-Key: $API_KEY" "http://lidoire.ts.kamorion.cloud/api/epis
 curl http://lidoire.ts.kamorion.cloud/api/episodes/backfill/status
 ```
 
-Sauvegarde : CronJob `backup` quotidien (03:30 Europe/Paris) : `pg_dump` + `influx backup` vers `s3://<BUCKET>/lidoire-flood-watch/<horodatage UTC>/`, retention 30 jours (`backup.*`). Lancement manuel : `kubectl create job --from=cronjob/backup backup-manual -n lidoire --context=admin@sharedhosting-production`.
+Sauvegarde : CronJob `backup` quotidien (03:30 Europe/Paris) : `pg_dump` + `influx backup` vers `s3://<BUCKET>/lidoire-flood-watch/<horodatage UTC>/`, expiration a 30 jours par la regle de cycle de vie du bucket (la cle de sauvegarde n'a pas le droit de supprimer, `backup.retentionDays` reste a 0). Lancement manuel : `kubectl create job --from=cronjob/backup backup-manual -n lidoire --context=admin@sharedhosting-production`.
 
 Restauration (telecharger d'abord `postgres.dump` et le dossier `influxdb/` d'une sauvegarde dans `./restore`, avec les identifiants du secret `lidoire-backup-s3`) :
 ```bash
