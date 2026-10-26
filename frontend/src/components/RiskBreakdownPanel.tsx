@@ -254,7 +254,7 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
           </div>
 
           {/* Factors table */}
-          <div className="p-4">
+          <div className="p-4 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-gray-500 text-xs uppercase">

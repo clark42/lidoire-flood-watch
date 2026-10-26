@@ -9,7 +9,6 @@ import {
   Clock,
   AlertTriangle,
   RefreshCw,
-  Activity,
   CloudRain,
 } from 'lucide-react'
 import {
@@ -24,7 +23,6 @@ import {
 } from '../api'
 import type {
   RealtimeData,
-  RiskLevel,
   NetatmoData,
   InfoclimatData,
   SystemStatus,
@@ -32,36 +30,41 @@ import type {
   FloodEpisode,
   UnifiedTimelineData,
 } from '../types'
-import RiskGauge from '../components/RiskGauge'
 import DataCard from '../components/DataCard'
 import StationsPanel from '../components/StationsPanel'
 import RainfallPanel from '../components/RainfallPanel'
-import ForecastPanel from '../components/ForecastPanel'
-import EnsemblePanel from '../components/EnsemblePanel'
 import DataSourcesStatus from '../components/DataSourcesStatus'
 import RiskBreakdownPanel from '../components/RiskBreakdownPanel'
-import BasinRainfallGauge from '../components/BasinRainfallGauge'
-import MetricSparkline from '../components/MetricSparkline'
 import TimeMachineBanner from '../components/TimeMachineBanner'
 import SoilConditionsPanel from '../components/SoilConditionsPanel'
-import NowcastRainChart from '../components/NowcastRainChart'
-import OutlookPanel from '../components/OutlookPanel'
 import VigilanceBadges from '../components/VigilanceBadges'
 import ObservationQuickForm from '../components/ObservationQuickForm'
 import IndicatorsPanel from '../components/IndicatorsPanel'
 import InfoTooltip from '../components/InfoTooltip'
+import VerdictHero from '../components/VerdictHero'
+import ActionChecklist from '../components/ActionChecklist'
+import SectionNav from '../components/SectionNav'
+import DashboardSection from '../components/DashboardSection'
+import LevelMeter from '../components/ui/LevelMeter'
+import { ValueTagLegend } from '../components/ui/ValueTag'
+import { useRiskOutlook } from '../hooks/useRiskOutlook'
+import { DASHBOARD_SECTIONS } from './dashboardSections'
 import { TOOLTIPS } from '../tooltipContent'
 import { formatAge, formatParis, parseApiDate } from '../utils/time'
-import { riskLevelLabel } from '../utils/format'
+import { formatNumber } from '../utils/format'
 
 // leaflet is only needed by the map: separate chunk, the rest renders first
 const HydroMap = lazy(() => import('../components/HydroMap'))
+// recharts (~100 kB gzip) is only needed below the verdict: the panels that
+// draw charts load in a separate chunk, after the decision is on screen
+const ForecastPanel = lazy(() => import('../components/ForecastPanel'))
+const EnsemblePanel = lazy(() => import('../components/EnsemblePanel'))
+const MetricSparkline = lazy(() => import('../components/MetricSparkline'))
+const NowcastRainChart = lazy(() => import('../components/NowcastRainChart'))
+const BasinRainfallGauge = lazy(() => import('../components/BasinRainfallGauge'))
 
-const RISK_BG_COLORS: Record<RiskLevel, string> = {
-  green: 'bg-green-50 border-green-200',
-  yellow: 'bg-yellow-50 border-yellow-200',
-  orange: 'bg-orange-50 border-orange-200',
-  red: 'bg-red-50 border-red-200',
+function PanelFallback({ height = 'h-40' }: { height?: string }) {
+  return <div className={`${height} w-full animate-pulse rounded-card bg-surface-2`} aria-hidden="true" />
 }
 
 function TendencyIcon({ tendency }: { tendency: string | null }) {
@@ -158,7 +161,6 @@ export default function Dashboard() {
   const [infoclimat, setInfoclimat] = useState<InfoclimatData | null>(null)
   const [sources, setSources] = useState<SystemStatus['sources'] | null>(null)
   const [selectedStation, setSelectedStation] = useState<string | null>(null)
-  const [breakdownExpanded, setBreakdownExpanded] = useState(false)
   const [loading, setLoading] = useState(true)
   // Error of the last /realtime fetch (null when it succeeded)
   const [error, setError] = useState<string | null>(null)
@@ -179,6 +181,9 @@ export default function Dashboard() {
   const [timeMachineError, setTimeMachineError] = useState<string | null>(null)
   // Id of the latest TimeMachine request (older responses are ignored)
   const timeMachineRequestRef = useRef(0)
+
+  // 6 / 24 / 72 h outlook (verdict and checklist), live mode only
+  const outlook = useRiskOutlook(!timeMachineActive)
 
   // Refs used by the polling loop (avoid stale closures and overlapping polls)
   const inFlightRef = useRef(false)
@@ -317,6 +322,8 @@ export default function Dashboard() {
     } else {
       timeMachineActiveRef.current = true
       setTimeMachineActive(true)
+      // The banner moves to the top of the page in TimeMachine mode
+      requestAnimationFrame(() => document.getElementById('maintenant')?.scrollIntoView())
     }
   }, [timeMachineActive, setSearchParams])
 
@@ -416,7 +423,6 @@ export default function Dashboard() {
 
   if (!data) return null
 
-  const riskLevel = data.risk.level
   const stations = data.stations?.stations || []
   const pessacStation = stations.find(s => s.station_id === PESSAC_STATION_ID)
 
@@ -431,88 +437,112 @@ export default function Dashboard() {
     error !== null || dataAgeMs === null || dataAgeMs > STALE_AFTER_MS
   )
 
+  const timeMachineBanner = (
+    <TimeMachineBanner
+      active={timeMachineActive}
+      onToggle={handleTimeMachineToggle}
+      selectedDate={timeMachineDate}
+      onDateChange={handleTimeMachineDateChange}
+      episodes={episodes}
+      loading={timeMachineLoading}
+    />
+  )
+  const alerts = data.alerts.filter(a => !a.includes('Netatmo') && !a.includes('Mode TimeMachine'))
+  const selected = stations.find((s) => s.station_id === selectedStation)
+
   return (
-    <div className="space-y-6">
-      {!timeMachineActive && <OutlookPanel />}
-      {/* Stale / fetch error banner (live mode only) */}
-      {isStale && (
-        <div
-          role="alert"
-          className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3"
-        >
-          <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-          <div className="flex-1 text-sm text-red-800">
-            <p className="font-medium">
-              Donnees non actualisees
-              {dataDate
-                ? ` — derniere mesure ${primaryName} ${formatAge(dataDate, now)}`
-                : ` — aucune mesure ${primaryName}`}
-            </p>
-            {staleStations.length > 0 && (
-              <p className="mt-1">Stations sans mesure depuis 3 h : {staleStations.join(', ')}</p>
-            )}
-            {error && (
-              <p className="mt-1">
-                Echec du chargement temps reel
-                {lastFailureAt ? ` (${formatParis(lastFailureAt, 'HH:mm:ss')})` : ''}
-                {' '}: {error}. Les valeurs affichees peuvent etre perimees.
-              </p>
-            )}
-          </div>
-          <button
-            onClick={() => fetchData()}
-            disabled={loading}
-            className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+    <div>
+      <SectionNav sections={DASHBOARD_SECTIONS} />
+
+      {/* 1. Decision: verdict, horizons, confidence, official vigilances */}
+      <DashboardSection id="maintenant" className="!pt-4">
+        {/* Stale / fetch error banner (live mode only) */}
+        {isStale && (
+          <div
+            role="alert"
+            className="bg-red-50 border border-red-200 rounded-lg p-4 flex flex-wrap items-start gap-3"
           >
-            Reessayer
-          </button>
-        </div>
-      )}
+            <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0 text-sm text-red-800">
+              <p className="font-medium">
+                Données non actualisées
+                {dataDate
+                  ? ` — dernière mesure ${primaryName} ${formatAge(dataDate, now)}`
+                  : ` — aucune mesure ${primaryName}`}
+              </p>
+              {staleStations.length > 0 && (
+                <p className="mt-1">Stations sans mesure depuis 3 h : {staleStations.join(', ')}</p>
+              )}
+              {error && (
+                <p className="mt-1">
+                  Échec du chargement temps réel
+                  {lastFailureAt ? ` (${formatParis(lastFailureAt, 'HH:mm:ss')})` : ''}
+                  {' '}: {error}. Les valeurs affichées peuvent être périmées.
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => fetchData()}
+              disabled={loading}
+              className="min-h-[44px] px-3 text-sm bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 sm:min-h-0 sm:py-1"
+            >
+              Réessayer
+            </button>
+          </div>
+        )}
 
-      {/* Secondary sources failures (non blocking) */}
-      {!timeMachineActive && failedSecondary.length > 0 && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-2 text-sm text-yellow-800 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-yellow-600 flex-shrink-0" />
-          <span>
-            Sources indisponibles : {failedSecondary.map(k => SECONDARY_SOURCE_LABELS[k]).join(', ')}
-          </span>
-        </div>
-      )}
+        {/* Secondary sources failures (non blocking) */}
+        {!timeMachineActive && failedSecondary.length > 0 && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-2 text-sm text-yellow-800 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-yellow-600 flex-shrink-0" />
+            <span>
+              Sources indisponibles : {failedSecondary.map(k => SECONDARY_SOURCE_LABELS[k]).join(', ')}
+            </span>
+          </div>
+        )}
 
-      {/* TimeMachine Banner */}
-      <TimeMachineBanner
-        active={timeMachineActive}
-        onToggle={handleTimeMachineToggle}
-        selectedDate={timeMachineDate}
-        onDateChange={handleTimeMachineDateChange}
-        episodes={episodes}
-        loading={timeMachineLoading}
-      />
-      {timeMachineActive && timeMachineError && (
-        <div role="alert" className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-sm text-red-800 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
-          <span>
-            Chargement TimeMachine impossible : {timeMachineError}. Les valeurs affichees
-            ne correspondent pas a la date choisie.
-          </span>
-        </div>
-      )}
+        {timeMachineActive ? (
+          <>
+            {timeMachineBanner}
+            {timeMachineError && (
+              <div role="alert" className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-sm text-red-800 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
+                <span>
+                  Chargement TimeMachine impossible : {timeMachineError}. Les valeurs affichées
+                  ne correspondent pas à la date choisie.
+                </span>
+              </div>
+            )}
+            {/* The outlook is live only: show the score of the chosen date */}
+            <div className="rounded-card border border-line bg-surface p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="eyebrow">Score à cette date</span>
+                <LevelMeter level={data.risk.level} className="text-[13px]" />
+              </div>
+              <p className="num mt-1 text-[40px] font-semibold leading-none">
+                {formatNumber(data.risk.score, 0)}
+                <span className="text-[0.5em] text-ink-3"> /100</span>
+              </p>
+              <p className="mt-2 text-ink-2">{data.risk.description}</p>
+            </div>
+          </>
+        ) : (
+          <VerdictHero
+            outlook={outlook.data}
+            loading={outlook.loading}
+            error={outlook.error}
+            onRetry={outlook.refresh}
+            current={{ score: data.risk.score, level: data.risk.level }}
+            sources={sources}
+            vigilance={<VigilanceBadges />}
+            now={new Date(now)}
+          />
+        )}
 
-      {/* Data Sources Status - Compact at top */}
-      <DataSourcesStatus
-        sources={sources}
-        nextHighTide={data.tide.next_high_tide?.timestamp}
-        now={now}
-        loading={loading}
-      />
-      <VigilanceBadges />
-
-      {/* Alerts */}
-      {data.alerts.length > 0 && (
-        <div className="space-y-2">
-          {data.alerts
-            .filter(a => !a.includes('Netatmo') && !a.includes('Mode TimeMachine'))
-            .map((alert, i) => (
+        {/* Alerts of the realtime model */}
+        {alerts.length > 0 && (
+          <div className="space-y-2">
+            {alerts.map((alert, i) => (
               <div
                 key={i}
                 className="bg-orange-50 border border-orange-200 rounded-lg p-4 flex items-center gap-3"
@@ -521,124 +551,232 @@ export default function Dashboard() {
                 <span className="text-orange-800">{alert}</span>
               </div>
             ))}
-        </div>
-      )}
-
-      {/* Risk Overview */}
-      <div className={`rounded-xl border-2 p-6 ${RISK_BG_COLORS[riskLevel]}`}>
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-medium text-gray-600">Niveau de risque actuel</h2>
-            <p className="text-3xl font-bold mt-2">{data.risk.description}</p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {data.risk.recommendations.map((rec, i) => (
-                <span
-                  key={i}
-                  className="px-3 py-1 bg-white/50 rounded-full text-sm"
-                >
-                  {rec}
-                </span>
-              ))}
-            </div>
           </div>
-          <RiskGauge
-            score={data.risk.score}
-            level={riskLevel}
-            onClick={() => setBreakdownExpanded(!breakdownExpanded)}
-            clickable
-          />
-        </div>
-      </div>
+        )}
 
-      {!timeMachineActive && <ObservationQuickForm />}
+        <ValueTagLegend />
+      </DashboardSection>
 
-      {/* Risk Breakdown Panel */}
-      <RiskBreakdownPanel risk={data.risk} defaultExpanded={breakdownExpanded} />
+      {/* 2. Why: measured drivers, hydrological indicators, score detail */}
+      <DashboardSection id="pourquoi">
+        <Suspense fallback={<PanelFallback height="h-28" />}>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <MetricSparkline
+              title="Dordogne"
+              value={pessacStation ? `${pessacStation.current_level.height_m.toFixed(2)} m` : '- m'}
+              subtitle={pessacStation ? `Pessac · ${pessacStation.tendency}` : 'Pessac indisponible'}
+              data={sparklineData.river}
+              color="#0891b2"
+              icon={<Waves className="w-4 h-4" />}
+            />
+            <MetricSparkline
+              title="Marée"
+              value={`Coef ${data.tide.current_coefficient || '-'}`}
+              subtitle={
+                data.tide.next_high_tide
+                  ? `PM ${formatParis(data.tide.next_high_tide.timestamp, 'HH:mm')} · hauteur 24 h`
+                  : undefined
+              }
+              data={sparklineData.tide}
+              color="#3b82f6"
+              icon={<Waves className="w-4 h-4" />}
+            />
+            <MetricSparkline
+              title="Pluie bassin"
+              value={`${(basinRainfall?.available
+                ? basinRainfall.weighted_average_24h_mm
+                : data.rainfall.last_24h_mm
+              ).toFixed(1)} mm`}
+              subtitle={basinRainfall?.available
+                ? `24h Netatmo Lidoire (${basinRainfall.stations_count} st.)`
+                : '24h modèle · Netatmo indisponible'}
+              data={sparklineData.rain}
+              color="#6366f1"
+              icon={<CloudRain className="w-4 h-4" />}
+            />
+          </div>
+        </Suspense>
+        {!timeMachineActive && <IndicatorsPanel />}
+        <RiskBreakdownPanel risk={data.risk} />
+      </DashboardSection>
 
-      {/* HydroMap - Full Width */}
-      <Suspense fallback={<div className="w-full h-[380px] rounded-xl shadow bg-gray-100 animate-pulse" />}>
-        <HydroMap
-          stations={stations}
-          netatmoStations={netatmo?.lidoire_stations}
-          infoclimatStations={infoclimat?.nearest_stations}
-          tide={data.tide}
-        />
-      </Suspense>
-
-      {/* Sparklines Row - 4 cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricSparkline
-          title="Dordogne"
-          value={pessacStation ? `${pessacStation.current_level.height_m.toFixed(2)} m` : '- m'}
-          subtitle={pessacStation ? `Pessac · ${pessacStation.tendency}` : 'Pessac indisponible'}
-          data={sparklineData.river}
-          color="#0891b2"
-          icon={<Waves className="w-4 h-4" />}
-        />
-        <MetricSparkline
-          title="Maree"
-          value={`Coef ${data.tide.current_coefficient || '-'}`}
-          subtitle={
-            data.tide.next_high_tide
-              ? `PM ${formatParis(data.tide.next_high_tide.timestamp, 'HH:mm')} · hauteur 24 h`
-              : undefined
-          }
-          data={sparklineData.tide}
-          color="#3b82f6"
-          icon={<Waves className="w-4 h-4" />}
-        />
-        <MetricSparkline
-          title="Pluie bassin"
-          value={`${(basinRainfall?.available
-            ? basinRainfall.weighted_average_24h_mm
-            : data.rainfall.last_24h_mm
-          ).toFixed(1)} mm`}
-          subtitle={basinRainfall?.available
-            ? `24h Netatmo Lidoire (${basinRainfall.stations_count} st.)`
-            : '24h modele · Netatmo indisponible'}
-          data={sparklineData.rain}
-          color="#6366f1"
-          icon={<CloudRain className="w-4 h-4" />}
-        />
-        <MetricSparkline
-          title="Risque"
-          value={`${data.risk.score.toFixed(0)}/100`}
-          subtitle={riskLevelLabel(data.risk.level)}
-          data={sparklineData.risk}
-          color={
-            data.risk.level === 'red'
-              ? '#ef4444'
-              : data.risk.level === 'orange'
-                ? '#f97316'
-                : data.risk.level === 'yellow'
-                  ? '#eab308'
-                  : '#22c55e'
-          }
-          icon={<Activity className="w-4 h-4" />}
-        />
-      </div>
-
-      {/* Main Grid - 2 columns on desktop */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left Column - Stations */}
-        <StationsPanel
-          stations={stations}
-          selectedStation={selectedStation}
-          onSelectStation={setSelectedStation}
-          loading={loading}
-        />
-
-        {/* Right Column - Basin Rainfall + Soil + Weather & Forecasts */}
-        <div className="space-y-6">
+      {/* 3. Next hours: forecast score, nowcast, ensembles */}
+      <DashboardSection id="prochaines-heures">
+        <Suspense fallback={<PanelFallback height="h-72" />}>
+          {!timeMachineActive && <ForecastPanel hours={168} autoRefresh={true} />}
           <NowcastRainChart data={data.nowcast_rain} />
+          {!timeMachineActive && <EnsemblePanel />}
+        </Suspense>
+      </DashboardSection>
 
-          <BasinRainfallGauge data={basinRainfall} loading={loading} />
+      {/* 4. Act: owner's checklist, field observation */}
+      <DashboardSection id="agir">
+        {timeMachineActive ? (
+          <p className="text-ink-2">Liste et relevé terrain disponibles en direct uniquement.</p>
+        ) : (
+          <div className="grid grid-cols-1 min-[960px]:grid-cols-2 gap-4">
+            {outlook.data ? (
+              <ActionChecklist checklist={outlook.data.checklist} now={new Date(now)} />
+            ) : (
+              <p className="text-ink-2">
+                {outlook.loading ? 'Chargement de la liste…' : 'Liste indisponible : prévision absente.'}
+              </p>
+            )}
+            <ObservationQuickForm />
+          </div>
+        )}
+      </DashboardSection>
 
-          <SoilConditionsPanel
-            soil={data.soil}
+      {/* 5. Replay (TimeMachine entry; the banner moves to the top once active) */}
+      <DashboardSection id="replay">
+        {timeMachineActive ? (
+          <p className="text-ink-2">
+            TimeMachine actif : le bandeau en haut de page permet de changer de date ou de revenir au direct.
+          </p>
+        ) : timeMachineBanner}
+      </DashboardSection>
+
+      {/* 6. Map and stations */}
+      <DashboardSection id="carte">
+        {/* isolate: Leaflet panes (z-index 400-1000) stay under the sticky section bar */}
+        <div className="isolate">
+          <Suspense fallback={<div className="w-full h-[380px] rounded-xl shadow bg-surface-2 animate-pulse" />}>
+            <HydroMap
+              stations={stations}
+              netatmoStations={netatmo?.lidoire_stations}
+              infoclimatStations={infoclimat?.nearest_stations}
+              tide={data.tide}
+            />
+          </Suspense>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <StationsPanel
+            stations={stations}
+            selectedStation={selectedStation}
+            onSelectStation={setSelectedStation}
             loading={loading}
           />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-4 content-start">
+            {/* Selected Station Level */}
+            <DataCard
+              title={selected?.station_name || 'Dordogne'}
+              icon={<TrendingUp className="w-5 h-5" />}
+              color="cyan"
+            >
+              {!selected ? (
+                <div className="text-gray-500">Sélectionnez une station</div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-end justify-between">
+                    <span className="text-gray-500">Niveau</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-2xl">
+                        {selected.current_level.height_m.toFixed(2)}
+                      </span>
+                      <span className="text-gray-500">m</span>
+                      <TendencyIcon tendency={selected.tendency} />
+                    </div>
+                  </div>
+                  <div className="text-sm text-gray-500 flex items-center gap-1">
+                    {selected.tendency === 'hausse' && (
+                      <span className="text-red-500">
+                        +{selected.rate_cm_per_hour.toFixed(1)} cm/h
+                      </span>
+                    )}
+                    {selected.tendency === 'baisse' && (
+                      <span className="text-green-500">
+                        {selected.rate_cm_per_hour.toFixed(1)} cm/h
+                      </span>
+                    )}
+                    {selected.tendency === 'stable' && 'Stable'}
+                    {selected.tendency !== 'stable' && (
+                      <InfoTooltip {...TOOLTIPS.rateOfRise} />
+                    )}
+                  </div>
+                </div>
+              )}
+            </DataCard>
 
+            {/* Tide */}
+            <DataCard
+              title="Marée"
+              icon={<Waves className="w-5 h-5" />}
+              color="blue"
+            >
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-gray-500 flex items-center gap-1">
+                    Coefficient
+                    <InfoTooltip {...TOOLTIPS.tideCoefficient} />
+                  </span>
+                  <span className="font-bold text-lg">
+                    {data.tide.current_coefficient || '-'}
+                  </span>
+                </div>
+                {data.tide.next_high_tide && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500 flex items-center gap-1">
+                      Prochaine PM
+                      <InfoTooltip {...TOOLTIPS.tidePhaseBmPm} />
+                    </span>
+                    <span>{formatParis(data.tide.next_high_tide.timestamp, 'HH:mm')}</span>
+                  </div>
+                )}
+                {data.tide.next_low_tide && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500 flex items-center gap-1">
+                      Prochaine BM
+                    </span>
+                    <span>{formatParis(data.tide.next_low_tide.timestamp, 'HH:mm')}</span>
+                  </div>
+                )}
+              </div>
+            </DataCard>
+          </div>
+        </div>
+      </DashboardSection>
+
+      {/* 7. Rain and soil */}
+      <DashboardSection id="pluie-sol">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="space-y-6 min-w-0">
+            <Suspense fallback={<PanelFallback />}>
+              <BasinRainfallGauge data={basinRainfall} loading={loading} />
+            </Suspense>
+            {/* Rainfall - aggregated max across sources (used by risk model) */}
+            <DataCard
+              title="Pluie (modèle)"
+              icon={<Droplets className="w-5 h-5" />}
+              color="indigo"
+            >
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">1h</span>
+                  <span className="font-bold">
+                    {data.rainfall.last_hour_mm.toFixed(1)} mm
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">24h</span>
+                  <span className="font-bold">
+                    {data.rainfall.last_24h_mm.toFixed(1)} mm
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">72h</span>
+                  <span>{data.rainfall.last_72h_mm.toFixed(1)} mm</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">7j</span>
+                  <span>{data.rainfall.last_7d_mm?.toFixed(1) || '0.0'} mm</span>
+                </div>
+                <div className="text-xs text-gray-500 pt-1 border-t">
+                  Max(Open-Meteo, Netatmo, Infoclimat)
+                </div>
+              </div>
+            </DataCard>
+            <SoilConditionsPanel soil={data.soil} loading={loading} />
+          </div>
           <RainfallPanel
             netatmo={netatmo}
             infoclimat={infoclimat ? {
@@ -653,162 +791,42 @@ export default function Dashboard() {
             }}
             loading={loading}
           />
-
-          {/* ForecastPanel v2 - autonomous, fetches its own data */}
-          {!timeMachineActive && <ForecastPanel hours={168} autoRefresh={true} />}
-          {!timeMachineActive && <IndicatorsPanel />}
-          {!timeMachineActive && <EnsemblePanel />}
         </div>
-      </div>
+      </DashboardSection>
 
-      {/* Quick Data Cards - Secondary info */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Tide */}
-        <DataCard
-          title="Maree"
-          icon={<Waves className="w-5 h-5" />}
-          color="blue"
-        >
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <span className="text-gray-500 flex items-center gap-1">
-                Coefficient
-                <InfoTooltip {...TOOLTIPS.tideCoefficient} />
-              </span>
-              <span className="font-bold text-lg">
-                {data.tide.current_coefficient || '-'}
-              </span>
-            </div>
-            {data.tide.next_high_tide && (
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500 flex items-center gap-1">
-                  Prochaine PM
-                  <InfoTooltip {...TOOLTIPS.tidePhaseBmPm} />
-                </span>
-                <span>{formatParis(data.tide.next_high_tide.timestamp, 'HH:mm')}</span>
-              </div>
-            )}
-            {data.tide.next_low_tide && (
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500 flex items-center gap-1">
-                  Prochaine BM
-                </span>
-                <span>{formatParis(data.tide.next_low_tide.timestamp, 'HH:mm')}</span>
-              </div>
-            )}
-          </div>
-        </DataCard>
-
-        {/* Selected Station Level */}
-        <DataCard
-          title={
-            stations.find((s) => s.station_id === selectedStation)?.station_name ||
-            'Dordogne'
-          }
-          icon={<TrendingUp className="w-5 h-5" />}
-          color="cyan"
-        >
-          {(() => {
-            const station = stations.find((s) => s.station_id === selectedStation)
-            if (!station) {
-              return (
-                <div className="text-gray-500">
-                  Selectionnez une station
-                </div>
-              )
-            }
-            return (
-              <div className="space-y-2">
-                <div className="flex items-end justify-between">
-                  <span className="text-gray-500">Niveau</span>
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-2xl">
-                      {station.current_level.height_m.toFixed(2)}
-                    </span>
-                    <span className="text-gray-500">m</span>
-                    <TendencyIcon tendency={station.tendency} />
-                  </div>
-                </div>
-                <div className="text-sm text-gray-500 flex items-center gap-1">
-                  {station.tendency === 'hausse' && (
-                    <span className="text-red-500">
-                      +{station.rate_cm_per_hour.toFixed(1)} cm/h
-                    </span>
-                  )}
-                  {station.tendency === 'baisse' && (
-                    <span className="text-green-500">
-                      {station.rate_cm_per_hour.toFixed(1)} cm/h
-                    </span>
-                  )}
-                  {station.tendency === 'stable' && 'Stable'}
-                  {station.tendency !== 'stable' && (
-                    <InfoTooltip {...TOOLTIPS.rateOfRise} />
-                  )}
-                </div>
-              </div>
-            )
-          })()}
-        </DataCard>
-
-        {/* Rainfall - aggregated max across sources (used by risk model) */}
-        <DataCard
-          title="Pluie (modele)"
-          icon={<Droplets className="w-5 h-5" />}
-          color="indigo"
-        >
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <span className="text-gray-500">1h</span>
-              <span className="font-bold">
-                {data.rainfall.last_hour_mm.toFixed(1)} mm
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-500">24h</span>
-              <span className="font-bold">
-                {data.rainfall.last_24h_mm.toFixed(1)} mm
-              </span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500">72h</span>
-              <span>{data.rainfall.last_72h_mm.toFixed(1)} mm</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500">7j</span>
-              <span>{data.rainfall.last_7d_mm?.toFixed(1) || '0.0'} mm</span>
-            </div>
-            <div className="text-xs text-gray-400 pt-1 border-t">
-              Max(Open-Meteo, Netatmo, Infoclimat)
-            </div>
-          </div>
-        </DataCard>
-      </div>
-
-      {/* Last Update */}
-      <div className="flex items-center justify-between text-sm text-gray-500">
-        <div className="flex items-center gap-2">
-          <Clock className="w-4 h-4" />
-          <span>
-            {timeMachineActive && timeMachineDate
-              ? `Mode TimeMachine - ${formatParis(timeMachineDate, 'dd/MM/yyyy HH:mm')}`
-              : `Derniere mesure ${primaryName} : ${dataDate ? `${formatParis(dataDate, 'dd/MM/yyyy HH:mm:ss')} (${formatAge(dataDate, now)})` : '-'}`}
-          </span>
-          {isStale && <span className="text-red-600 font-medium">perimees</span>}
-          {!isStale && staleStations.length > 0 && (
-            <span className="text-orange-600" title="Sans mesure depuis 3 h">
-              perimees : {staleStations.join(', ')}
+      {/* 8. Reliability: source freshness, last update */}
+      <DashboardSection id="fiabilite">
+        <DataSourcesStatus
+          sources={sources}
+          nextHighTide={data.tide.next_high_tide?.timestamp}
+          now={now}
+          loading={loading}
+        />
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-ink-3">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <Clock className="w-4 h-4 flex-none" aria-hidden="true" />
+            <span className="font-mono text-[12.5px]">
+              {timeMachineActive && timeMachineDate
+                ? `Mode TimeMachine - ${formatParis(timeMachineDate, 'dd/MM/yyyy HH:mm')}`
+                : `Dernière mesure ${primaryName} : ${dataDate ? `${formatParis(dataDate, 'dd/MM/yyyy HH:mm:ss')} (${formatAge(dataDate, now)})` : '-'}`}
             </span>
-          )}
+            {isStale && <span className="text-red-600 font-medium">périmées</span>}
+            {!isStale && staleStations.length > 0 && (
+              <span className="text-orange-600" title="Sans mesure depuis 3 h">
+                périmées : {staleStations.join(', ')}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={() => fetchData()}
+            disabled={loading || timeMachineActive}
+            className="flex min-h-[44px] items-center gap-2 px-3 rounded hover:bg-surface-2 disabled:opacity-50 sm:min-h-0 sm:py-1"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} aria-hidden="true" />
+            Actualiser
+          </button>
         </div>
-        <button
-          onClick={() => fetchData()}
-          disabled={loading || timeMachineActive}
-          className="flex items-center gap-2 px-3 py-1 rounded hover:bg-gray-100 disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Actualiser
-        </button>
-      </div>
+      </DashboardSection>
     </div>
   )
 }

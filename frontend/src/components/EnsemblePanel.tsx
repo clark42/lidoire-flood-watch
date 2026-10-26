@@ -266,7 +266,7 @@ export default function EnsemblePanel() {
         {loading && !forecast && <div className="h-24 bg-gray-100 rounded animate-pulse" />}
 
         {rain && (
-          <div className="space-y-3">
+          <div className="space-y-3 overflow-x-auto">
             {rain.available && rain.horizons && rain.thresholds ? (
               ['24h', '72h'].map((w) => (
                 <RainTable
