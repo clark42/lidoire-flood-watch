@@ -63,7 +63,7 @@ app/
 ├── db.py                # Moteur SQLAlchemy async (PostgreSQL)
 ├── api/                 # Routes FastAPI (toutes sous /api)
 │   ├── deps.py          # require_api_key_for_writes : X-API-Key sur POST/PUT/PATCH/DELETE
-│   ├── status.py        # /api/status (checks reels Influx/Postgres/Redis), /api/health
+│   ├── status.py        # /api/status (checks reels Influx/Postgres/Redis + fraicheur des sources), /api/health
 │   ├── realtime.py      # /api/realtime + TimeMachine /at
 │   ├── timeline.py      # /api/timeline/sources, /api/timeline/unified
 │   ├── episodes.py      # /api/episodes : CRUD, labels, confirm, analyse, backfill, detection
@@ -246,7 +246,10 @@ GET /api/episodes/station-extremes?start_date=2020-01-01&end_date=2024-12-31
 POST /api/episodes/backfill?start_date=2022-11-01&end_date=2026-01-28
 
 # Detection automatique (threshold 0-100, defaut 35 ; retenu si >= 6 h au-dessus de 35 ou >= 2 h au-dessus de 55)
-POST /api/episodes/detect?start_date=2022-11-01&end_date=2025-12-31&threshold=45
+# Toute la periode en un appel : lecture Influx par fenetres de 30 jours (DETECTION_CHUNK_DAYS), etat des episodes
+# reporte d'une fenetre a l'autre => memoire bornee, resultat identique a une passe unique. Seuls les points
+# risk_score model_version=3.3 (et anciens sans tag) sont lus, jamais les series shadow (3.3-gate).
+POST /api/episodes/detect?start_date=2022-11-01&end_date=2026-10-26&threshold=45
 ```
 
 Tous les POST/PUT/DELETE ci-dessus exigent `X-API-Key` quand `API_KEY` est defini.
@@ -329,7 +332,7 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 ### Contrats d'API a respecter
 
 - `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`.
-- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`.
+- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score v3.3 temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives. `services.collectors` reste une declaration statique (compatibilite).
 - `/api/episodes/confirm/{id}` : `outcome` (`flooded`, `false_positive`, `near_miss`, `unknown`) ou ancien `was_flooded` ; remplace l'issue precedente.
 
 ## Variables d'environnement
