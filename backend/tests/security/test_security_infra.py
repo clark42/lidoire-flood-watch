@@ -129,3 +129,13 @@ def test_security_nginx_headers_and_timeouts():
     assert "proxy_read_timeout 180s" in conf
     assert "location ^~ /api/" in conf
     assert "server_tokens off" in conf
+
+
+def test_security_nginx_upload_limit_only_on_observations():
+    conf = NGINX.read_text()
+    # 1 MB everywhere, 9 MB (8 MB photo + form) on the observation upload only
+    assert "    client_max_body_size 1m;" in conf
+    block = conf.split("location = /api/observations {", 1)[1].split("}", 1)[0]
+    assert "client_max_body_size 9m;" in block
+    assert "proxy_pass http://backend:8000;" in block
+    assert conf.count("client_max_body_size") == 2

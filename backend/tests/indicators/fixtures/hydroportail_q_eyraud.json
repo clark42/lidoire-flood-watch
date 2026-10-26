@@ -1,0 +1,50 @@
+{
+ "series": {
+  "code": "P540401002",
+  "metric": "Q",
+  "timeStep": null,
+  "statuses": "most_valid",
+  "rolling": false,
+  "unit": "l",
+  "title": "Débit instantané - Données les plus valides de l'entité - P540 4010 02 - Le bras du ruisseau l'Eyraud à la Force - La Farganière - du 20/02/2024 00:00 au 28/02/2024 23:59 (TU)",
+  "baseFilename": "P540401002_Q",
+  "data": [
+   {
+    "v": 20100,
+    "t": "2024-02-25T15:00:00Z",
+    "md": null,
+    "s": 16,
+    "q": 20,
+    "m": 8,
+    "c": 0
+   },
+   {
+    "v": 20500,
+    "t": "2024-02-25T15:30:00Z",
+    "md": null,
+    "s": 16,
+    "q": 20,
+    "m": 8,
+    "c": 0
+   },
+   {
+    "v": 940,
+    "t": "2024-02-20T00:10:00Z",
+    "md": null,
+    "s": 16,
+    "q": 20,
+    "m": 8,
+    "c": 0
+   },
+   {
+    "v": 917,
+    "t": "2024-02-20T00:40:00Z",
+    "md": null,
+    "s": 16,
+    "q": 20,
+    "m": 8,
+    "c": 0
+   }
+  ]
+ }
+}

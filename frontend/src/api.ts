@@ -10,7 +10,6 @@ import type {
   MultiStationData,
   NetatmoData,
   InfoclimatData,
-  DataSource,
   ForecastData,
   AvailableSources,
   UnifiedTimelineData,
@@ -18,6 +17,13 @@ import type {
   RiskSimulationResult,
   SystemStatus,
   SourcesDetail,
+  RiskOutlook,
+  ForecastSkill,
+  VigilanceStatus,
+  Observation,
+  ObservationInput,
+  EpisodeObservations,
+  IndicatorsData,
   EnsembleForecast,
   RadarBasinRain,
   BasinGeoJson,
@@ -281,14 +287,23 @@ export async function getInfoclimatData(): Promise<InfoclimatData> {
   return fetchJson<InfoclimatData>(`${API_BASE}/realtime/infoclimat`)
 }
 
-// Data sources status
-export async function getDataSourcesStatus(): Promise<{ sources: DataSource[] }> {
-  return fetchJson<{ sources: DataSource[] }>(`${API_BASE}/realtime/sources`)
-}
-
 // Forecast
 export async function getForecast(hours: number = 168): Promise<ForecastData> {
   return fetchJson<ForecastData>(`${API_BASE}/risk/forecast?hours=${hours}`)
+}
+
+// Outlook 6 / 24 / 72 h (max, why, checklist)
+export async function getRiskOutlook(): Promise<RiskOutlook> {
+  return fetchJson<RiskOutlook>(`${API_BASE}/risk/outlook`)
+}
+
+// Archived forecasts vs realized realtime score
+export async function getForecastSkill(
+  leadHours: number[] = [6, 24, 72],
+  days: number = 30,
+): Promise<ForecastSkill> {
+  const params = new URLSearchParams({ lead_hours: leadHours.join(','), days: String(days) })
+  return fetchJson<ForecastSkill>(`${API_BASE}/risk/forecast-skill?${params}`)
 }
 
 // Timeline Sources
@@ -317,6 +332,7 @@ export async function getUnifiedTimeline(
   includeForecast?: boolean,
   signal?: AbortSignal,
   includeRiskShadow?: boolean,
+  indicatorSeries?: string[],
 ): Promise<UnifiedTimelineResult> {
   const params = new URLSearchParams({ resolution })
   if (start) params.set('start', start)
@@ -335,6 +351,9 @@ export async function getUnifiedTimeline(
   if (includeWind) params.set('include_wind', 'true')
   if (includeForecast) params.set('include_forecast', 'true')
   if (includeRiskShadow) params.set('include_risk_shadow', 'true')
+  if (indicatorSeries && indicatorSeries.length > 0) {
+    params.set('indicators', indicatorSeries.join(','))
+  }
 
   const response = await fetchResponse(`${API_BASE}/timeline/unified?${params}`, { signal })
   const data: UnifiedTimelineData = await response.json()
@@ -421,4 +440,65 @@ export async function getRadarBasinRain(): Promise<RadarBasinRain> {
 // Lidoire topographic catchment (GeoJSON, Sandre BD TOPAGE)
 export async function getBasinGeoJson(): Promise<BasinGeoJson> {
   return fetchJson<BasinGeoJson>(`${API_BASE}/geo/basin`)
+}
+
+// Official vigilance (Vigicrues troncons, Meteo-France departements)
+export async function getVigilance(): Promise<VigilanceStatus> {
+  return fetchJson<VigilanceStatus>(`${API_BASE}/vigilance`)
+}
+
+// Field observations
+export async function getObservations(start?: string, end?: string): Promise<Observation[]> {
+  const params = new URLSearchParams()
+  if (start) params.set('start', start)
+  if (end) params.set('end', end)
+  const query = params.toString()
+  return fetchJson<Observation[]>(`${API_BASE}/observations${query ? `?${query}` : ''}`)
+}
+
+/** Create an observation: JSON, or multipart when a photo is attached. */
+export async function createObservation(input: ObservationInput, photo?: File | null): Promise<Observation> {
+  if (!photo) {
+    return fetchJson<Observation>(`${API_BASE}/observations`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  }
+  const form = new FormData()
+  form.append('data', JSON.stringify(input))
+  form.append('photo', photo)
+  // No Content-Type header: the browser sets the multipart boundary
+  const response = await fetch(`${API_BASE}/observations`, {
+    method: 'POST',
+    cache: 'no-store',
+    headers: authHeaders('POST'),
+    body: form,
+  })
+  if (!response.ok) throw await buildApiError(response)
+  return response.json()
+}
+
+export async function deleteObservation(id: number): Promise<void> {
+  await fetchJson<unknown>(`${API_BASE}/observations/${id}`, { method: 'DELETE' })
+}
+
+/** Observation photo as a blob (private: sent with X-API-Key, never a plain <img src>). */
+export async function getObservationPhoto(photoUrl: string): Promise<Blob> {
+  if (!photoUrl.startsWith(`${API_BASE}/observations/`)) throw new Error('URL de photo invalide')
+  const key = getApiKey()
+  const response = await fetch(photoUrl, {
+    cache: 'no-store',
+    headers: key ? { 'X-API-Key': key } : {},
+  })
+  if (!response.ok) throw await buildApiError(response)
+  return response.blob()
+}
+
+export async function getEpisodeObservations(episodeId: number): Promise<EpisodeObservations> {
+  return fetchJson<EpisodeObservations>(`${API_BASE}/episodes/${episodeId}/observations`)
+}
+
+// Hydrological indicators (flows, groundwater, observed tide), outside the risk model
+export async function getIndicators(): Promise<IndicatorsData> {
+  return fetchJson<IndicatorsData>(`${API_BASE}/indicators`)
 }

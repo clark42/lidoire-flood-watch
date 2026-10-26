@@ -25,6 +25,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from app.config import get_settings
 from app.models.schemas import (
     AvailableSources,
+    IndicatorSeriesInfo,
     RiverStationInfo,
     RainfallStationInfo,
     UnifiedTimelineData,
@@ -811,9 +812,12 @@ async def get_available_sources():
         for source_id, info in RAINFALL_STATIONS.items()
     ]
 
+    from app.services.indicators import series_infos
+
     return AvailableSources(
         river_stations=river_stations,
         rainfall_stations=rainfall_stations,
+        indicator_series=[IndicatorSeriesInfo(**info) for info in series_infos()],
         has_tide=True,
         has_risk_score=True,
         has_infoclimat=True,
@@ -836,6 +840,10 @@ async def get_unified_timeline(
     include_wind: bool = Query(False, description="Include wind speed/direction data"),
     include_forecast: bool = Query(False, description="Include 7-day risk forecast overlay"),
     include_risk_shadow: bool = Query(False, description="Include the shadow risk score (v3.4 + backwater gate)"),
+    indicators: Optional[str] = Query(
+        None,
+        description="Comma-separated hydrological indicator ids (flow:EYRAUD, gw:MOULIETS, tide_obs:BORDEAUX...)",
+    ),
     include_radar: bool = Query(False, description="Include the OPERA radar basin rain (radar:LIDOIRE)"),
     include_glofas: bool = Query(False, description="Include the GloFAS Lidoire discharge median (glofas:LIDOIRE)"),
     resolution: str = Query("1h", description="Data resolution: 15m, 1h, 6h, 12h, 1d"),
@@ -880,6 +888,12 @@ async def get_unified_timeline(
         if rainfall_sources else []
     )
     netatmo_cities = [k.split(":", 1)[1] for k in requested_rain if k.startswith(f"{NETATMO_SOURCE}:")]
+    from app.services import indicators as indicator_service
+
+    indicator_ids = (
+        indicator_service.validate_series_ids([s.strip() for s in indicators.split(",") if s.strip()])
+        if indicators else []
+    )
 
     use_sum = resolution in COARSE_RESOLUTIONS
     rain_agg_fn = "sum" if use_sum else "mean"
@@ -1209,7 +1223,30 @@ async def get_unified_timeline(
             ),
         }
 
+    async def indicator_series() -> dict[str, TimelineSeries]:
+        # Stored series only (scheduler, explicit backfill): no cache-through
+        if not indicator_ids:
+            return {}
+        catalogue = indicator_service.series_catalogue()
+        fetched = await asyncio.gather(*(
+            indicator_service.query_series(
+                catalogue[sid], start, end, every=resolution,
+                fn="max" if catalogue[sid]["kind"] == "tide_observed" and resolution in COARSE_RESOLUTIONS else "mean",
+            )
+            for sid in indicator_ids
+        ))
+        out = {}
+        for sid, points in zip(indicator_ids, fetched):
+            if points:
+                spec = catalogue[sid]
+                out[sid] = TimelineSeries(
+                    type=spec["type"], name=spec["name"], unit=spec["unit"],
+                    color=spec["color"], data=_points(points),
+                )
+        return out
+
     parts = await asyncio.gather(
+        indicator_series(),
         river_series(),
         rainfall_series(),
         tide_series(),

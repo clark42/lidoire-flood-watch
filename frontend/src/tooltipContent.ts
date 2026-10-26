@@ -158,6 +158,12 @@ export const TOOLTIPS = {
   },
 
   // Previsions
+  outlook: {
+    text: "Pour chaque horizon (6 h, 24 h, 72 h) : le score maximal prevu, son heure, et les facteurs qui y contribuent le plus (en points du score). La liste d'actions correspond au niveau le plus eleve prevu ; elle est modifiable dans backend/app/data/action_plan.json. Prevision recalculee chaque heure : un score, pas une probabilite.",
+  },
+  forecastSkill: {
+    text: "Chaque heure, la prevision est archivee. Ici, le score prevu a 6 h, 24 h et 72 h est compare au score temps reel effectivement calcule a l'heure visee. MAE = ecart moyen en points ; biais > 0 = prevision trop pessimiste. Detection = prevu et observe au-dessus du seuil orange ; manque = observe seulement ; fausse alerte = prevu seulement.",
+  },
   forecastHeader: {
     text: "Projection du score de risque sur les prochaines heures, basee sur les previsions de maree et de pluie. Les niveaux de riviere sont maintenus constants (pas de modele hydrologique).",
   },
@@ -178,6 +184,14 @@ export const TOOLTIPS = {
   radarBasin: {
     text: "Pluie observee par le composite radar europeen OPERA (2 km, cumul 1 h toutes les 15 min), moyennee sur le bassin versant de la Lidoire. Les cumuls 3/6/24 h additionnent les cumuls horaires ; * = heures manquantes.",
     link: { url: 'https://eumetnet.github.io/openradardata-documentation/', label: 'OPERA Open Radar Data' },
+  },
+  // Indicateurs hydrologiques (hors modele)
+  indicatorsHeader: {
+    text: "Indicateurs collectes pour l'affichage et l'evaluation, sans effet sur le score v3.4. Aucune station ne mesure la Lidoire : l'Eyraud (73,5 km2, rive droite) sert d'analogue de son ruissellement (ses 6 plus gros debits journaliers depuis 2022-11 tombent sur les 6 crues du moulin). La nappe alluviale de Mouliets et la maree reellement observee completent le tableau.",
+    link: { url: 'https://hubeau.eaufrance.fr/page/api-hydrometrie', label: "Hub'Eau" },
+  },
+  indicatorsPercentile: {
+    text: "Rang de la valeur actuelle dans l'historique stocke depuis 2022-11 (moyennes journalieres ; max journaliers pour la maree). p99 = seuls 1 % des jours ont fait plus. Les seuils de debit portent sur la moyenne 24 h.",
   },
 } as const
 

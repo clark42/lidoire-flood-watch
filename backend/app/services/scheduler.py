@@ -5,6 +5,7 @@ Periodically collects data from:
 - Hub'Eau (river levels)
 - Weather services
 - Netatmo, Infoclimat (rainfall; request paths only read their caches)
+- Official vigilance (Vigicrues troncons, Meteo-France departements)
 - Camera snapshots
 
 and computes + stores the realtime risk score every hour (the only writer
@@ -111,6 +112,39 @@ async def collect_nowcast_rain_job():
         logger.info("Collected %s nowcast rain data points", count)
     except Exception as e:
         logger.error("Error collecting nowcast rain data: %s", e)
+
+
+async def collect_indicator_flows_job():
+    """Job to collect the indicator discharges (river_flow, outside the model)."""
+    try:
+        from app.services.collectors.hydro_indicators import collect_and_store_flows
+
+        count = await collect_and_store_flows()
+        logger.info("Collected %s indicator flow points", count)
+    except Exception as e:
+        logger.error("Error collecting indicator flows: %r", e)
+
+
+async def collect_groundwater_job():
+    """Job to collect the indicator piezometer levels (groundwater, outside the model)."""
+    try:
+        from app.services.collectors.hydro_indicators import collect_and_store_groundwater
+
+        count = await collect_and_store_groundwater()
+        logger.info("Collected %s groundwater points", count)
+    except Exception as e:
+        logger.error("Error collecting groundwater: %r", e)
+
+
+async def collect_tide_observed_job():
+    """Job to collect the observed estuary levels (tide_observed, outside the model)."""
+    try:
+        from app.services.collectors.hydro_indicators import collect_and_store_tide_observed
+
+        count = await collect_and_store_tide_observed()
+        logger.info("Collected %s observed tide points", count)
+    except Exception as e:
+        logger.error("Error collecting observed tide: %r", e)
 
 
 async def compute_risk_job():
@@ -228,6 +262,32 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # Hydrological indicators (display/evaluation only, never read by v3.4)
+    _scheduler.add_job(
+        collect_indicator_flows_job,
+        trigger=IntervalTrigger(minutes=15),
+        id="indicator_flow_collector",
+        next_run_time=now,
+        name="Collect indicator flows (Eyraud, Caudeau, Dordogne)",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        collect_groundwater_job,
+        trigger=IntervalTrigger(hours=3),
+        id="groundwater_collector",
+        next_run_time=now,
+        name="Collect groundwater levels (piezometer)",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        collect_tide_observed_job,
+        trigger=IntervalTrigger(minutes=15),
+        id="tide_observed_collector",
+        next_run_time=now,
+        name="Collect observed estuary levels",
+        replace_existing=True,
+    )
+
     # Realtime risk score: computed and stored every hour
     _scheduler.add_job(
         compute_risk_job,
@@ -237,6 +297,14 @@ async def start_scheduler():
         next_run_time=now + RISK_JOB_FIRST_RUN_DELAY,
         replace_existing=True,
     )
+
+    # Forecast archive (forecast_runs), hourly right after risk_scorer
+    from app.services.forecast_archive import schedule_forecast_archive
+    schedule_forecast_archive(_scheduler, first_run=now + RISK_JOB_FIRST_RUN_DELAY)
+
+    # Official vigilance (Vigicrues, Meteo-France): every 30 minutes, informative only
+    from app.services.collectors.vigilance import schedule_vigilance
+    schedule_vigilance(_scheduler, first_run=now)
 
     # Notifications (ntfy), hourly after risk_scorer; no job when not configured
     from app.services.notifier import schedule_notifier

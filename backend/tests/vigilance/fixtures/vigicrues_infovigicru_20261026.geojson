@@ -1,0 +1,98 @@
+{
+ "type": "FeatureCollection",
+ "name": "template-vigicrues-v1.1-WGS84.geojson",
+ "bbox": [
+  -4.1486,
+  42.4018,
+  8.2333,
+  50.8871
+ ],
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "CdTCC": "TCC22",
+    "id": "764",
+    "CdEntCru": "CO1",
+    "typentcru": "8",
+    "lbentcru": "Golo aval",
+    "acroentcru": "CO1",
+    "cddient_1": "FRL",
+    "dhcentcru": "2020/09/15 09:00:00.000",
+    "dhmentcru": "2020/09/15 09:00:00.000",
+    "stentcru": "Validé",
+    "cdensup_1": "26",
+    "typensup_1": "5",
+    "cdint": "1522",
+    "NivInfViCr": 1
+   },
+   "geometry": null,
+   "id": "764"
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "CdTCC": "TCC23",
+    "id": "869",
+    "CdEntCru": "DO22",
+    "typentcru": "8",
+    "lbentcru": "Confluence Garonne - Dordogne",
+    "acroentcru": "DO22",
+    "cddient_1": "FRF",
+    "dhcentcru": "2021/08/17 15:00:00.000",
+    "dhmentcru": "2021/08/17 15:00:00.000",
+    "stentcru": "Validé",
+    "cdensup_1": "32",
+    "typensup_1": "5",
+    "cdint": "2117",
+    "NivInfViCr": 1
+   },
+   "geometry": null,
+   "id": "869"
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "CdTCC": "TCC23",
+    "id": "882",
+    "CdEntCru": "DO4",
+    "typentcru": "8",
+    "lbentcru": "Dordogne moyenne",
+    "acroentcru": "DO4",
+    "cddient_1": "FRF",
+    "dhcentcru": "2021/08/17 15:00:00.000",
+    "dhmentcru": "2021/08/17 15:00:00.000",
+    "stentcru": "Validé",
+    "cdensup_1": "32",
+    "typensup_1": "5",
+    "cdint": "2117",
+    "NivInfViCr": 1
+   },
+   "geometry": null,
+   "id": "882"
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "CdTCC": "TCC23",
+    "id": "883",
+    "CdEntCru": "DO5",
+    "typentcru": "8",
+    "lbentcru": "Dordogne aval",
+    "acroentcru": "DO5",
+    "cddient_1": "FRF",
+    "dhcentcru": "2021/08/17 15:00:00.000",
+    "dhmentcru": "2021/08/17 15:00:00.000",
+    "stentcru": "Validé",
+    "cdensup_1": "32",
+    "typensup_1": "5",
+    "cdint": "2117",
+    "NivInfViCr": 1
+   },
+   "geometry": null,
+   "id": "883"
+  }
+ ],
+ "RefInfoVigiCru": "26102026_16",
+ "DtHrInfoVigiCru": "2026-10-26T14:56:47+00:00"
+}
