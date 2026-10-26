@@ -1675,11 +1675,13 @@ async def query_latest_measurement(
 
 
 _SOIL_FIELDS = ("moisture_shallow", "moisture_deep", "soil_temp", "et0_mm")
-# Realtime field -> (measurement, timeline field)
+# Realtime field -> (measurement, timeline field), used only when soil_timeline
+# has nothing. Only ET0 (daily FAO sum, same product) may be substituted: the
+# realtime moisture/temperature come from other Open-Meteo layers (ICON
+# 0-9 cm / 9-81 cm / surface, "best match") than soil_timeline (ECMWF IFS or
+# ERA5 0-7 cm / 7-100 cm / 0-7 cm), and mixing them made the series jump
+# (e.g. 0.195 vs 0.311 m3/m3 at the same hour).
 _SOIL_REALTIME_FIELDS = {
-    "moisture": ("soil_moisture", "moisture_shallow"),
-    "moisture_deep": ("soil_agricultural", "moisture_deep"),
-    "temperature_0cm": ("soil_agricultural", "soil_temp"),
     "et0_mm": ("soil_agricultural", "et0_mm"),
 }
 
@@ -1714,11 +1716,10 @@ async def query_soil_timeline(
 ) -> dict[str, list[dict]]:
     """Query soil timeline data from InfluxDB.
 
-    Queries both:
-    - 'soil_timeline' measurement (historical backfilled data)
-    - 'soil_moisture' + 'soil_agricultural' measurements (realtime accumulated data)
-
-    Merges and deduplicates by timestamp.
+    Queries:
+    - 'soil_timeline' measurement (backfilled Open-Meteo ECMWF layers)
+    - 'soil_agricultural' (realtime) for ET0 only, when soil_timeline has none
+      (see ``_SOIL_REALTIME_FIELDS``: the realtime moisture is another model).
 
     Args:
         start: Start datetime
