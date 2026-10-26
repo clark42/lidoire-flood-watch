@@ -37,13 +37,15 @@ class EvalEvent:
     """One annotated episode as seen by the evaluation."""
 
     key: str
-    peak_time: datetime  # naive UTC (day-level precision in the labels)
+    peak_time: datetime  # naive UTC
     outcome: EpisodeOutcome
     positive: Optional[bool]
     severity: int
     flags: tuple[str, ...] = ()
     notes: Optional[str] = None
     legacy_stored_score: Optional[float] = None
+    # +/- hours on peak_time (None = not stated; day-level labels carry 12)
+    peak_time_precision_hours: Optional[float] = None
 
     @property
     def evaluable(self) -> bool:
@@ -76,6 +78,7 @@ def event_from_label(label: EpisodeLabel) -> EvalEvent:
         flags=tuple(label.flags),
         notes=label.notes,
         legacy_stored_score=label.legacy_stored_score,
+        peak_time_precision_hours=label.peak_time_precision_hours,
     )
 
 

@@ -206,7 +206,7 @@ def event_table(
     for ev in events:
         w_start, w_end = event_window(ev, config.lead_window_h, config.lag_window_h)
         idx = [i for i, t in enumerate(times) if w_start <= t <= w_end]
-        peak_i = dataset.index_of(ev.peak_time)
+        peak_i = dataset.hour_index(ev.peak_time)
         window_scores = [(times[i], scores[i]) for i in idx if scores[i] is not None]
         best = max(window_scores, key=lambda x: x[1]) if window_scores else (None, None)
         entry = {
