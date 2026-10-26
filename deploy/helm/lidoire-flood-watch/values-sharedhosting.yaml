@@ -31,3 +31,8 @@ postgres:
 influxdb:
   persistence:
     storageClass: sbs-default-retain
+
+# Scaleway secret lidoire-external-apis (Infoclimat, Netatmo, ntfy keys).
+# Without it the backend runs with no external API keys.
+externalApis:
+  enabled: true
