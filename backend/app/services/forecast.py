@@ -51,6 +51,11 @@ from app.services.risk_core import (
 
 logger = logging.getLogger(__name__)
 
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 # fetch_open_meteo_forecast() requests timezone=UTC and returns naive UTC
 # timestamps; aware timestamps are converted as-is.
 NAIVE_FORECAST_TZ = timezone.utc
@@ -82,7 +87,7 @@ async def _get_cached_forecast(hours: int) -> Optional[dict]:
         if cached:
             data = json.loads(cached)
             generated_at = to_utc_naive(datetime.fromisoformat(data.get("generated_at", "2000-01-01")))
-            age_minutes = (datetime.utcnow() - generated_at).total_seconds() / 60
+            age_minutes = (_utcnow() - generated_at).total_seconds() / 60
             if age_minutes < 30:
                 return data
     except Exception as e:
@@ -470,7 +475,7 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
     )
 
     settings = get_settings()
-    now = datetime.utcnow()
+    now = _utcnow()
     base = floor_hour(now)
     forecast_days = min((hours // 24) + 2, 16)
     data_sources: dict = {}

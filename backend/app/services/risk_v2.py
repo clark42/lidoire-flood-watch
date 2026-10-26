@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.config import get_settings
@@ -66,6 +66,16 @@ from app.services.risk_core import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Window around a target instant used to load tide records (backfill,
+# TimeMachine) and to keep past tides in realtime (collectors/tide.py): the
+# nearest high tide is at most ~6h12 away, 13h leaves a full cycle of margin.
+TIDE_WINDOW_H = 13.0
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # ---------------------------------------------------------------------------
@@ -378,11 +388,16 @@ def tide_forecast_is_reliable(tide: Optional[TideForecast]) -> bool:
 
 
 def tide_high_list(tide: Optional[TideForecast]) -> list[tuple[datetime, Optional[int]]]:
-    """High tides (timestamp naive UTC, coefficient) from a TideForecast."""
+    """High tides (timestamp naive UTC, coefficient) from a TideForecast.
+
+    Includes the recent PAST tides (``recent_tides``): the tide phase is the
+    distance to the nearest high tide, which is often the one that just
+    passed (same rule as the backfill and the TimeMachine).
+    """
     if tide is None:
         return []
     highs: dict[datetime, Optional[int]] = {}
-    items = list(tide.tides)
+    items = list(getattr(tide, "recent_tides", None) or []) + list(tide.tides)
     if tide.next_high_tide is not None:
         items.append(tide.next_high_tide)
     for t in items:
@@ -579,7 +594,7 @@ async def gather_realtime_inputs(now: Optional[datetime] = None) -> RealtimeInpu
     from app.services.collectors.tide import get_current_tide_data
     from app.services.collectors.weather import get_rainfall_summary, get_soil_wind_cached
 
-    now = now or datetime.utcnow()
+    now = now or _utcnow()
 
     (
         tide, rainfall, stations, soil_wind, meteo_agricole, netatmo, infoclimat,
@@ -644,7 +659,7 @@ async def calculate_risk_score_v2(
     Nothing is written unless ``store=True``.
     """
     features = build_realtime_features(
-        stations_data, tide, rainfall, timestamp or datetime.utcnow(),
+        stations_data, tide, rainfall, timestamp or _utcnow(),
         westerly_wind_kmh=westerly_wind_kmh,
         soil_saturation_factor=soil_saturation_factor,
         video_level=video_level,
@@ -683,7 +698,7 @@ def build_simulation_features(
         thresholds=params.dordogne_thresholds,
     )
     return RiskFeatures(
-        timestamp=to_utc_naive(timestamp) if timestamp else datetime.utcnow(),
+        timestamp=to_utc_naive(timestamp) if timestamp else _utcnow(),
         stations=(station,),
         primary_station_id=primary_id,
         rain_24h_mm=rain_24h_mm,
@@ -770,8 +785,27 @@ def risk_factors_for_storage(risk: RiskScore) -> dict[str, float]:
     return out
 
 
-async def store_risk_score(risk: RiskScore) -> bool:
-    """Persist a risk score to InfluxDB (tag model_version, level as field)."""
+def risk_point(risk: RiskScore, source: str):
+    """InfluxDB point of a risk score (tags model_version + source, level field)."""
+    from app.services import influx_client
+
+    return influx_client.make_risk_point(
+        score=risk.score,
+        level=risk.level.value,
+        timestamp=risk.timestamp,
+        factors=risk_factors_for_storage(risk),
+        model_version=risk.model_version or MODEL_VERSION,
+        source=source,
+    )
+
+
+async def store_risk_score(risk: RiskScore, source: Optional[str] = None) -> bool:
+    """Persist a risk score to InfluxDB (tags model_version + source, level as field).
+
+    ``source`` defaults to "realtime": the hourly scheduler job is the only
+    caller that stores live scores; the backfill writes "backfill" points in
+    one batch (see :func:`backfill_risk_scores`).
+    """
     try:
         from app.services import influx_client
 
@@ -781,6 +815,7 @@ async def store_risk_score(risk: RiskScore) -> bool:
             timestamp=risk.timestamp,
             factors=risk_factors_for_storage(risk),
             model_version=risk.model_version or MODEL_VERSION,
+            source=source or influx_client.RISK_SOURCE_REALTIME,
         )
     except Exception as e:
         logger.error("Error storing risk score to InfluxDB: %s", e)
@@ -818,7 +853,10 @@ def tide_inputs_from_records(rows: list[dict]) -> tuple[list[tuple[datetime, Opt
     """(high tides, coefficient records) from influx_client.query_tides() rows.
 
     High tides come from PM-tagged heights when present, else from local
-    maxima of the height series.
+    maxima of the height series. Each high tide carries the coefficient
+    stored for it (a coefficient record within 1h), so ``tide_at`` picks the
+    coefficient of the latest past high tide, exactly like the realtime
+    TideForecast (where coefficients are attached to the PM events).
     """
     heights = sorted(
         (to_utc_naive(r["timestamp"]), float(r["height_m"]))
@@ -833,15 +871,68 @@ def tide_inputs_from_records(rows: list[dict]) -> tuple[list[tuple[datetime, Opt
         if r.get("height_m") is not None and r.get("tide_type") == TideType.HIGH.value
     })
     high_times = tagged or risk_core.detect_high_tides(heights)
-    return [(ts, None) for ts in high_times], coefs
+    return [(ts, _coefficient_near(ts, coefs)) for ts in high_times], coefs
 
 
-async def backfill_risk_scores(start: datetime, end: datetime, store: bool = True) -> int:
+def _coefficient_near(ts: datetime, coefs: list[tuple[datetime, int]], max_gap_h: float = 1.0) -> Optional[int]:
+    if not coefs:
+        return None
+    c_ts, c = min(coefs, key=lambda x: abs((x[0] - ts).total_seconds()))
+    return c if abs((c_ts - ts).total_seconds()) <= max_gap_h * 3600 else None
+
+
+async def load_tide_rows(start: datetime, end: datetime) -> list[dict]:
+    """Stored tide rows for [start, end]: Bordeaux first, else Libourne.
+
+    Shared by the backfill and the TimeMachine so both see the same tides.
+    """
+    from app.services import influx_client
+
+    settings = get_settings()
+    tide_rows: list[dict] = []
+    for port in (settings.tide_port_bordeaux, settings.tide_port_libourne):
+        tide_rows = await influx_client.query_tides(port, start, end)
+        if any(r.get("height_m") is not None for r in tide_rows):
+            break
+    return tide_rows
+
+
+def _ceil_hour(dt: datetime) -> datetime:
+    floor = dt.replace(minute=0, second=0, microsecond=0)
+    return floor if floor == dt else floor + timedelta(hours=1)
+
+
+async def _hours_with_live_scores(start: datetime, end: datetime) -> set[datetime]:
+    """Hours of [start, end] that already hold a non-backfill score of this model."""
+    from app.services import influx_client
+
+    rows = await influx_client.query_risk_scores(start, end + timedelta(hours=1), MODEL_VERSION)
+    return {
+        to_utc_naive(r["timestamp"]).replace(minute=0, second=0, microsecond=0)
+        for r in rows
+        if r.get("source") != influx_client.RISK_SOURCE_BACKFILL
+        and r.get("model_version") == MODEL_VERSION
+    }
+
+
+async def backfill_risk_scores(
+    start: datetime,
+    end: datetime,
+    store: bool = True,
+    skip_live_hours: bool = False,
+) -> int:
     """Recompute (and store) risk scores from historical data in InfluxDB.
 
     Each step only uses observed points at or before the step time (level
     max age and rate window from settings). Resolution adapts to the period:
-    hourly up to 7 days, 3-hourly up to 30 days, 6-hourly beyond.
+    hourly up to 7 days, 3-hourly up to 30 days, 6-hourly beyond. Steps start
+    on a full hour so re-runs overwrite the same points.
+
+    Stored points are tagged ``source=backfill`` (one batched write) and
+    never replace the realtime series: readers prefer the realtime point for
+    an hour that has both (``influx_client.prefer_realtime_risk_rows``). With
+    ``skip_live_hours`` (anonymous timeline cache-through), hours that
+    already hold a realtime score of the current model are not recomputed.
 
     Returns the number of scores computed (stored when ``store=True``).
     """
@@ -883,12 +974,16 @@ async def backfill_risk_scores(start: datetime, end: datetime, store: bool = Tru
     rain_rows = await influx_client.query_rainfall(s - timedelta(hours=169), e + timedelta(hours=1))
     rain_hourly = rain_hourly_from_records(rain_rows)
 
-    tide_rows: list[dict] = []
-    for port in (settings.tide_port_bordeaux, settings.tide_port_libourne):
-        tide_rows = await influx_client.query_tides(port, s - timedelta(hours=13), e + timedelta(hours=13))
-        if any(r.get("height_m") is not None for r in tide_rows):
-            break
+    tide_window = timedelta(hours=TIDE_WINDOW_H)
+    tide_rows = await load_tide_rows(s - tide_window, e + tide_window)
     high_tides, coef_records = tide_inputs_from_records(tide_rows)
+
+    live_hours: set[datetime] = set()
+    if skip_live_hours:
+        try:
+            live_hours = await _hours_with_live_scores(s, e)
+        except Exception as exc:  # degrade to a plain backfill
+            logger.warning("Risk backfill: cannot read existing scores: %s", exc)
 
     logger.info(
         "Risk backfill: %d stations, %d rain hours, %d high tides",
@@ -896,9 +991,14 @@ async def backfill_risk_scores(start: datetime, end: datetime, store: bool = Tru
     )
 
     computed = 0
-    stored = 0
-    current = s
+    skipped = 0
+    points = []
+    current = _ceil_hour(s)
     while current <= e:
+        if current in live_hours:
+            skipped += 1
+            current += step
+            continue
         tide_state = risk_core.tide_at(current, high_tides, coefficient_records=coef_records)
         features = risk_core.build_historical_features(
             current, configs, station_points, settings.hubeau_primary_station,
@@ -907,9 +1007,13 @@ async def backfill_risk_scores(start: datetime, end: datetime, store: bool = Tru
         if features.stations:
             risk = breakdown_to_risk_score(compute_risk(features))
             computed += 1
-            if store and await store_risk_score(risk):
-                stored += 1
+            if store:
+                points.append(risk_point(risk, influx_client.RISK_SOURCE_BACKFILL))
         current += step
 
-    logger.info("Risk backfill v%s: computed %d, stored %d scores", MODEL_VERSION, computed, stored)
+    stored = await influx_client.write_points_batch(points) if points else 0
+    logger.info(
+        "Risk backfill v%s: computed %d, stored %d scores (%d hours kept from realtime)",
+        MODEL_VERSION, computed, stored, skipped,
+    )
     return stored if store else computed

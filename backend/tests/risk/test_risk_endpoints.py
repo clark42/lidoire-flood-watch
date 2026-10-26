@@ -52,10 +52,15 @@ def timemachine(monkeypatch):
         writes.append((args, kwargs))
         return True
 
+    async def fake_tides(port, start, end):
+        # Stored tides read by load_tide_rows (+/-13h, Bordeaux first)
+        return [r for r in sc.tide_rows if start <= r["timestamp"] <= end] if port == "BORDEAUX" else []
+
+    monkeypatch.setattr(influx_client, "query_tides", fake_tides)
     monkeypatch.setattr(realtime_api, "query_historical_snapshot", fake_snapshot)
     monkeypatch.setattr(realtime_api, "query_rainfall", fake_rainfall)
     monkeypatch.setattr(realtime_api, "write_river_levels_batch", forbidden)
-    monkeypatch.setattr(realtime_api, "write_rainfall", forbidden)
+    monkeypatch.setattr(realtime_api, "write_points_batch", forbidden)
     monkeypatch.setattr(influx_client, "write_risk_score", forbidden)
     monkeypatch.setattr(risk_v2, "store_risk_score", forbidden)
     return sc, writes

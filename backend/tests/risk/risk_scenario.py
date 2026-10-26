@@ -124,7 +124,11 @@ def build_scenario(t0: datetime = T0, forecast_24h: float = 0.0, forecast_72h: f
                                 height_m=5.6, coefficient=95),
         next_low_tide=TideData(timestamp=next_low, port="BORDEAUX", tide_type=TideType.LOW,
                                height_m=0.8),
-        current_coefficient=95,
+        # As computed by collectors/tide.py: coefficient of the latest past high
+        current_coefficient=93,
+        recent_tides=[
+            TideData(timestamp=prev_high, port="BORDEAUX", tide_type=TideType.HIGH, height_m=5.5, coefficient=93),
+        ],
         tides=[
             TideData(timestamp=next_high, port="BORDEAUX", tide_type=TideType.HIGH, height_m=5.6, coefficient=95),
             TideData(timestamp=next_low, port="BORDEAUX", tide_type=TideType.LOW, height_m=0.8),

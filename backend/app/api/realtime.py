@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -26,8 +26,10 @@ from app.models.schemas import (
 )
 from app.services import risk_core
 from app.services.risk_v2 import (
+    TIDE_WINDOW_H,
     breakdown_to_risk_score,
     gather_realtime_inputs,
+    load_tide_rows,
     rain_hourly_from_records,
     risk_from_inputs,
     tide_inputs_from_records,
@@ -40,17 +42,46 @@ from app.services.collectors.netatmo import get_basin_rainfall
 from app.services.collectors.infoclimat import find_stations_near, get_basin_rainfall_infoclimat
 from app.services.collectors.meteo_agricole import get_nowcast_rain_cached
 from app.services.influx_client import (
+    make_rainfall_point,
     query_basin_rainfall_sparkline,
     query_historical_snapshot,
     query_rainfall,
+    write_points_batch,
     write_river_levels_batch,
-    write_rainfall,
 )
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def primary_station_alert(stations_data: Optional[MultiStationData]) -> Optional[str]:
+    """'Niveau Dordogne élevé' alert from the primary NON-tidal station.
+
+    Based on the primary station (Pessac) against its own orange threshold.
+    Libourne (Vigicrues/Hub'Eau P577001001) is never used: it oscillates
+    around 4 m with the tide, so a fixed 4.0 m test fired at most spring
+    high tides with no flood signal (the model gives it weight 0).
+    """
+    if not stations_data:
+        return None
+    primary = next(
+        (s for s in stations_data.stations
+         if s.station_id == stations_data.primary_station_id and s.weight > 0),
+        None,
+    )
+    if primary is None or primary.current_level.height_m < primary.threshold_orange:
+        return None
+    return (
+        f"Niveau Dordogne élevé à {primary.station_name}: "
+        f"{primary.current_level.height_m:.2f}m (seuil orange {primary.threshold_orange:.2f}m)"
+    )
 
 
 @router.get("", response_model=RealtimeData)
@@ -80,8 +111,9 @@ async def get_realtime_data():
         alerts.append(f"Risque {risk.level.value}: {risk.description}")
     if rainfall_data.last_24h_mm > 40:
         alerts.append(f"Fortes pluies: {rainfall_data.last_24h_mm:.1f}mm en 24h")
-    if river_data.current.height_m > 4.0:
-        alerts.append(f"Niveau Dordogne élevé: {river_data.current.height_m:.2f}m")
+    dordogne_alert = primary_station_alert(stations_data)
+    if dordogne_alert:
+        alerts.append(dordogne_alert)
 
     # Add upstream alerts from multi-station data (zero-weight stations skipped)
     for station in stations_data.stations:
@@ -303,7 +335,7 @@ async def get_data_sources_status():
         })
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": _utcnow().isoformat(),
         "sources": sources,
     }
 
@@ -354,7 +386,7 @@ async def get_basin_rainfall_summary():
     sparkline = await query_basin_rainfall_sparkline(24)
 
     return BasinRainfallSummary(
-        timestamp=datetime.utcnow(),
+        timestamp=_utcnow(),
         basin_average_1h_mm=round(basin_1h, 1),
         basin_average_24h_mm=round(basin_24h, 1),
         weighted_average_24h_mm=round(weighted, 1),
@@ -426,20 +458,20 @@ async def _cache_through_rainfall(target_time: datetime) -> list[dict]:
         for time_str, mm in zip(hourly.get("time", []), hourly.get("precipitation", [])):
             if mm is None:
                 continue
-            ts = datetime.fromisoformat(time_str)
-            await write_rainfall(
-                source="open-meteo-archive",
-                precipitation_mm_h=mm,
-                timestamp=ts,
-                station_city="Moulin",
-            )
             rows.append({
-                "timestamp": ts,
+                "timestamp": datetime.fromisoformat(time_str),
                 "precipitation_mm_h": mm,
                 "source": "open-meteo-archive",
                 "city": "Moulin",
             })
-        logger.info("TimeMachine: stored %d rainfall points to InfluxDB", len(rows))
+        stored = await write_points_batch([
+            make_rainfall_point(
+                source=r["source"], precipitation_mm_h=r["precipitation_mm_h"],
+                timestamp=r["timestamp"], station_city=r["city"],
+            )
+            for r in rows
+        ]) if rows else 0
+        logger.info("TimeMachine: stored %d rainfall points to InfluxDB", stored)
     except Exception as e:
         logger.warning("TimeMachine: error fetching historical rainfall: %s", e)
     return rows
@@ -496,9 +528,13 @@ async def get_realtime_data_at(timestamp: str):
     max_age = settings.risk_level_max_age_hours
     rate_window = settings.risk_rate_window_hours
 
-    snapshot, rain_rows = await asyncio.gather(
+    # Tides over +/-13h (same window and port rule as backfill_risk_scores):
+    # the nearest high tide can be ~6h12 away, outside the +/-6h snapshot.
+    tide_window = timedelta(hours=TIDE_WINDOW_H)
+    snapshot, rain_rows, tide_rows = await asyncio.gather(
         query_historical_snapshot(target_time, window_hours=6),
         query_rainfall(target_time - timedelta(hours=169), target_time + timedelta(minutes=1)),
+        load_tide_rows(target_time - tide_window, target_time + tide_window),
     )
 
     # === CACHE-THROUGH (inputs only) ===
@@ -514,7 +550,10 @@ async def get_realtime_data_at(timestamp: str):
     # === FEATURES (same builder as backfill) ===
     station_points = _snapshot_station_points(snapshot)
     configs = [risk_core.StationConfig.from_settings_dict(c) for c in settings.hubeau_stations]
-    tide_rows = _snapshot_tide_rows(snapshot)
+    # query_tides rows carry aware timestamps (display code compares naive)
+    tide_rows = [
+        {**r, "timestamp": _to_naive(r["timestamp"])} for r in tide_rows if r.get("timestamp") is not None
+    ] or _snapshot_tide_rows(snapshot)
     high_tides, coef_records = tide_inputs_from_records(tide_rows)
     tide_state = risk_core.tide_at(target_time, high_tides, coefficient_records=coef_records)
 
@@ -557,7 +596,8 @@ async def get_realtime_data_at(timestamp: str):
             river=station_cfg["river"],
             current_level=river_level,
             tendency=tendency,
-            rate_cm_per_hour=round(rate, 1),
+            # Unrounded (same value as the model); the UI rounds for display
+            rate_cm_per_hour=rate,
             distance_km=station_cfg["distance_km"],
             delay_hours=station_cfg["delay_hours"],
             weight=station_cfg["weight"],

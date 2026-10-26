@@ -41,6 +41,11 @@ MARINE_LON = -1.2
 RANGE_AT_COEF_100_M = 5.0
 
 REAL_CACHE_DURATION = timedelta(hours=6)
+# Past tides kept in TideForecast.recent_tides: the nearest high tide is at
+# most ~6h12 away, 13h matches the window used by the backfill/TimeMachine.
+RECENT_TIDES_WINDOW = timedelta(hours=13)
+# Memo of the InfluxDB fallback for recent tides (avoids one query per call)
+RECENT_STORED_CACHE_DURATION = timedelta(minutes=15)
 # Retry real sources quickly when we only have estimates
 ESTIMATED_CACHE_DURATION = timedelta(minutes=15)
 
@@ -277,12 +282,31 @@ async def get_current_tide_data() -> TideForecast:
 
     available = source != SOURCE_ESTIMATED
 
+    recent_tides = [t for t in tides if now - RECENT_TIDES_WINDOW <= t.timestamp <= now]
+    if available and not any(t.tide_type == TideType.HIGH for t in recent_tides):
+        # e.g. SHOM predictions start at fetch time: the high tide that just
+        # passed is only in InfluxDB (stored by an earlier collection).
+        memo = _tide_cache.get("recent_stored")
+        if memo and memo[0] > now:
+            stored = memo[1]
+        else:
+            stored = await _recent_stored_tides(now)
+            _tide_cache["recent_stored"] = (now + RECENT_STORED_CACHE_DURATION, stored)
+        stored = [t for t in stored if now - RECENT_TIDES_WINDOW <= t.timestamp <= now]
+        known = {(t.timestamp, t.tide_type) for t in recent_tides}
+        recent_tides = sorted(
+            recent_tides + [t for t in stored if (t.timestamp, t.tide_type) not in known],
+            key=lambda t: t.timestamp,
+        )
+
     future_tides = [t for t in tides if t.timestamp > now]
     next_high = next((t for t in future_tides if t.tide_type == TideType.HIGH), None)
     next_low = next((t for t in future_tides if t.tide_type == TideType.LOW), None)
 
     # Current coefficient (from most recent high tide)
-    past_high_tides = [t for t in tides if t.tide_type == TideType.HIGH and t.timestamp <= now]
+    past_high_tides = [t for t in recent_tides if t.tide_type == TideType.HIGH] or [
+        t for t in tides if t.tide_type == TideType.HIGH and t.timestamp <= now
+    ]
     current_coef = past_high_tides[-1].coefficient if past_high_tides else None
 
     return TideForecast(
@@ -291,9 +315,62 @@ async def get_current_tide_data() -> TideForecast:
         next_low_tide=next_low,
         current_coefficient=current_coef or (next_high.coefficient if next_high else None),
         tides=future_tides[:8],  # Next 8 tides (2 days)
+        recent_tides=recent_tides,
         available=available,
         source=source,
     )
+
+
+async def _recent_stored_tides(now: datetime) -> list[TideData]:
+    """PM/BM events stored in InfluxDB over [now - 13h, now] (Bordeaux port).
+
+    Returns [] when InfluxDB is unavailable (the risk then only sees the
+    tides of the in-memory list, as before).
+    """
+    from app.services import influx_client
+
+    port = get_settings().tide_port_bordeaux
+    try:
+        rows = await influx_client.query_tides(port, now - RECENT_TIDES_WINDOW, now + timedelta(seconds=1))
+    except Exception as e:
+        logger.warning("Recent stored tides unavailable: %s", e)
+        return []
+    return tide_events_from_rows(rows, port)
+
+
+def tide_events_from_rows(rows: list[dict], default_port: str = "BORDEAUX") -> list[TideData]:
+    """PM/BM TideData from ``influx_client.query_tides`` rows.
+
+    query_tides returns one row per field: the ``height_m`` and the
+    ``coefficient`` of an event are two rows with the same timestamp and
+    ``tide_type`` tag; they are merged here. Untagged hourly heights are
+    ignored.
+    """
+    events: dict[tuple[datetime, str], dict] = {}
+    for r in rows:
+        tide_type = r.get("tide_type")
+        ts = r.get("timestamp")
+        if tide_type not in (TideType.HIGH.value, TideType.LOW.value) or ts is None:
+            continue
+        key = (_to_naive_utc(ts), tide_type)
+        ev = events.setdefault(key, {"port": r.get("port") or default_port})
+        if r.get("height_m") is not None:
+            ev["height_m"] = float(r["height_m"])
+        if r.get("coefficient") is not None:
+            ev["coefficient"] = int(r["coefficient"])
+    out = [
+        TideData(
+            timestamp=ts,
+            port=ev["port"],
+            tide_type=TideType(tide_type),
+            height_m=ev["height_m"],
+            coefficient=ev.get("coefficient"),
+            source="influxdb",
+        )
+        for (ts, tide_type), ev in events.items()
+        if "height_m" in ev
+    ]
+    return sorted(out, key=lambda t: t.timestamp)
 
 
 async def store_tides_to_influx(tides: list[TideData]) -> int:
