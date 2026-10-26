@@ -558,3 +558,101 @@ export interface SourcesDetail {
     }
   }
 }
+
+// Outlook (GET /api/risk/outlook): "do I need to act, and when?"
+export interface OutlookDriver {
+  factor: string
+  label: string
+  /** Points of the 0-100 score brought by this factor */
+  points: number
+  text: string
+}
+
+export interface OutlookHorizon {
+  hours: number
+  label: string
+  max_score: number
+  level: RiskLevel
+  max_at: string
+  max_hours_ahead: number
+  /** First hour at or above `level` */
+  first_at_level: string
+  drivers: OutlookDriver[]
+  modifiers: string[]
+  unavailable: string[]
+  summary: string
+}
+
+export interface OutlookHighTide {
+  timestamp: string
+  coefficient: number | null
+  estimated: boolean
+  hours_from_now: number
+}
+
+export interface OutlookConfidence {
+  level: 'good' | 'reduced' | 'low'
+  notes: string[]
+  unavailable_factors: string[]
+  tide_estimated: boolean
+  stale_sources: string[]
+}
+
+export interface OutlookChecklist {
+  level: RiskLevel
+  title: string
+  actions: string[]
+  act_before: string | null
+}
+
+export interface RiskOutlook {
+  generated_at: string
+  forecast_generated_at: string
+  model_version: string | null
+  horizons: OutlookHorizon[]
+  highest_level: RiskLevel
+  next_high_tide: OutlookHighTide | null
+  confidence: OutlookConfidence
+  checklist: OutlookChecklist
+  inputs_summary: Record<string, unknown>
+}
+
+// Forecast skill (GET /api/risk/forecast-skill): archived forecast vs stored realtime score
+export interface ForecastSkillPair {
+  run_at: string
+  lead_hours: number
+  valid_at: string
+  forecast_score: number
+  actual_score: number
+  actual_at: string
+}
+
+export interface ForecastSkillLead {
+  lead_hours: number
+  n: number
+  mae: number | null
+  bias: number | null
+  hits: number
+  misses: number
+  false_alarms: number
+  correct_negatives: number
+  pod: number | null
+  far: number | null
+  csi: number | null
+}
+
+export interface ForecastSkill {
+  generated_at: string
+  model_version: string
+  threshold: number
+  threshold_level: string
+  days: number
+  lead_hours: number[]
+  tolerance_minutes: number
+  n_runs: number
+  first_run_at: string | null
+  last_run_at: string | null
+  by_lead: ForecastSkillLead[]
+  pairs: ForecastSkillPair[]
+  notes: string[]
+}

@@ -45,6 +45,7 @@ import MetricSparkline from '../components/MetricSparkline'
 import TimeMachineBanner from '../components/TimeMachineBanner'
 import SoilConditionsPanel from '../components/SoilConditionsPanel'
 import NowcastRainChart from '../components/NowcastRainChart'
+import OutlookPanel from '../components/OutlookPanel'
 import InfoTooltip from '../components/InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 import { formatAge, formatParis, parseApiDate } from '../utils/time'
@@ -419,6 +420,7 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {!timeMachineActive && <OutlookPanel />}
       {/* Stale / fetch error banner (live mode only) */}
       {isStale && (
         <div
