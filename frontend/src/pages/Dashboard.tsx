@@ -37,6 +37,7 @@ import DataCard from '../components/DataCard'
 import StationsPanel from '../components/StationsPanel'
 import RainfallPanel from '../components/RainfallPanel'
 import ForecastPanel from '../components/ForecastPanel'
+import EnsemblePanel from '../components/EnsemblePanel'
 import DataSourcesStatus from '../components/DataSourcesStatus'
 import RiskBreakdownPanel from '../components/RiskBreakdownPanel'
 import BasinRainfallGauge from '../components/BasinRainfallGauge'
@@ -656,6 +657,7 @@ export default function Dashboard() {
           {/* ForecastPanel v2 - autonomous, fetches its own data */}
           {!timeMachineActive && <ForecastPanel hours={168} autoRefresh={true} />}
           {!timeMachineActive && <IndicatorsPanel />}
+          {!timeMachineActive && <EnsemblePanel />}
         </div>
       </div>
 

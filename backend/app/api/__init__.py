@@ -15,6 +15,8 @@ from app.api.vigilance import router as vigilance_router
 from app.api.observations import router as observations_router
 from app.api.observations import episode_router as observations_episode_router
 from app.api.indicators import router as indicators_router
+from app.api.forecast_ensemble import router as forecast_ensemble_router
+from app.api.geo import router as geo_router
 
 # Every route below inherits the API key check: safe methods (GET/HEAD/OPTIONS)
 # stay public, state-changing methods require the X-API-Key header.
@@ -31,3 +33,5 @@ router.include_router(vigilance_router, prefix="/vigilance", tags=["Vigilance"])
 router.include_router(observations_router, prefix="/observations", tags=["Observations"])
 router.include_router(observations_episode_router, prefix="/episodes", tags=["Observations"])
 router.include_router(indicators_router, prefix="/indicators", tags=["Indicators"])
+router.include_router(forecast_ensemble_router, prefix="/forecast", tags=["Forecast"])
+router.include_router(geo_router, prefix="/geo", tags=["Geo"])

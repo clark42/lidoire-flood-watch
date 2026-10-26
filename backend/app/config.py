@@ -395,6 +395,33 @@ class Settings(BaseSettings):
     # [start - margin, (end or peak or start) + margin]
     observation_episode_margin_hours: float = 12.0
 
+    # Probabilistic forecasts and observed basin rain: new series and endpoints
+    # only, NEVER read by the risk model (v3.4 scoring is unchanged).
+    # OPERA radar (EUMETNET, CC BY 4.0): ACRR 1 h accumulation every 15 min,
+    # 2 km, keyless COG on the MeteoGate object store (rolling 24 h).
+    radar_enabled: bool = True
+    radar_opera_base_url: str = "https://s3.waw3-1.cloudferro.com/openradar-24h"
+    radar_backfill_hours: float = 6.0     # missing images re-fetched up to this far back
+    radar_max_images_per_run: int = 12
+    # GloFAS v4 (Open-Meteo Flood API), Lidoire cell of the 0.05 deg river grid
+    glofas_enabled: bool = True
+    glofas_lat: float = 44.875
+    glofas_lon: float = -0.025
+    glofas_forecast_days: int = 30
+    # Open-Meteo Ensemble API, basin rain (members averaged over the points,
+    # weights = sub-basin areas of the BD TOPAGE polygon)
+    ensemble_rain_enabled: bool = True
+    ensemble_rain_models: list[dict] = [
+        {"id": "icon_d2", "label": "ICON-D2-EPS", "meta": "dwd_icon_d2_eps", "forecast_days": 3},
+        {"id": "icon_eu", "label": "ICON-EU-EPS", "meta": "dwd_icon_eu_eps", "forecast_days": 6},
+        {"id": "ecmwf_ifs025", "label": "ECMWF IFS ENS", "meta": "ecmwf_ifs025_ensemble", "forecast_days": 15},
+    ]
+    ensemble_rain_points: list[dict] = [
+        {"id": "amont", "lat": 44.942, "lon": 0.261, "weight": 62.8},   # source -> Roudier
+        {"id": "milieu", "lat": 44.931, "lon": 0.162, "weight": 70.5},  # Roudier -> affluent
+        {"id": "aval", "lat": 44.907, "lon": 0.033, "weight": 97.4},    # Lechout + aval
+    ]
+
     @property
     def notifications_enabled(self) -> bool:
         return bool(self.ntfy_url.strip() and self.ntfy_topic.strip())

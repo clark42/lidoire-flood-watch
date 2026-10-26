@@ -578,6 +578,119 @@ export interface SourcesDetail {
   }
 }
 
+// Probabilistic forecasts (GET /api/forecast/ensemble) - informative, not in the v3.4 score
+export interface EnsembleWindowStats {
+  p10: number
+  p50: number
+  p90: number
+  mean: number
+  max: number
+  members: number
+  /** Share of members above each threshold (keys: threshold in mm, e.g. "25") */
+  prob: Record<string, number>
+}
+
+export interface EnsembleHorizon {
+  start: string
+  end: string
+  lead_start_h: number
+  lead_end_h: number
+  models: Record<string, EnsembleWindowStats>
+  blend: { prob: Record<string, number>; models: string[] }
+}
+
+export interface EnsembleModelInfo {
+  id: string
+  label: string
+  available: boolean
+  members?: number
+  run_init?: string
+  run_init_known?: boolean
+  horizon_end?: string | null
+}
+
+export interface EnsembleRain {
+  available: boolean
+  note?: string
+  thresholds?: Record<string, number[]>
+  issued_at?: string
+  models?: EnsembleModelInfo[]
+  horizons?: Record<string, EnsembleHorizon[]>
+  attribution?: string
+}
+
+export interface GlofasDay {
+  date: string
+  lead_days: number
+  p10: number
+  p50: number
+  p90: number
+  min: number
+  max: number
+  mean: number
+  members: number
+  prob_gt_p95: number | null
+  prob_gt_p99: number | null
+}
+
+export interface GlofasForecast {
+  available: boolean
+  note?: string
+  stale?: boolean
+  run?: string
+  run_known?: boolean
+  members?: number
+  climatology?: { p50: number; p90: number; p95: number; p99: number; max: number; first_day?: string; last_day?: string } | null
+  days?: GlofasDay[]
+  max_prob_gt_p95_10d?: { date: string; value: number } | null
+  max_prob_gt_p99_10d?: { date: string; value: number } | null
+  attribution?: string
+}
+
+export interface EnsembleForecast {
+  rain: EnsembleRain
+  glofas: GlofasForecast
+  note?: string
+}
+
+// Observed basin rain, OPERA radar (GET /api/realtime/radar)
+export interface RadarWindow {
+  mm: number | null
+  max_pixel_mm: number | null
+  hours_found: number
+  hours_expected: number
+  complete: boolean
+}
+
+export interface RadarBasinRain {
+  available: boolean
+  note?: string
+  last_image_time: string | null
+  age_minutes: number | null
+  windows: Record<string, RadarWindow>
+  attribution: string
+  licence_url?: string
+}
+
+// Lidoire basin polygon (GET /api/geo/basin)
+export interface BasinProperties {
+  name: string
+  area_km2: number
+  source: string
+  source_url: string
+  licence: string
+  attribution: string
+}
+
+export interface BasinGeoJson {
+  type: 'FeatureCollection'
+  features: {
+    type: 'Feature'
+    properties: BasinProperties
+    geometry: { type: 'Polygon'; coordinates: number[][][] }
+  }[]
+}
+
 // Outlook (GET /api/risk/outlook): "do I need to act, and when?"
 export interface OutlookDriver {
   factor: string

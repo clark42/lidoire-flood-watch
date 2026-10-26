@@ -552,6 +552,9 @@ class AvailableSources(BaseModel):
     has_infoclimat: bool = True
     has_wind: bool = True
     has_soil: bool = True
+    # Stored series only (radar:LIDOIRE, glofas:LIDOIRE): include_radar / include_glofas
+    has_radar: bool = True
+    has_glofas: bool = True
 
 
 # Outlook (GET /api/risk/outlook): "do I need to act, and when?"
