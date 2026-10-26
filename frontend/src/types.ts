@@ -319,6 +319,8 @@ export interface FloodEpisode {
 export interface EpisodeLabel {
   key: string // peak date YYYY-MM-DD
   peak_time: string
+  // Half-width of the uncertainty on peak_time (h): 0.5-2 = hour precise, 12 = day
+  peak_time_precision_hours?: number | null
   outcome: EpisodeOutcome
   severity: number
   water_height_cm: number | null
