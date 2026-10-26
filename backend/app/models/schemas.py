@@ -70,6 +70,9 @@ class TideForecast(BaseModel):
     # and must not drive the risk model as if they were real.
     available: bool = True
     source: Optional[str] = None
+    # Hours added to the source times to estimate the tide at the Lidoire
+    # confluence (settings.tide_phase_lag_hours); all times above include it.
+    phase_lag_hours: Optional[float] = None
 
 
 # River level data
@@ -253,6 +256,9 @@ class RiskFactors(BaseModel):
     tide_available: bool = True
     unavailable_factors: list[str] = []
     notes: list[str] = []
+    # v3.4: gate (0-1) applied to tide_score / tide_phase_score, and its input
+    tide_gate: float = Field(1.0, ge=0, le=1)
+    backwater_level_m: Optional[float] = None
 
 
 class RiskScore(BaseModel):

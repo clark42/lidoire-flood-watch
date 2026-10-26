@@ -93,7 +93,7 @@ class _InfluxStub:
         return [r for r in self.rain_rows if start <= r["timestamp"] < end]
 
     async def query_tides(self, port, start, end):
-        return self.tide_rows if port == "BORDEAUX" else []
+        return self.tide_rows if port == "LIDOIRE" else []
 
     async def write_risk_score(self, score, level, timestamp, factors=None, model_version=None, source=None):
         self.writes.append({"score": score, "level": level, "timestamp": timestamp,
@@ -145,7 +145,7 @@ async def test_risk_backfill_stores_with_model_version_and_audit_fields(influx_s
     assert stored == 3 == len(stub.writes)
     assert stub.batches == 1  # one batched write, not one write per score
     last = stub.writes[-1]
-    assert last["model_version"] == "3.3"
+    assert last["model_version"] == risk_v2.MODEL_VERSION
     assert {w["source"] for w in stub.writes} == {"backfill"}
     assert last["timestamp"] == sc.t0
     for key in ("momentum", "conjunction", "dampener", "n_rising", "tide_available", "river_level"):
@@ -192,10 +192,13 @@ async def test_risk_backfill_skip_live_hours_keeps_realtime_points(influx_stub):
     stub.existing_scores = [
         # realtime point of the current model at 11:02 -> hour 11:00 is live
         {"timestamp": (sc.t0 - timedelta(minutes=58)).replace(tzinfo=timezone.utc),
-         "score": 40.0, "model_version": "3.3", "source": "realtime"},
+         "score": 40.0, "model_version": risk_v2.MODEL_VERSION, "source": "realtime"},
         # backfill and older-model points do not protect their hour
         {"timestamp": (sc.t0 - timedelta(hours=2)).replace(tzinfo=timezone.utc),
-         "score": 40.0, "model_version": "3.3", "source": "backfill"},
+         "score": 40.0, "model_version": risk_v2.MODEL_VERSION, "source": "backfill"},
+        # realtime point of the previous model (3.3) does not protect its hour either
+        {"timestamp": (sc.t0 - timedelta(hours=2) + timedelta(minutes=3)).replace(tzinfo=timezone.utc),
+         "score": 40.0, "model_version": "3.3", "source": "realtime"},
         {"timestamp": sc.t0.replace(tzinfo=timezone.utc),
          "score": 40.0, "model_version": "3.2", "source": None},
     ]

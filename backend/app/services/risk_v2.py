@@ -1,4 +1,4 @@
-"""Risk scoring service (model v3.3) - adapters around risk_core.
+"""Risk scoring service (model v3.4) - adapters around risk_core.
 
 The score itself is computed ONLY by :func:`app.services.risk_core.compute_risk`.
 This module:
@@ -12,7 +12,7 @@ This module:
   are separate: nothing is written unless ``store=True`` is requested;
 - recomputes historical scores (``backfill_risk_scores``) from stored series
   with no future data;
-- stores the shadow model "3.3-gate" (``store_shadow_risk_score``, see
+- stores the shadow model "3.4-gate" (``store_shadow_risk_score``, see
   risk_shadow.py) next to each realtime score, in its own measurement.
 
 Model history (weights and mechanisms unchanged since v3.2, calibrated on
@@ -341,6 +341,8 @@ def breakdown_to_factors(bd: RiskBreakdown) -> RiskFactors:
         tide_available=bd.tide_available,
         unavailable_factors=list(bd.unavailable),
         notes=list(bd.notes),
+        tide_gate=bd.tide_gate,
+        backwater_level_m=bd.backwater_level_m,
     )
 
 
@@ -454,6 +456,23 @@ def station_features_from_multi(
     return tuple(out)
 
 
+def primary_level_points(
+    stations_data: Optional[MultiStationData],
+    primary_levels=(),
+) -> list[risk_core.LevelPoint]:
+    """Primary-station series: stored points plus the latest Hub'Eau level (sorted)."""
+    points = risk_core.as_level_points(primary_levels)
+    primary_id = stations_data.primary_station_id if stations_data else get_settings().hubeau_primary_station
+    current = next(
+        (s for s in (stations_data.stations if stations_data else []) if s.station_id == primary_id), None,
+    )
+    if current is not None:
+        latest = (to_utc_naive(current.current_level.timestamp), float(current.current_level.height_m))
+        if latest not in points:
+            points = sorted(points + [latest])
+    return points
+
+
 def build_realtime_features(
     stations_data: Optional[MultiStationData],
     tide: Optional[TideForecast],
@@ -462,8 +481,14 @@ def build_realtime_features(
     westerly_wind_kmh: Optional[float] = 0.0,
     soil_saturation_factor: Optional[float] = 1.0,
     video_level: Optional[float] = None,
+    primary_levels=(),
 ) -> RiskFeatures:
-    """Features for 'now' from realtime collector outputs (pure)."""
+    """Features for 'now' from realtime collector outputs (pure).
+
+    ``primary_levels``: stored primary-station (Pessac) points of the last
+    BACKWATER_WINDOW_H, merged with the latest Hub'Eau level for the
+    backwater level that gates the tide factors (v3.4).
+    """
     t = to_utc_naive(timestamp)
     tide_state = tide_state_from_forecast(tide, t)
     primary_id = (
@@ -482,6 +507,7 @@ def build_realtime_features(
         tide_available=tide_state.available,
         tide_coefficient=tide_state.coefficient,
         hours_to_high_tide=tide_state.hours_to_high_tide,
+        backwater_level_m=risk_core.backwater_level(primary_level_points(stations_data, primary_levels), t),
         westerly_wind_kmh=westerly_wind_kmh,
         soil_saturation_factor=soil_saturation_factor,
         video_level=video_level,
@@ -569,6 +595,9 @@ class RealtimeInputs:
     soil_saturation_factor: float = 1.0
     westerly_wind_kmh: float = 0.0
     video_level: Optional[float] = None
+    # Primary station (Pessac) points of the last BACKWATER_WINDOW_H, stored
+    # + latest Hub'Eau (tide gate input, shared with the forecast)
+    primary_levels: tuple = ()
 
     def features(self) -> RiskFeatures:
         return build_realtime_features(
@@ -576,6 +605,7 @@ class RealtimeInputs:
             westerly_wind_kmh=self.westerly_wind_kmh,
             soil_saturation_factor=self.soil_saturation_factor,
             video_level=self.video_level,
+            primary_levels=self.primary_levels,
         )
 
 
@@ -585,6 +615,18 @@ async def _safe(coro, default, name: str):
     except Exception as e:  # optional source: degrade gracefully
         logger.warning("risk inputs: %s unavailable: %s", name, e)
         return default
+
+
+async def load_primary_levels(now: datetime) -> list[risk_core.LevelPoint]:
+    """Stored primary-station points over the backwater window ending at ``now``."""
+    from app.services import influx_client
+
+    rows = await influx_client.query_river_levels(
+        get_settings().hubeau_primary_station,
+        now - timedelta(hours=risk_core.BACKWATER_WINDOW_H),
+        now + timedelta(minutes=1),
+    )
+    return _level_points(rows)
 
 
 async def gather_realtime_inputs(now: Optional[datetime] = None) -> RealtimeInputs:
@@ -603,11 +645,12 @@ async def gather_realtime_inputs(now: Optional[datetime] = None) -> RealtimeInpu
 
     now = now or _utcnow()
 
-    tide, rainfall, stations, soil_wind = await asyncio.gather(
+    tide, rainfall, stations, soil_wind, stored_primary = await asyncio.gather(
         get_current_tide_data(),
         get_rainfall_summary(),
         get_multi_station_data(),
         _safe(get_soil_wind_cached(), {}, "soil/wind"),
+        _safe(load_primary_levels(now), [], "stored primary levels"),
     )
     soil_wind = soil_wind or {}
     meteo_agricole = peek_meteo_agricole()
@@ -629,6 +672,7 @@ async def gather_realtime_inputs(now: Optional[datetime] = None) -> RealtimeInpu
             rainfall.soil_saturation_factor, soil_wind, meteo_agricole,
         ),
         westerly_wind_kmh=compute_westerly_wind(soil_wind, meteo_agricole),
+        primary_levels=tuple(primary_level_points(stations, stored_primary or [])),
     )
 
 
@@ -831,7 +875,7 @@ _store_risk_to_influx = store_risk_score
 
 
 # ---------------------------------------------------------------------------
-# Shadow model 3.3-gate (stored for comparison, never displayed or alerted on)
+# Shadow model 3.4-gate (stored for comparison, never displayed or alerted on)
 # ---------------------------------------------------------------------------
 
 def shadow_risk_point(
@@ -861,26 +905,17 @@ def shadow_risk_point(
 
 
 async def store_shadow_risk_score(risk: RiskScore, inputs: RealtimeInputs) -> bool:
-    """Store the shadow score of a realtime v3.3 score (never raises).
+    """Store the shadow score of a realtime production score (never raises).
 
-    H_aval = max of the primary station over the trailing 12.5 h: stored
-    river levels plus the realtime Hub'Eau level, points <= t only.
+    H_aval is the backwater level of the production features (v3.4 tide
+    gate input): max of the primary station over the trailing 12.5 h,
+    stored river levels plus the realtime Hub'Eau level, points <= t only.
     """
     try:
         from app.services import influx_client
 
-        t = to_utc_naive(risk.timestamp)
-        primary = get_settings().hubeau_primary_station
-        rows = await influx_client.query_river_levels(
-            primary, t - timedelta(hours=risk_shadow.BACKWATER_WINDOW_H), t + timedelta(minutes=1),
-        )
-        pts = _level_points(rows)
-        for s in (inputs.stations.stations if inputs.stations else []):
-            if s.station_id == primary:
-                pts.append((to_utc_naive(s.current_level.timestamp), float(s.current_level.height_m)))
-        pts.sort()
-        h_aval = risk_shadow.backwater_level(pts, t)
-        point = shadow_risk_point(inputs.features(), risk, h_aval, influx_client.RISK_SOURCE_REALTIME)
+        features = inputs.features()
+        point = shadow_risk_point(features, risk, features.backwater_level_m, influx_client.RISK_SOURCE_REALTIME)
         if point is None:
             return False
         return await influx_client.write_points_batch([point]) == 1
@@ -945,19 +980,16 @@ def _coefficient_near(ts: datetime, coefs: list[tuple[datetime, int]], max_gap_h
 
 
 async def load_tide_rows(start: datetime, end: datetime) -> list[dict]:
-    """Stored tide rows for [start, end]: Bordeaux first, else Libourne.
+    """Stored tide rows for [start, end] at the Lidoire confluence.
 
     Shared by the backfill and the TimeMachine so both see the same tides.
+    Only the confluence port is read: the legacy BORDEAUX / LIBOURNE points
+    carry the source times without the phase lag and must not be mixed in.
     """
     from app.services import influx_client
 
-    settings = get_settings()
-    tide_rows: list[dict] = []
-    for port in (settings.tide_port_bordeaux, settings.tide_port_libourne):
-        tide_rows = await influx_client.query_tides(port, start, end)
-        if any(r.get("height_m") is not None for r in tide_rows):
-            break
-    return tide_rows
+    rows = await influx_client.query_tides(get_settings().tide_port_confluence, start, end)
+    return rows if any(r.get("height_m") is not None for r in rows) else []
 
 
 def _ceil_hour(dt: datetime) -> datetime:
@@ -997,7 +1029,7 @@ async def backfill_risk_scores(
     an hour that has both (``influx_client.prefer_realtime_risk_rows``). With
     ``skip_live_hours`` (anonymous timeline cache-through), hours that
     already hold a realtime score of the current model are not recomputed.
-    With ``shadow``, the shadow model "3.3-gate" is also written for every
+    With ``shadow``, the shadow model "3.4-gate" is also written for every
     scored step (``risk_score_shadow``, source=backfill), from the same
     inputs.
 
@@ -1019,8 +1051,8 @@ async def backfill_risk_scores(
 
     max_age = settings.risk_level_max_age_hours
     rate_window = settings.risk_rate_window_hours
-    lookback_h = max(max_age, rate_window, risk_shadow.BACKWATER_WINDOW_H if shadow else 0.0)
-    lookback = timedelta(hours=lookback_h + 1)
+    # The backwater level (v3.4 tide gate, shadow gate) needs 12.5 h of history
+    lookback = timedelta(hours=max(max_age, rate_window, risk_core.BACKWATER_WINDOW_H) + 1)
 
     logger.info("Risk backfill v%s: loading data for %s -> %s (step=%s)", MODEL_VERSION, s, e, step)
 
@@ -1062,7 +1094,6 @@ async def backfill_risk_scores(
     skipped = 0
     points = []
     shadow_points = []
-    primary_points = station_points.get(settings.hubeau_primary_station, [])
     current = _ceil_hour(s)
     while current <= e:
         if current in live_hours:
@@ -1080,8 +1111,7 @@ async def backfill_risk_scores(
             if store:
                 points.append(risk_point(risk, influx_client.RISK_SOURCE_BACKFILL))
             if shadow:
-                h_aval = risk_shadow.backwater_level(primary_points, current)
-                sp = shadow_risk_point(features, risk, h_aval, influx_client.RISK_SOURCE_BACKFILL)
+                sp = shadow_risk_point(features, risk, features.backwater_level_m, influx_client.RISK_SOURCE_BACKFILL)
                 if sp is not None:
                     shadow_points.append(sp)
         current += step

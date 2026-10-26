@@ -130,8 +130,8 @@ class World:
             "stations": MultiStationData(timestamp=now, stations=stations),
             "rainfall": RainfallSummary(last_72h_mm=48.4),
             "tide": TideForecast(
-                port="BORDEAUX",
-                next_high_tide=TideData(timestamp=tide_at, port="BORDEAUX", tide_type=TideType.HIGH,
+                port="LIDOIRE",
+                next_high_tide=TideData(timestamp=tide_at, port="LIDOIRE", tide_type=TideType.HIGH,
                                         height_m=5.1, coefficient=95),
                 available=True,
             ),

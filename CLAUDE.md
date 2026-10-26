@@ -47,7 +47,7 @@ npm run build                           # tsc + vite build
 ```bash
 cd backend
 python -m scripts.eval build            # une fois, ~4 min de telechargements (cache data/eval_cache/)
-python -m scripts.eval replay --offline # scores horaires v3.3 + baselines
+python -m scripts.eval replay --offline # scores horaires v3.4 + baselines
 python -m scripts.eval report --offline # metriques -> data/eval_out/
 python -m scripts.eval.candidates --offline   # modeles candidats (data/eval_out/candidates/)
 ```
@@ -76,8 +76,8 @@ app/
 │   ├── schemas.py       # Modeles Pydantic (RiskScore, EpisodeOutcome, EpisodeLabelSet...)
 │   └── orm.py           # Tables PostgreSQL
 └── services/
-    ├── risk_core.py     # Coeur de scoring PUR, modele v3.3 (compute_risk, aucune I/O)
-    ├── risk_shadow.py   # Modele shadow 3.3-gate (gate de remous, PUR), stocke, jamais affiche
+    ├── risk_core.py     # Coeur de scoring PUR, modele v3.4 (compute_risk, aucune I/O)
+    ├── risk_shadow.py   # Modele shadow 3.4-gate (gate de remous, PUR), stocke, jamais affiche
     ├── risk_v2.py       # Construction des features (temps reel, simulation, backfill), stockage
     ├── forecast.py      # Previsions horaires (features par heure -> compute_risk)
     ├── backfill.py      # Backfill historique (rivers, rain, tides, soil, risk)
@@ -144,9 +144,9 @@ src/
     └── ApiKeyPanel.tsx  # Saisie de la cle API (localStorage)
 ```
 
-## Modele de risque v3.3
+## Modele de risque v3.4
 
-Une seule implementation : `risk_core.compute_risk(features: RiskFeatures) -> RiskBreakdown` (pure, sans I/O ni `utcnow()`). Tous les chemins construisent un `RiskFeatures` et l'appellent : `/api/realtime` et `/api/risk` (via `risk_v2.gather_realtime_inputs`), `/api/risk/simulate`, TimeMachine `/api/realtime/at`, `risk_v2.backfill_risk_scores`, et chaque heure de `forecast.py`. Les parametres viennent de `config.py` (`get_model_params()`). v3.3 = corrections de bugs de la calibration v3.2 (14 episodes), poids et mecanismes inchanges.
+Une seule implementation : `risk_core.compute_risk(features: RiskFeatures) -> RiskBreakdown` (pure, sans I/O ni `utcnow()`). Tous les chemins construisent un `RiskFeatures` et l'appellent : `/api/realtime` et `/api/risk` (via `risk_v2.gather_realtime_inputs`), `/api/risk/simulate`, TimeMachine `/api/realtime/at`, `risk_v2.backfill_risk_scores`, et chaque heure de `forecast.py`. Les parametres viennent de `config.py` (`get_model_params()`). v3.3 = corrections de bugs de la calibration v3.2 (14 episodes), poids et mecanismes inchanges. v3.4 = v3.3 + phase de maree corrigee (estimee a la confluence, embouchure + 6 h) + facteurs maree (`tide`, `tide_phase`) ponderes par le gate de Pessac ; poids inchanges.
 
 Constat cle : le moulin est sur la Lidoire (affluent), PAS sur la Dordogne. Un niveau Dordogne eleve seul ne signifie pas inondation au moulin. Le signal le plus fort est la montee simultanee de plusieurs stations + pluie.
 
@@ -158,8 +158,8 @@ Constat cle : le moulin est sur la Lidoire (affluent), PAS sur la Dordogne. Un n
 | Pluie 7j | `rain_7d` | 5% | Seuils 60/100/150 mm |
 | Tendance | `tendency` | 13% | Vitesse de la station primaire (Pessac), cm/h |
 | Momentum | `momentum` | 8% | Stations en hausse (> 1 cm/h), avec gate |
-| Coefficient maree | `tide` | 5% | Seuils 70/85/110 |
-| Phase maree | `tide_phase` | 5% | 1.0 a <= 1 h de la PM, 0.1 au-dela de 4 h |
+| Coefficient maree | `tide` | 5% | Seuils 70/85/110, x gate maree |
+| Phase maree | `tide_phase` | 5% | 1.0 a <= 1 h de la PM estimee a la confluence, 0.1 au-dela de 4 h, x gate maree |
 | Saturation sol | `soil_sat` | 5% | (facteur - 1.0) / 0.5, facteur 1.0-1.5 |
 | Vent d'ouest | `wind_west` | 3% | Lineaire 30-100 km/h |
 | Analyse video | `video` | 5% | Index camera 0-100 |
@@ -167,15 +167,16 @@ Constat cle : le moulin est sur la Lidoire (affluent), PAS sur la Dordogne. Un n
 Somme des poids = 1.00. Score station : lineaire par morceaux (0.33 au seuil jaune, 0.66 a l'orange, 1.0 au rouge) puis courbe x^0.6. Une station ne compte que si son dernier point a moins de 3 h (`risk_level_max_age_hours`) ; vitesse par regression sur 3 h de points <= t.
 
 - **Denominateur** : somme des poids des facteurs disponibles (`rain_7d`, `wind_west`, `soil_sat`, `video` peuvent etre indisponibles, listes dans `unavailable`). La maree reste au denominateur : absente ou estimee => `tide` et `tide_phase` valent 0 (note "tide data unavailable or estimated").
+- **Gate maree** (v3.4, `tide_gate`) : `tide` et `tide_phase` multiplies par g = (H - jaune) / (orange - jaune) borne a [0, 1], seuils jaune/orange de Pessac (`hubeau_stations`, 3.0 / 3.8 m). H = `backwater_level_m` = max de Pessac sur les 12.5 h precedentes (points <= t, `risk_core.backwater_level`, aussi le H_aval du shadow). H absent : niveau courant de Pessac (note), sinon g = 1. La branche de conjonction pleine mer garde la phase non gatee. Sources de H : temps reel = points stockes + dernier Hub'Eau (`risk_v2.load_primary_levels`), backfill (historique charge 13.5 h avant), TimeMachine (requete 12.5 h en plus du snapshot +/-6 h), prevision = max des points observes et des niveaux projetes de Pessac dans la fenetre.
 - **Sol** : n'entre que par `soil_saturation_factor` (multiplie les scores pluie, facteur `soil_sat`, branche de conjonction). Ne jamais pre-multiplier les millimetres.
 - **Multiplicateur de conjonction** (1.0 a 2.5x, `conjunction_multiplier`) : branches cumulees "crue active" (>= 4 stations en hausse + riviere > 0.35 + pluie), "multi-stations au-dessus de l'orange" (>= 3 stations a hauteur >= leur propre seuil orange : +0.45 si >= 1 en hausse, +0.30 sinon), "drainage empeche" (riviere haute + pluie 72h, +0.15 a +0.45), sol sature +0.15, montee + pluie +0.20, pluie soutenue +0.15, pleine mer + riviere > 0.5 +0.15.
 - **Amortisseur de stabilite** (0.65 a 1.0x, `stability_dampener`) : si score riviere >= 0.4, pluie 72h faible et moins de 3 stations au-dessus de l'orange : Pessac stable/en baisse avec 0 station en hausse => 0.65, 1 => 0.80 ; Pessac en hausse avec <= 1 station en hausse => 0.85.
 - **Gate momentum** : base selon le nombre de stations en hausse (0 / 0.2 / 0.5 / 0.8 / 1.0) multipliee par 0.2 / 0.4 / 0.7 / 1.0 selon le score riviere normalise (< 0.30 / < 0.40 / < 0.55 / au-dela ; score, pas metres).
 - **Score final** = min(100, somme ponderee x conjonction x amortisseur / denominateur x 100). Niveaux : vert < 15, jaune < 35, orange < 55, rouge.
 
-Stockage : seul le job `risk_scorer` du scheduler (toutes les heures, premier passage 2 min apres le demarrage) ecrit le score temps reel ; les routes de lecture ne stockent jamais. Points `risk_score` : `level` en champ, tag `model_version=3.3` ; les lectures preferent la version courante, les anciens points sans tag restent lisibles. Le backfill ecrit la meme serie (pas 1 h jusqu'a 7 jours, 3 h jusqu'a 30 jours, 6 h au-dela).
+Stockage : seul le job `risk_scorer` du scheduler (toutes les heures, premier passage 2 min apres le demarrage) ecrit le score temps reel ; les routes de lecture ne stockent jamais. Points `risk_score` : `level` en champ, tag `model_version=3.4` ; les lectures preferent la version courante (puis la plus recente), les anciens points sans tag restent lisibles. Le backfill ecrit la meme serie (pas 1 h jusqu'a 7 jours, 3 h jusqu'a 30 jours, 6 h au-dela).
 
-Shadow `3.3-gate` (`risk_shadow.py`) : score v3.3 x gate de remous g(H_aval), H_aval = max Pessac sur 12.5 h (points <= t), g = 0.5 a <= 3.0 m, 1.0 a >= 3.8 m, lineaire entre ; H_aval absent => 1.0. Meme semantique que `V33BackwaterModel` (qui reutilise la fonction de production, test d'equivalence). Ecrit par `risk_scorer` (via `compute_current_risk(store=True)`, un echec n'affecte jamais v3.3) dans la mesure dediee `risk_score_shadow` (tags `model_version=3.3-gate`, `source`, champs `factor_gate`, `factor_h_aval_m`, `factor_base_score`). Toutes les lectures de `risk_score` filtrent la mesure exacte et ecartent aussi toute version suffixee (`is_shadow_risk_version`) : score affiche, API, previsions, detection d'episodes et TimeMachine inchanges. Historique : `POST /api/episodes/backfill?...&risk_shadow=true` (off par defaut). Timeline : `include_risk_shadow=true` (serie `risk:shadow`, bouton "Shadow + remous").
+Shadow `3.4-gate` (`risk_shadow.py`, version = `MODEL_VERSION` + `-gate`) : score v3.4 x gate de remous g(H_aval), H_aval = `backwater_level_m` des features de production (max Pessac sur 12.5 h, points <= t, `risk_core.backwater_level`), g = 0.5 a <= 3.0 m, 1.0 a >= 3.8 m, lineaire entre ; H_aval absent => 1.0. Meme semantique que `V33BackwaterModel` (qui reutilise la fonction de production, test d'equivalence). Ecrit par `risk_scorer` (via `compute_current_risk(store=True)`, un echec n'affecte jamais v3.4) dans la mesure dediee `risk_score_shadow` (tags `model_version=3.4-gate`, les anciens points `3.3-gate` restent en base, `source`, champs `factor_gate`, `factor_h_aval_m`, `factor_base_score`). Toutes les lectures de `risk_score` filtrent la mesure exacte et ecartent aussi toute version suffixee (`is_shadow_risk_version`) : score affiche, API, previsions, detection d'episodes et TimeMachine inchanges. Historique : `POST /api/episodes/backfill?...&risk_shadow=true` (off par defaut). Timeline : `include_risk_shadow=true` (serie `risk:shadow`, bouton "Shadow + remous").
 
 Les entrees different selon le chemin : le temps reel fusionne Open-Meteo/Netatmo/Infoclimat (max) et a vent et sol ; backfill, TimeMachine et replay n'ont que les archives (vent, sol, video indisponibles).
 
@@ -211,7 +212,7 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 
 ## Sources de donnees
 
-- **Marees** : SHOM (cle API) ou Open-Meteo Marine (PM/BM extraites du niveau marin modele, coefficient estime). Marees estimees jamais stockees, `TideForecast.available=False`.
+- **Marees** : SHOM (cle API, port de Bordeaux) ou Open-Meteo Marine (niveau marin modele au large de l'embouchure, 45.6 / -1.2 ; PM/BM extraites, coefficient estime). Les heures sont decalees une seule fois, a la collecte, de `tide_phase_lag_hours[source]` (Open-Meteo 6 h, SHOM 2 h non mesure) pour estimer la maree a la confluence de la Lidoire, et stockees sous `port=LIDOIRE` (`tide_port_confluence`) ; hauteurs et coefficients restent ceux de la source. PM mesuree apres celle de l'embouchure (archives 2023-06 -> 2025-12) : Libourne +4.0 h, Pessac +7.0 h. Les anciens points `BORDEAUX`/`LIBOURNE` (sans decalage) ne sont plus lus : apres deploiement, re-backfill des marees et des scores. Serie timeline `tide:LIDOIRE`. Marees estimees jamais stockees, `TideForecast.available=False`.
 - **Niveaux rivieres** : Hub'Eau temps reel (30 derniers jours), Hydroportail pour l'historique, Vigicrues pour Libourne (metres)
 - **Meteo prevue** : Open-Meteo (modeles AROME/ARPEGE), timestamps UTC
 - **Meteo locale** : Netatmo (stations citoyennes du bassin Lidoire), Infoclimat StatIC
@@ -263,7 +264,8 @@ POST /api/episodes/backfill?start_date=2022-11-01&end_date=2026-01-28
 # Detection automatique (threshold 0-100, defaut 35 ; retenu si >= 6 h au-dessus de 35 ou >= 2 h au-dessus de 55)
 # Toute la periode en un appel : lecture Influx par fenetres de 30 jours (DETECTION_CHUNK_DAYS), etat des episodes
 # reporte d'une fenetre a l'autre => memoire bornee, resultat identique a une passe unique. Seuls les points
-# risk_score model_version=3.3 (et anciens sans tag) sont lus, jamais les series shadow (3.3-gate).
+# risk_score de la version courante (3.4, et anciens sans tag) sont lus, jamais les series shadow (3.4-gate) :
+# re-backfiller apres le passage en v3.4 avant de relancer la detection.
 POST /api/episodes/detect?start_date=2022-11-01&end_date=2026-10-26&threshold=45
 ```
 
@@ -271,7 +273,7 @@ Tous les POST/PUT/DELETE ci-dessus exigent `X-API-Key` quand `API_KEY` est defin
 
 ## Evaluation (`backend/scripts/eval/`)
 
-Replay horaire causal (points <= t uniquement) de v3.3 et de baselines sur les archives publiques, sans InfluxDB. `build` telecharge une fois (~4 min) dans `backend/data/eval_cache/` ; ensuite `replay`/`report` avec `--offline` (lecture du cache en ~15 s). Sorties dans `backend/data/eval_out/` (gitignore). Options : `--merge-gap 12`, `--strict-start`, `--no-tide`, `--sensitivity`, `--threshold orange=35`.
+Replay horaire causal (points <= t uniquement) de v3.4 (via `compute_risk`) et de baselines sur les archives publiques, sans InfluxDB. `build` telecharge une fois (~4 min) dans `backend/data/eval_cache/` ; ensuite `replay`/`report` avec `--offline` (lecture du cache en ~15 s). Sorties dans `backend/data/eval_out/` (gitignore). Options : `--merge-gap 12`, `--strict-start`, `--no-tide`, `--tide-lag 0` (decalage embouchure -> confluence, defaut config), `--sensitivity`, `--threshold orange=35`.
 
 Definitions (`contingency.py`, `hourly.py`) :
 - Alerte = suite d'heures consecutives avec score >= seuil. Elle detecte une crue si elle demarre entre pic - 72 h et pic + 6 h (ou est deja en cours a l'ouverture de la fenetre).
@@ -280,23 +282,23 @@ Definitions (`contingency.py`, `hourly.py`) :
 
 Interface d'un modele candidat : `name`, `score(row: FeatureRow) -> float | None`, optionnellement `kind` (`score` | `probability`), `thresholds`, `reset()`. Voir la docstring de `scripts/eval/__init__.py`.
 
-Resultats (2022-11-01 a 2026-10-25, 5 crues, alertes non fusionnees) :
+Resultats (2022-11-01 a 2026-10-25, 5 crues, alertes non fusionnees, phase maree a +6 h ; reference v3.3 a phase 0 h : 241 alertes orange, 57 fusionnees, CSI 0.09, AUC 0.952) :
 
 | Modele | Protocole | Niveau | Crues | Alertes | FA brutes (lab.+non lab.) | FAR brut / lab. | CSI | Avance med./min (h) | Alertes/an | AUC |
 |--------|-----------|--------|-------|---------|------|------|-----|------|------|-----|
-| v3.3 | in-sample (~45 constantes) | orange | 5/5 | 241 | 221 (20+201) | 98% / 80% | 0.02 | 63 / 11 | 68.0 | 0.952 [0.89-0.99] |
-| v3.3 | in-sample | rouge | 5/5 | 79 | 65 (13+52) | 93% / 72% | 0.07 | 21 / 5 | 23.1 | |
+| v3.4 | in-sample (~45 constantes) | orange | 5/5 | 154 | 140 (18+122) | 97% / 78% | 0.03 | 25 / 7 | 44.9 | 0.942 [0.86-0.99] |
+| v3.4 | in-sample | rouge | 5/5 | 79 | 61 (11+50) | 92% / 69% | 0.08 | 20 / 1 | 23.6 | |
 | pessac_level | sans label | orange | 4/5 | 20 | 16 (3+13) | 80% / 43% | 0.19 | 37 / -2 | 5.8 | 0.894 [0.78-0.97] |
 | pessac_level | sans label | rouge | 3/5 | 9 | | 67% / 25% | 0.27 | 3 / -4 | 3.0 | |
 | rain_72h | sans label | orange | 1/5 | 1 | | | 0.20 | | | 0.912 |
-| v3.3 + gate remous | sans label, 0 param. | orange | 5/5 | 74 | 62 (11+51) | 93% / 69% | 0.07 | 20 / 0 | 23.6 | 0.948 [0.88-0.99] |
-| v3.3 + gate remous | sans label | rouge | 4/5 | 56 | | | 0.08 | 44 / 11 | | |
+| v3.4 + gate remous | sans label, 0 param. | orange | 4/5 | 81 | 71 (13+58) | 95% / 76% | 0.05 | 46 / 20 | 25.4 | 0.938 [0.85-0.99] |
+| v3.4 + gate remous | sans label | rouge | 4/5 | 66 | | | 0.07 | 43 / 11 | | |
 | bw_rule_api_cv | LOEO bloque, 2 param. | orange | 3/5 | 8 | 5 (1+4) | 62% / 25% | 0.30 | 12 / 4 | 2.5 | 0.928 [0.86-0.98] |
 | lr_gr4h_haval_cv | LOEO bloque, 3 param. | orange | 4/5 | 15 | 10 (2+8) | 71% / 33% | 0.27 | 3 / -2 | 4.0 | 0.909 [0.81-0.98] |
 
-Alertes fusionnees a 12 h (orange) : v3.3 57 alertes / CSI 0.09 / 15.3 par an ; v3.3 + gate remous 21 / CSI 0.24 / 5.8 par an, POD 5/5 ; pessac_level 13 / CSI 0.29 ; bw_rule_api_cv 8 / CSI 0.30 ; lr_gr4h_haval_cv 13 / CSI 0.29.
+Alertes fusionnees a 12 h (orange) : v3.4 44 alertes / CSI 0.12 / 11.8 par an, POD 5/5 (rouge : 22 / CSI 0.23) ; v3.4 + gate remous 19 / CSI 0.20 / 5.0 par an, POD 4/5 ; pessac_level 13 / CSI 0.29 ; bw_rule_api_cv 8 / CSI 0.30 ; lr_gr4h_haval_cv 13 / CSI 0.29.
 
-Precautions : 5 crues (une crue = 20 points de POD, IC 95% de 3/5 = 15-95%, aucun ecart hors echantillon significatif) ; labels non exhaustifs (FAR brut pessimiste) ; v3.3 est in-sample donc optimiste ; le score v3.3 oscille autour de 35 au rythme de la maree (`--no-tide` : 241 -> 122 alertes orange). 2023-03-11 est une crue par infiltration (colmatee depuis).
+Precautions : 5 crues (une crue = 20 points de POD, IC 95% de 3/5 = 15-95%, aucun ecart hors echantillon significatif) ; labels non exhaustifs (FAR brut pessimiste) ; v3.4 est in-sample (constantes v3.2) donc optimiste. v3.3 avait ete calibre avec la phase non decalee (PM embouchure ~ BM a Libourne), qui compensait l'oscillation tidale de Pessac (PM a +7 h) : a +6 h sans gate, les alertes orange passent de 241 a 411 (122 avec `--no-tide`) ; le gate maree les ramene a 154. Le gate coute de l'avance (min 11 -> 7 h, mediane 63 -> 25 h). 2023-03-11 est une crue par infiltration (colmatee depuis).
 
 Periodes d'alerte v3.3 non labellisees a faire annoter : 2023-11-02 -> 11-06, 2023-11-09 -> 11-15, 2024-01-18 -> 01-19, 2024-02-10 -> 02-13, 2024-03-02 -> 03-04, 2024-05-14 -> 05-16, 2024-05-20 -> 05-23, 2024-11-21 -> 11-22, 2025-01-27 -> 01-29 (liste complete : `unlabelled_alerts.csv`).
 
@@ -333,7 +335,7 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 - Backend : 1 replique, `Recreate` obligatoire (APScheduler), sondes `/api/health`, initContainer d'attente TCP des dependances, PVC `backend-data` 1 Gi (`helm.sh/resource-policy: keep`). StatefulSets `postgres` (5 Gi) et `influxdb` (10 Gi) sur `sbs-default-retain`, Redis sans persistance.
 - PSS restricted partout, rootfs en lecture seule + emptyDir : uid 10001 (backend), 101 (nginx), 70 (postgres, `PGDATA` en sous-dossier), 1000 (influxdb, entrypoint non root), 999/1000 (redis).
 - Acces `http://lidoire.ts.kamorion.cloud` via tailnet (Service `frontend` ClusterIP fixe `10.32.0.100`) ; Ingress optionnel desactive.
-- Installation neuve : reconstituer via `POST /api/episodes/backfill?start_date=2022-11-01&end_date=<aujourd'hui>` avec `X-API-Key` (Secret `lidoire-backend`, cle `API_KEY`).
+- Installation neuve, et apres le passage en v3.4 : reconstituer via `POST /api/episodes/backfill?start_date=2022-11-01&end_date=<aujourd'hui>` avec `X-API-Key` (Secret `lidoire-backend`, cle `API_KEY`). Il recharge les marees sous `port=LIDOIRE` puis recalcule les scores `model_version=3.4`.
 - Sauvegarde : CronJob `backup` (pg_dump + `influx backup`, upload rclone vers S3 Scaleway, expiration a 30 jours par la regle de cycle de vie du bucket, le Job ne supprime rien : `backup.retentionDays: 0`). Restauration (`pg_restore`, `influx restore --full`) : voir README.
 
 ## Securite
@@ -350,7 +352,7 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 - Netatmo : `/api/realtime/basin-rainfall` expose `available`/`stations_count` (moyennes 0.0 = valeurs de remplissage si `available=false`) ; `/api/timeline/sources` marque les stations Netatmo `available=false` tant que Netatmo n'est pas autorise. La Timeline part par defaut sur Open-Meteo (Moulin) + Infoclimat.
 
 - `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`.
-- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score v3.3 temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives. `services.collectors` reste une declaration statique (compatibilite).
+- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives. `services.collectors` reste une declaration statique (compatibilite).
 - `/api/episodes/confirm/{id}` : `outcome` (`flooded`, `false_positive`, `near_miss`, `unknown`) ou ancien `was_flooded` ; remplace l'issue precedente.
 
 ## Variables d'environnement
@@ -371,5 +373,5 @@ Installation existante : conserver l'ancien mot de passe Postgres et l'ancien je
 
 - Capteur de niveau au moulin (seule mesure directe possible).
 - Pluie radar (COMEPHORE, ANTILOPE) comme entree d'un modele pluie-debit.
-- Gate de remous sur v3.3 en mode shadow pendant une saison : en place (serie `risk_score_shadow`, voir Stockage) ; comparer les deux courbes et labelliser les periodes ci-dessus avant toute bascule.
+- Gate de remous sur v3.4 en mode shadow pendant une saison : en place (serie `risk_score_shadow`, version `3.4-gate`, voir Stockage) ; comparer les deux courbes et labelliser les periodes ci-dessus avant toute bascule.
 - Regression logistique / GR4H seulement quand davantage d'episodes seront labellises.

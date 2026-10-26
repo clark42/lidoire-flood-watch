@@ -356,17 +356,15 @@ async def _ensure_tide_data(start: datetime, end: datetime) -> Optional[asyncio.
     if state is not None:
         return _result(state)
 
-    ports = [settings.tide_port_libourne, settings.tide_port_bordeaux]
+    # Only the confluence port (legacy BORDEAUX / LIBOURNE points have no phase lag)
+    port = settings.tide_port_confluence
     coverage = await query_coverage(
-        "tide", s, e, field="height_m", filters={"port": ports}, group_tag="port",
+        "tide", s, e, field="height_m", filters={"port": [port]}, group_tag="port",
     )
     if coverage is None:
         return None
 
-    # LIBOURNE first, BORDEAUX otherwise (Open-Meteo writes to BORDEAUX)
-    count = coverage.get(settings.tide_port_libourne, {}).get("count", 0)
-    if not count:
-        count = coverage.get(settings.tide_port_bordeaux, {}).get("count", 0)
+    count = coverage.get(port, {}).get("count", 0)
     expected = _expected_points(s, e, 2, 4)
 
     if count >= expected:
@@ -831,13 +829,13 @@ async def get_unified_timeline(
     end: Optional[datetime] = Query(None, description="End datetime (default: now)"),
     river_stations: Optional[str] = Query(None, description="Comma-separated Hub'Eau station IDs"),
     rainfall_sources: Optional[str] = Query(None, description="Comma-separated rainfall sources (format: source:city)"),
-    include_tide: bool = Query(False, description="Include tide data (Libourne)"),
+    include_tide: bool = Query(False, description="Include tide data (estimated at the Lidoire confluence)"),
     include_risk: bool = Query(False, description="Include risk score data"),
     include_soil: bool = Query(False, description="Include soil conditions data (moisture, temperature, ET0)"),
     include_infoclimat: bool = Query(True, description="Include Infoclimat rainfall data"),
     include_wind: bool = Query(False, description="Include wind speed/direction data"),
     include_forecast: bool = Query(False, description="Include 7-day risk forecast overlay"),
-    include_risk_shadow: bool = Query(False, description="Include the shadow risk score (v3.3 + backwater gate)"),
+    include_risk_shadow: bool = Query(False, description="Include the shadow risk score (v3.4 + backwater gate)"),
     resolution: str = Query("1h", description="Data resolution: 15m, 1h, 6h, 12h, 1d"),
 ):
     """
@@ -1003,19 +1001,15 @@ async def get_unified_timeline(
         if not include_tide:
             return {}
         settings = get_settings()
+        # Source sea level, times shifted to the Lidoire confluence
         tide_data = await query_tides_timeline(
-            start=start, end=end, port=settings.tide_port_libourne, resolution=resolution,
+            start=start, end=end, port=settings.tide_port_confluence, resolution=resolution,
         )
-        # Also try BORDEAUX port (Open-Meteo writes with port=BORDEAUX)
-        if not tide_data:
-            tide_data = await query_tides_timeline(
-                start=start, end=end, port=settings.tide_port_bordeaux, resolution=resolution,
-            )
         if not tide_data:
             return {}
         return {
-            "tide:LIBOURNE": TimelineSeries(
-                type="tide", name="Maree Libourne", unit="m",
+            "tide:LIDOIRE": TimelineSeries(
+                type="tide", name="Maree estimee confluence Lidoire", unit="m",
                 color="#3b82f6", data=_points(tide_data),
             )
         }
@@ -1125,7 +1119,7 @@ async def get_unified_timeline(
             return {}
         return {
             "risk:shadow": TimelineSeries(
-                type="risk_score_shadow", name="Score shadow (v3.3 + remous)", unit="/100",
+                type="risk_score_shadow", name="Score shadow (v3.4 + remous)", unit="/100",
                 color="#0d9488", data=_points(shadow_data),
             )
         }

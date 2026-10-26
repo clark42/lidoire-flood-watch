@@ -36,7 +36,7 @@ EVENTS = [
 
 def _tide_data(source="shom"):
     return [
-        TideData(timestamp=ts, port="BORDEAUX",
+        TideData(timestamp=ts, port="LIDOIRE",
                  tide_type=TideType.HIGH if kind == "PM" else TideType.LOW,
                  height_m=h, coefficient=c, source=source)
         for ts, kind, h, c in EVENTS
@@ -102,7 +102,7 @@ async def test_reviewfix_same_score_realtime_backfill_just_after_high_tide(realt
     rt, bf = compute_risk(realtime), compute_risk(backfill)
     assert rt.score == bf.score
     assert rt.tide_phase_score == bf.tide_phase_score
-    assert rt.tide_phase_score > 0.9
+    assert risk_core.tide_phase_score(rt.hours_to_high_tide) > 0.9  # before the v3.4 tide gate
     assert rt.tide_score == bf.tide_score
 
     # Old behaviour (future highs only) understated the phase for ~6h
@@ -163,7 +163,7 @@ async def test_reviewfix_collector_reads_stored_past_high_when_list_has_none(mon
     monkeypatch.setattr(influx_client, "query_tides", fake_query_tides)
 
     tide = await tide_collector.get_current_tide_data()
-    assert queried and queried[0][0] == "BORDEAUX"
+    assert queried and queried[0][0] == "LIDOIRE"
     assert queried[0][1] == T0 - timedelta(hours=13)
     assert HW_PREV in [t.timestamp for t in tide.recent_tides if t.tide_type == TideType.HIGH]
     assert risk_v2.tide_state_from_forecast(tide, T0).hours_to_high_tide == pytest.approx(-0.5)
@@ -197,7 +197,7 @@ def _snapshot(sc, tide_rows, window_h=6):
         ts = r["timestamp"].replace(tzinfo=timezone.utc).isoformat()
         field = "height_m" if r["height_m"] is not None else "coefficient"
         tides.append({"timestamp": ts, "value": r[field], "field": field,
-                      "port": "BORDEAUX", "tide_type": r["tide_type"]})
+                      "port": "LIDOIRE", "tide_type": r["tide_type"]})
     return {"river_levels": river, "rainfall": [], "tides": tides, "risk_scores": []}
 
 
@@ -224,7 +224,7 @@ async def test_reviewfix_timemachine_finds_high_tide_6h05_away(monkeypatch, tide
 
     async def fake_tides(port, start, end):
         # Real query_tides rows carry AWARE UTC timestamps
-        if port != "BORDEAUX":
+        if port != "LIDOIRE":
             return []
         return [{**r, "timestamp": r["timestamp"].replace(tzinfo=timezone.utc)}
                 for r in rows if start <= r["timestamp"] <= end]

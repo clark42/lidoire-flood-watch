@@ -198,7 +198,7 @@ async def test_ensure_returns_inflight_task_without_duplicating(monkeypatch):
 
 
 async def test_ensure_ok_is_cached(monkeypatch, tide_backfill):
-    coverage = _Counter({"LIBOURNE": {"count": 1000, "first": None}})
+    coverage = _Counter({"LIDOIRE": {"count": 1000, "first": None}})
     monkeypatch.setattr(timeline, "query_coverage", coverage)
     start, end = datetime(2023, 1, 1), datetime(2023, 1, 3)
     assert await timeline._ensure_tide_data(start, end) is None
@@ -316,7 +316,7 @@ async def test_unified_does_not_block_on_slow_backfill(app_client, monkeypatch):
     assert resp.status_code == 200
     assert resp.headers.get("X-Backfill-Pending") == "tide"
     body = resp.json()
-    assert [p["value"] for p in body["series"]["tide:LIBOURNE"]["data"]] == [3.2]
+    assert [p["value"] for p in body["series"]["tide:LIDOIRE"]["data"]] == [3.2]
     release.set()
     await asyncio.sleep(0)
 

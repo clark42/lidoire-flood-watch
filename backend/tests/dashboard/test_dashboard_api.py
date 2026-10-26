@@ -72,7 +72,7 @@ def test_dashboard_netatmo_is_authorised_needs_credentials_and_token(monkeypatch
 # --- UTC serialisation -----------------------------------------------------
 
 def test_dashboard_naive_datetimes_serialise_as_utc_with_offset():
-    tide = TideData(timestamp=datetime(2026, 10, 27, 3, 0), port="BORDEAUX", tide_type=TideType.HIGH,
+    tide = TideData(timestamp=datetime(2026, 10, 27, 3, 0), port="LIDOIRE", tide_type=TideType.HIGH,
                     height_m=1.9)
     assert tide.model_dump(mode="json")["timestamp"] == "2026-10-27T03:00:00Z"
     assert jsonable_encoder(tide)["timestamp"] == "2026-10-27T03:00:00Z"
@@ -82,7 +82,7 @@ def test_dashboard_naive_datetimes_serialise_as_utc_with_offset():
 
 def test_dashboard_aware_datetimes_are_converted_to_utc():
     paris = timezone(timedelta(hours=1))
-    tide = TideData(timestamp=datetime(2026, 10, 27, 4, 0, tzinfo=paris), port="BORDEAUX",
+    tide = TideData(timestamp=datetime(2026, 10, 27, 4, 0, tzinfo=paris), port="LIDOIRE",
                     tide_type=TideType.HIGH, height_m=1.9)
     assert tide.model_dump(mode="json")["timestamp"] == "2026-10-27T03:00:00Z"
 

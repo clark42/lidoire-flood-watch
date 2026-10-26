@@ -27,7 +27,7 @@ export const TOOLTIPS = {
     link: { url: 'https://maree.info/82', label: 'Marees Libourne' },
   },
   tidePhaseBmPm: {
-    text: "PM = Pleine Mer (maree haute), BM = Basse Mer (maree basse). Le risque est maximal a PM quand la maree empeche la riviere de s'ecouler vers l'ocean.",
+    text: "PM = Pleine Mer (maree haute), BM = Basse Mer (maree basse). Le risque est maximal a PM quand la maree empeche la riviere de s'ecouler vers l'ocean. Heures estimees a la confluence de la Lidoire : maree de l'embouchure de la Gironde decalee de 6 h (propagation mesuree : +4 h a Libourne, +7 h a Pessac).",
     link: { url: 'https://www.shom.fr/les-marees', label: 'SHOM - Les marees' },
   },
   tidePhaseHours: {
@@ -51,7 +51,7 @@ export const TOOLTIPS = {
 
   // Risque
   riskScore: {
-    text: 'Score composite 0-100 (modele v3.3) combinant 11 facteurs ponderes (rivieres, pluie, maree, vent, sol, video). Vert < 15 = normal. Jaune 15-35 = vigilance. Orange 35-55 = alerte. Rouge >= 55 = danger.',
+    text: 'Score composite 0-100 (modele v3.4) combinant 11 facteurs ponderes (rivieres, pluie, maree, vent, sol, video). La maree ne compte que si la Dordogne est haute (Pessac au-dessus de 3.0 m sur 12.5 h). Vert < 15 = normal. Jaune 15-35 = vigilance. Orange 35-55 = alerte. Rouge >= 55 = danger.',
   },
   conjunctionMultiplier: {
     text: "Bonus de risque (x1.0 a x1.5) quand maree haute + niveau eleve + montee des eaux se combinent. Ces conditions ensemble sont bien plus dangereuses que separement.",
@@ -121,13 +121,13 @@ export const TOOLTIPS = {
 
   // Maree timeline
   timelineTide: {
-    text: "Hauteur d'eau maregraphique a Libourne, en metres par rapport au zero hydrographique (reference des cartes marines). Les valeurs negatives sont normales : elles indiquent une basse mer sous le zero de reference. La sinusoide ~12h correspond au cycle naturel des marees. Attention : ce referentiel est different de celui des stations de riviere (zero local de chaque echelle).",
+    text: "Niveau marin modele (Open-Meteo Marine) a l'embouchure de la Gironde, en metres par rapport au niveau moyen, avec les heures decalees de 6 h pour estimer la maree a la confluence de la Lidoire. Seule la phase (heure des PM/BM) est representative : l'amplitude reste celle de l'embouchure. La sinusoide ~12h correspond au cycle naturel des marees. Attention : ce referentiel est different de celui des stations de riviere (zero local de chaque echelle).",
     link: { url: 'https://maree.info/82', label: 'Marees Libourne' },
   },
 
   // Timeline panels
   timelineLevels: {
-    text: "Niveaux d'eau mesures en continu sur les stations du bassin (Dordogne, Isle, Dronne). Chaque courbe correspond a une station hydrometrique Hub'Eau. La maree de Libourne (tirets) a un referentiel different (zero hydrographique) et peut etre negative en basse mer.",
+    text: "Niveaux d'eau mesures en continu sur les stations du bassin (Dordogne, Isle, Dronne). Chaque courbe correspond a une station hydrometrique Hub'Eau. La maree (tirets, estimee a la confluence) a un referentiel different (niveau moyen de la mer) et est negative en basse mer.",
     link: { url: 'https://hubeau.eaufrance.fr/page/api-hydrometrie', label: "Hub'Eau API" },
   },
   timelineRainfall: {
@@ -135,7 +135,7 @@ export const TOOLTIPS = {
     link: { url: 'https://open-meteo.com/', label: 'Open-Meteo' },
   },
   timelineRisk: {
-    text: "Score de risque composite (0-100, modele v3.3) calcule toutes les heures. Combine niveaux de rivieres (28%), pluie (28%), tendance et momentum (21%), maree (10%) et autres facteurs. Vert < 15, Jaune < 35, Orange < 55, Rouge >= 55.",
+    text: "Score de risque composite (0-100, modele v3.4) calcule toutes les heures. Combine niveaux de rivieres (28%), pluie (28%), tendance et momentum (21%), maree (10%) et autres facteurs. Vert < 15, Jaune < 35, Orange < 55, Rouge >= 55.",
   },
   timelineSoilMoisture: {
     text: "Humidite volumetrique du sol en m3/m3, modele ECMWF (IFS, ERA5 pour l'historique) via Open-Meteo. Couche superficielle (0-7cm) et profonde (7-100cm). Le Dashboard affiche le modele ICON (0-9 cm), plus sec : valeurs non comparables. Un sol sature (> 0.40) ne peut plus absorber la pluie.",

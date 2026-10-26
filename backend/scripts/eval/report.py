@@ -218,7 +218,7 @@ def summary_markdown(
 ) -> str:
     meta = dataset.meta
     cov = meta.get("coverage", {})
-    v33 = next((e for e in evaluations if e.name.startswith("v3.3")), evaluations[0] if evaluations else None)
+    v33 = next((e for e in evaluations if e.name.startswith("v3.")), evaluations[0] if evaluations else None)
     parts = [
         "# Evaluation of the warning system (hourly replay)",
         "",

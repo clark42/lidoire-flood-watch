@@ -454,7 +454,7 @@ async def _enrich_episode(ep: dict) -> Optional[DetectedEpisode]:
     total_rain = hourly_rain_total(rainfall_data, context_start, end)
 
     # Get tide coefficients
-    tide_data = await influx_client.query_tides("BORDEAUX", context_start, context_end)
+    tide_data = await influx_client.query_tides(get_settings().tide_port_confluence, context_start, context_end)
     max_coef = None
     for td in tide_data:
         coef = td.get("coefficient")

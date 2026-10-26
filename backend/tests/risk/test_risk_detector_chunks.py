@@ -70,15 +70,15 @@ def _risk_points() -> list[dict]:
 
     points = []
     for ts, score in scores.items():
-        points.append({"_time": _utc(ts), "_value": score, "model_version": "3.3", "source": "backfill"})
+        points.append({"_time": _utc(ts), "_value": score, "model_version": "3.4", "source": "backfill"})
     # Realtime points win over backfill within an hour (also on a chunk bound)
     for ts in (datetime(2024, 1, 7, 23, 0), datetime(2024, 1, 8, 0, 0)):
         points.append({"_time": _utc(ts + timedelta(minutes=5)), "_value": 70.0,
-                       "model_version": "3.3", "source": "realtime"})
+                       "model_version": "3.4", "source": "realtime"})
     # Shadow series: must never be read by the detector
     for h in range(48):
         ts = datetime(2024, 1, 20) + timedelta(hours=h)
-        points.append({"_time": _utc(ts), "_value": 95.0, "model_version": "3.3-gate", "source": "realtime"})
+        points.append({"_time": _utc(ts), "_value": 95.0, "model_version": "3.4-gate", "source": "realtime"})
     return points
 
 
@@ -167,7 +167,7 @@ async def test_detector_chunked_equals_single_pass(fake_influx):
     # Global median step (hourly) even though the first chunk is 6-hourly
     # Global median step (1 h) although the first chunks are 6-hourly: 7 h + 1 h
     assert [e["duration_hours"] for e in eps] == [8.0, 29.0, 15.75]
-    # The 3.3-gate shadow series (95 for two days) never shows up
+    # The 3.4-gate shadow series (95 for two days) never shows up
     assert all(e["peak_score"] < 95 for e in eps)
     # Libourne (tidal) is not even queried
     assert all(LIBOURNE not in e["max_river_levels"] for e in eps)
@@ -243,8 +243,8 @@ async def test_detector_lean_queries_flux(monkeypatch):
     await influx_client.query_risk_score_values(START, END)
     q = queries[-1]
     assert 'r._field == "score"' in q and "pivot(" not in q
-    assert '(not exists r.model_version) or r.model_version == "3.3"' in q
-    assert "3.3-gate" not in q
+    assert '(not exists r.model_version) or r.model_version == "3.4"' in q
+    assert "-gate" not in q and '"3.3"' not in q
 
     await influx_client.query_station_heights(START, END, [PESSAC])
     q = queries[-1]

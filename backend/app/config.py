@@ -171,9 +171,26 @@ class Settings(BaseSettings):
     # Changed from Libourne (P577001001) to Pessac-sur-Dordogne in v2.2
     hubeau_primary_station: str = "P555001001"
 
-    # Tide ports
+    # Tide ports. Collectors store the tide ESTIMATED at the Lidoire
+    # confluence (source time + tide_phase_lag_hours) under
+    # tide_port_confluence. BORDEAUX (Open-Meteo/SHOM times, no lag) and
+    # LIBOURNE are legacy tags, still valid for queries but no longer read.
+    tide_port_confluence: str = "LIDOIRE"
     tide_port_bordeaux: str = "BORDEAUX"
     tide_port_libourne: str = "LIBOURNE"
+    # Delay (h) of high water from each tide source to the Lidoire
+    # confluence, added to every PM/BM time and hourly height at collection.
+    # open-meteo-marine (model sea level off the Gironde mouth): measured
+    # high water lag (Open-Meteo archive vs Hydroportail, 2023-06 -> 2025-12)
+    # median 4.0 h at Libourne (p10-p90 3.25-4.5 h) and 7.0 h at Pessac
+    # (6.25-7.75 h). The confluence, ~30 km above Libourne and ~7 km below
+    # Pessac, is between the two: 6 h.
+    # shom (Bordeaux port, ~as far above the Bec d'Ambes as Libourne): not
+    # measured, 6 h - 4 h = 2 h as an order of magnitude.
+    tide_phase_lag_hours: dict[str, float] = {
+        "open-meteo-marine": 6.0,
+        "shom": 2.0,
+    }
 
     # Risk thresholds (v2.4: lowered based on Feb 2024 analysis)
     risk_rain_24h_yellow: float = 25.0  # mm (was 30)
@@ -184,7 +201,7 @@ class Settings(BaseSettings):
     risk_dordogne_level_red: float = 4.5     # (was 5.0)
     risk_tide_coef_high: int = 85  # (was 90)
 
-    # Risk model v3.3 parameters (single source for app/services/risk_core.py).
+    # Risk model v3.4 parameters (single source for app/services/risk_core.py).
     # Weights are the v3.2 calibration (14 annotated episodes) - unchanged.
     risk_weights: dict[str, float] = {
         "river": 0.28,

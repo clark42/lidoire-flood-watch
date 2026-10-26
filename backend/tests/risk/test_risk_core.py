@@ -199,7 +199,7 @@ def test_risk_primary_fallback_never_libourne():
 
 
 def test_risk_tide_unavailable_contributes_zero_and_is_reported():
-    st = [station(h=3.5)]
+    st = [station(h=4.0)]  # above the Pessac orange threshold: tide gate fully open
     ok = compute_risk(features(st, tide_coefficient=110, hours_to_high_tide=0.5))
     ko = compute_risk(features(st, tide_available=False, tide_coefficient=110, hours_to_high_tide=0.5))
     assert ok.tide_score == 1.0 and ok.tide_phase_score == 1.0
@@ -245,7 +245,7 @@ def test_risk_levels_and_model_version():
     assert risk_core.score_to_level(35) == RiskLevel.ORANGE
     assert risk_core.score_to_level(55) == RiskLevel.RED
     bd = compute_risk(features([station(h=4.6, rate=12.0)], rain_24h_mm=70, rain_72h_mm=130))
-    assert bd.model_version == "3.3"
+    assert bd.model_version == "3.4"
     assert bd.level == RiskLevel.RED
     assert 0 <= bd.score <= 100
 

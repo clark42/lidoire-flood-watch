@@ -47,7 +47,7 @@ async def test_reviewfix_realtime_score_is_tagged_source_realtime(monkeypatch):
     ))
     assert await risk_v2.store_risk_score(risk)
     tags = api.records[0].to_line_protocol().split(" ")[0]
-    assert tags == "risk_score,model_version=3.3,source=realtime"
+    assert tags == f"risk_score,model_version={risk_core.MODEL_VERSION},source=realtime"
 
 
 def test_reviewfix_prefer_realtime_rows_per_hour_and_version():
@@ -165,22 +165,22 @@ def _tide_rows():
     pm = T - timedelta(hours=2)
     bm = T + timedelta(hours=4, minutes=12)
     rows = [
-        {"timestamp": pm.replace(tzinfo=UTC), "height_m": 5.6, "coefficient": None, "tide_type": "PM", "port": "BORDEAUX"},
-        {"timestamp": pm.replace(tzinfo=UTC), "height_m": None, "coefficient": 87, "tide_type": "PM", "port": "BORDEAUX"},
-        {"timestamp": bm.replace(tzinfo=UTC), "height_m": 0.7, "coefficient": None, "tide_type": "BM", "port": "BORDEAUX"},
+        {"timestamp": pm.replace(tzinfo=UTC), "height_m": 5.6, "coefficient": None, "tide_type": "PM", "port": "LIDOIRE"},
+        {"timestamp": pm.replace(tzinfo=UTC), "height_m": None, "coefficient": 87, "tide_type": "PM", "port": "LIDOIRE"},
+        {"timestamp": bm.replace(tzinfo=UTC), "height_m": 0.7, "coefficient": None, "tide_type": "BM", "port": "LIDOIRE"},
     ]
     # untagged hourly heights are ignored
     rows += [{"timestamp": (T + timedelta(hours=k)).replace(tzinfo=UTC), "height_m": 1.0 + k / 10,
-              "coefficient": None, "tide_type": None, "port": "BORDEAUX"} for k in range(3)]
+              "coefficient": None, "tide_type": None, "port": "LIDOIRE"} for k in range(3)]
     return rows
 
 
-async def test_reviewfix_historical_tides_read_bordeaux_events(monkeypatch):
+async def test_reviewfix_historical_tides_read_confluence_events(monkeypatch):
     ports = []
 
     async def fake_query_tides(port, start, end):
         ports.append(port)
-        return _tide_rows() if port == "BORDEAUX" else []
+        return _tide_rows() if port == "LIDOIRE" else []
 
     async def no_fetch(*a, **k):
         raise AssertionError("no API fetch when tides are stored")
@@ -189,7 +189,7 @@ async def test_reviewfix_historical_tides_read_bordeaux_events(monkeypatch):
     monkeypatch.setattr(tide_collector, "fetch_and_store_tides_range", no_fetch)
 
     tides = await data_store.get_historical_tides(T - timedelta(hours=6), T + timedelta(hours=6))
-    assert ports[0] == "BORDEAUX"
+    assert ports[0] == "LIDOIRE"
     assert [(t.tide_type, t.coefficient, t.height_m) for t in tides] == [
         (TideType.HIGH, 87, 5.6), (TideType.LOW, None, 0.7),
     ]
@@ -201,7 +201,7 @@ async def test_reviewfix_historical_tides_fetch_range_when_nothing_stored(monkey
     fetched = []
 
     async def fake_query_tides(port, start, end):
-        return stored["rows"] if port == "BORDEAUX" else []
+        return stored["rows"] if port == "LIDOIRE" else []
 
     async def fake_fetch(start, end):
         fetched.append((start, end))
@@ -220,10 +220,10 @@ async def test_reviewfix_historical_tides_fetch_range_when_nothing_stored(monkey
 async def test_reviewfix_historical_tides_detects_highs_from_heights(monkeypatch):
     heights = [1.0, 2.0, 3.0, 2.5, 1.0, 0.5, 1.5]
     rows = [{"timestamp": (T + timedelta(hours=k)).replace(tzinfo=UTC), "height_m": h,
-             "coefficient": None, "tide_type": None, "port": "BORDEAUX"} for k, h in enumerate(heights)]
+             "coefficient": None, "tide_type": None, "port": "LIDOIRE"} for k, h in enumerate(heights)]
 
     async def fake_query_tides(port, start, end):
-        return rows if port == "BORDEAUX" else []
+        return rows if port == "LIDOIRE" else []
 
     monkeypatch.setattr(influx_client, "query_tides", fake_query_tides)
     tides = await data_store.get_historical_tides(T, T + timedelta(hours=8))
@@ -247,9 +247,9 @@ async def test_reviewfix_store_rainfall_is_one_batch(monkeypatch):
 async def test_reviewfix_store_tide_data_is_one_batch_and_skips_estimated(monkeypatch):
     batches = _capture_batches(monkeypatch)
     tides = [
-        TideData(timestamp=T, port="BORDEAUX", tide_type=TideType.HIGH, height_m=5.0, coefficient=80, source="shom"),
-        TideData(timestamp=T + timedelta(hours=6), port="BORDEAUX", tide_type=TideType.LOW, height_m=1.0, source="shom"),
-        TideData(timestamp=T + timedelta(hours=12), port="BORDEAUX", tide_type=TideType.HIGH, height_m=5.0,
+        TideData(timestamp=T, port="LIDOIRE", tide_type=TideType.HIGH, height_m=5.0, coefficient=80, source="shom"),
+        TideData(timestamp=T + timedelta(hours=6), port="LIDOIRE", tide_type=TideType.LOW, height_m=1.0, source="shom"),
+        TideData(timestamp=T + timedelta(hours=12), port="LIDOIRE", tide_type=TideType.HIGH, height_m=5.0,
                  source="estimated"),
     ]
     assert await data_store.store_tide_data(tides) == 2
@@ -271,7 +271,7 @@ async def test_reviewfix_risk_backfill_never_writes_point_by_point(monkeypatch):
                 for k, v in sc.rain_hourly.items()]
 
     async def q_tides(port, start, end):
-        return sc.tide_rows if port == "BORDEAUX" else []
+        return sc.tide_rows if port == "LIDOIRE" else []
 
     batches = _capture_batches(monkeypatch)
     monkeypatch.setattr(influx_client, "write_risk_score", forbidden)
@@ -282,7 +282,7 @@ async def test_reviewfix_risk_backfill_never_writes_point_by_point(monkeypatch):
     assert await risk_v2.backfill_risk_scores(sc.t0 - timedelta(hours=5), sc.t0) == 6
     assert len(batches) == 1
     assert {p["tags"]["source"] for p in batches[0]} == {"backfill"}
-    assert {p["tags"]["model_version"] for p in batches[0]} == {"3.3"}
+    assert {p["tags"]["model_version"] for p in batches[0]} == {risk_core.MODEL_VERSION}
 
 
 # --- Netatmo coverage query is non-blocking ---------------------------------

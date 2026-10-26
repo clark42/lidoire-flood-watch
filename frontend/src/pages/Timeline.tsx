@@ -85,7 +85,7 @@ export default function Timeline() {
   const [infoclimatEnabled, setInfoclimatEnabled] = useState(() => searchParams.get('infoclimat') !== '0')
   const [windEnabled, setWindEnabled] = useState(() => searchParams.get('wind') === '1')
   const [forecastEnabled, setForecastEnabled] = useState(() => searchParams.get('forecast') === '1')
-  // Shadow model 3.3-gate (v3.3 + backwater gate), compared with the displayed score
+  // Shadow model 3.4-gate (v3.4 + backwater gate), compared with the displayed score
   const [riskShadowEnabled, setRiskShadowEnabled] = useState(() => searchParams.get('risk_shadow') === '1')
 
   // Data

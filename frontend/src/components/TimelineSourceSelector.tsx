@@ -233,7 +233,7 @@ export default function TimelineSourceSelector({
         >
           <Anchor className="w-4 h-4" />
           {tideEnabled && <Check className="w-3 h-3" />}
-          Maree (Libourne)
+          Maree (confluence, estimee)
         </button>
 
         <button
@@ -252,7 +252,7 @@ export default function TimelineSourceSelector({
         {onRiskShadowToggle && (
           <button
             onClick={onRiskShadowToggle}
-            title="Modele shadow 3.3-gate (v3.3 x gate de remous Pessac), stocke pour comparaison, sans effet sur le score affiche"
+            title="Modele shadow 3.4-gate (v3.4 x gate de remous Pessac), stocke pour comparaison, sans effet sur le score affiche"
             className={`flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-all ${
               riskShadowEnabled
                 ? 'bg-teal-50 border-teal-300 text-teal-700 border-2'

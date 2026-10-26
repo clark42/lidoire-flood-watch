@@ -1,4 +1,4 @@
-"""Shadow model 3.3-gate: stored by the hourly job and the opt-in backfill, v3.3 untouched."""
+"""Shadow model 3.4-gate: stored by the hourly job and the opt-in backfill, v3.4 untouched."""
 
 from datetime import timedelta, timezone
 
@@ -32,7 +32,7 @@ class _ShadowInflux:
         return [r for r in self.rain_rows if start <= r["timestamp"] < end]
 
     async def query_tides(self, port, start, end):
-        return self.sc.tide_rows if port == "BORDEAUX" else []
+        return self.sc.tide_rows if port == "LIDOIRE" else []
 
     async def query_risk_scores(self, start, end, model_version=None):
         return []
@@ -85,15 +85,15 @@ async def test_shadow_realtime_job_stores_both_series(shadow_influx):
     sc, stub, inputs = shadow_influx
     risk, _ = await risk_v2.compute_current_risk(store=True)
 
-    # Displayed score is exactly v3.3, stored once in risk_score
-    assert risk.model_version == "3.3"
+    # Displayed score is exactly v3.4, stored once in risk_score
+    assert risk.model_version == "3.4"
     assert risk.score == risk_v2.risk_from_inputs(inputs).score
     main = stub.of("risk_score")
-    assert [(w["score"], w["model_version"], w["source"]) for w in main] == [(risk.score, "3.3", "realtime")]
+    assert [(w["score"], w["model_version"], w["source"]) for w in main] == [(risk.score, "3.4", "realtime")]
 
     # Shadow: Pessac max over the trailing 12.5h (points <= t0) = 3.2 m -> gate 0.625
     [shadow] = stub.of("risk_score_shadow")
-    assert shadow["model_version"] == risk_shadow.SHADOW_MODEL_VERSION == "3.3-gate"
+    assert shadow["model_version"] == risk_shadow.SHADOW_MODEL_VERSION == "3.4-gate"
     assert shadow["source"] == "realtime"
     assert shadow["timestamp"] == sc.t0
     assert shadow["factors"]["h_aval_m"] == pytest.approx(3.2)
@@ -101,8 +101,8 @@ async def test_shadow_realtime_job_stores_both_series(shadow_influx):
     assert shadow["factors"]["base_score"] == risk.score
     assert shadow["score"] == pytest.approx(risk.score * 0.625)
     assert shadow["level"] == risk_shadow.shadow_level(shadow["score"]).value
-    sid, start, end = stub.river_queries[-1]
-    assert sid == "P555001001" and start == sc.t0 - timedelta(hours=12.5) and end > sc.t0
+    # H_aval is the backwater level of the production features (v3.4 tide gate input)
+    assert shadow["factors"]["h_aval_m"] == inputs.features().backwater_level_m
 
 
 async def test_shadow_not_stored_when_store_false(shadow_influx):
@@ -117,7 +117,7 @@ async def test_shadow_failure_never_breaks_the_v33_score(shadow_influx, monkeypa
     async def boom(*a, **k):
         raise RuntimeError("influx down")
 
-    monkeypatch.setattr(influx_client, "query_river_levels", boom)
+    monkeypatch.setattr(risk_shadow, "gated_score", boom)
     risk, _ = await risk_v2.compute_current_risk(store=True)
     assert risk.score == risk_v2.risk_from_inputs(inputs).score
     assert len(stub.of("risk_score")) == 1
@@ -143,11 +143,11 @@ async def test_shadow_backfill_is_opt_in_and_leaves_v33_unchanged(shadow_influx)
 
     stub.writes.clear()
     stored = await risk_v2.backfill_risk_scores(start, sc.t0, shadow=True)
-    assert stored == 4  # v3.3 count only
+    assert stored == 4  # v3.4 count only
     assert [(w["timestamp"], w["score"]) for w in stub.of("risk_score")] == baseline
     shadow = stub.of("risk_score_shadow")
     assert [w["timestamp"] for w in shadow] == [ts for ts, _ in baseline]
-    assert {(w["model_version"], w["source"]) for w in shadow} == {("3.3-gate", "backfill")}
+    assert {(w["model_version"], w["source"]) for w in shadow} == {("3.4-gate", "backfill")}
     pessac = stub.points["P555001001"]
     for w, (ts, base) in zip(shadow, baseline):
         h = risk_shadow.backwater_level(pessac, ts)

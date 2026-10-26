@@ -311,7 +311,7 @@ def _context_lines(ctx: Context) -> list[str]:
     if ctx.rain_72h_mm is not None:
         lines.append(f"Pluie 72 h : {_num(ctx.rain_72h_mm, 0)} mm")
     if ctx.next_high_tide is not None:
-        tide = f"Prochaine pleine mer : {_local(ctx.next_high_tide)}"
+        tide = f"Prochaine pleine mer (confluence) : {_local(ctx.next_high_tide)}"
         if ctx.tide_coefficient:
             tide += f", coef. {ctx.tide_coefficient}"
         if ctx.tide_estimated:

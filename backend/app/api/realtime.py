@@ -29,6 +29,7 @@ from app.services.risk_v2 import (
     TIDE_WINDOW_H,
     breakdown_to_risk_score,
     gather_realtime_inputs,
+    load_primary_levels,
     load_tide_rows,
     rain_hourly_from_records,
     risk_from_inputs,
@@ -501,9 +502,15 @@ def _snapshot_station_points(snapshot: dict) -> dict[str, list[risk_core.LevelPo
 
 
 def _snapshot_tide_rows(snapshot: dict) -> list[dict]:
-    """Convert snapshot tide records to query_tides()-like rows."""
+    """Convert snapshot tide records to query_tides()-like rows.
+
+    Confluence port only, as ``load_tide_rows`` (legacy ports have no phase lag).
+    """
+    port = get_settings().tide_port_confluence
     rows = []
     for t in snapshot["tides"]:
+        if t.get("port") not in (None, port):
+            continue
         try:
             ts = _to_naive(isoparse(t["timestamp"]))
         except (ValueError, TypeError, KeyError):
@@ -539,10 +546,13 @@ async def get_realtime_data_at(timestamp: str):
     # Tides over +/-13h (same window and port rule as backfill_risk_scores):
     # the nearest high tide can be ~6h12 away, outside the +/-6h snapshot.
     tide_window = timedelta(hours=TIDE_WINDOW_H)
-    snapshot, rain_rows, tide_rows = await asyncio.gather(
+    # Primary levels over the trailing 12.5h (tide gate, v3.4): longer than
+    # the -6h of the snapshot.
+    snapshot, rain_rows, tide_rows, primary_rows = await asyncio.gather(
         query_historical_snapshot(target_time, window_hours=6),
         query_rainfall(target_time - timedelta(hours=169), target_time + timedelta(minutes=1)),
         load_tide_rows(target_time - tide_window, target_time + tide_window),
+        load_primary_levels(target_time),
     )
 
     # === CACHE-THROUGH (inputs only) ===
@@ -557,6 +567,8 @@ async def get_realtime_data_at(timestamp: str):
 
     # === FEATURES (same builder as backfill) ===
     station_points = _snapshot_station_points(snapshot)
+    primary_id = settings.hubeau_primary_station
+    station_points[primary_id] = sorted(set(station_points.get(primary_id, [])) | set(primary_rows))
     configs = [risk_core.StationConfig.from_settings_dict(c) for c in settings.hubeau_stations]
     # query_tides rows carry aware timestamps (display code compares naive)
     tide_rows = [
@@ -626,13 +638,15 @@ async def get_realtime_data_at(timestamp: str):
     )
 
     # Tide display (PM/BM events of the snapshot)
-    tide_forecast = TideForecast(port="LIBOURNE", tides=[], current_coefficient=tide_state.coefficient)
+    tide_forecast = TideForecast(
+        port=settings.tide_port_confluence, tides=[], current_coefficient=tide_state.coefficient,
+    )
     for row in sorted(tide_rows, key=lambda r: r["timestamp"]):
         if row["height_m"] is None or row.get("tide_type") not in ("PM", "BM"):
             continue
         td = TideData(
             timestamp=row["timestamp"],
-            port=row.get("port") or "LIBOURNE",
+            port=row.get("port") or settings.tide_port_confluence,
             tide_type=TideType(row["tide_type"]),
             height_m=row["height_m"],
             coefficient=tide_state.coefficient,

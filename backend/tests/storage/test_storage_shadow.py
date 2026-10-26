@@ -1,4 +1,4 @@
-"""Shadow risk series (3.3-gate): own measurement, never mixed into risk_score reads."""
+"""Shadow risk series (3.4-gate): own measurement, never mixed into risk_score reads."""
 
 import pathlib
 import re
@@ -26,7 +26,7 @@ def test_shadow_point_uses_dedicated_measurement():
     )
     d = influx_client.point_as_dict(p)
     assert d["measurement"] == "risk_score_shadow"
-    assert d["tags"] == {"model_version": "3.3-gate", "source": "realtime"}
+    assert d["tags"] == {"model_version": "3.4-gate", "source": "realtime"}
     assert d["fields"]["factor_gate"] == 0.5
     # default stays the displayed series
     assert influx_client.point_as_dict(
@@ -36,7 +36,8 @@ def test_shadow_point_uses_dedicated_measurement():
 
 def test_shadow_version_detection():
     assert influx_client.is_shadow_risk_version("3.3-gate")
-    for v in ("3.3", "3.2", None, "", "legacy"):
+    assert influx_client.is_shadow_risk_version("3.4-gate")
+    for v in ("3.4", "3.3", "3.2", None, "", "legacy"):
         assert not influx_client.is_shadow_risk_version(v)
 
 
@@ -67,9 +68,9 @@ async def test_risk_timeline_drops_shadow_and_shadow_timeline_reads_own_measurem
     assert 'r._measurement == "risk_score")' in queries[-1]
 
     set_response(fake_tables([
-        [_rec(T, 11.0, "3.3-gate", "backfill"), _rec(T + timedelta(hours=1), 12.0, "3.3-gate", "backfill")],
-        [_rec(T + timedelta(hours=1), 13.0, "3.3-gate", "realtime")],
-        [_rec(T, 99.0, "3.4-gate", "realtime")],  # another shadow version: not this series
+        [_rec(T, 11.0, "3.4-gate", "backfill"), _rec(T + timedelta(hours=1), 12.0, "3.4-gate", "backfill")],
+        [_rec(T + timedelta(hours=1), 13.0, "3.4-gate", "realtime")],
+        [_rec(T, 99.0, "3.3-gate", "realtime")],  # older shadow version: not this series
     ]))
     rows = await influx_client.query_risk_shadow_timeline(T, T + timedelta(hours=2), SHADOW_MODEL_VERSION)
     assert [r["value"] for r in rows] == [11.0, 13.0]  # realtime wins over backfill per window

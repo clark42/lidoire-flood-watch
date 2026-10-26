@@ -84,7 +84,7 @@ async def test_notifier_message_content_in_french(harness):
     assert "Le risque au moulin passe de VERT à ROUGE (score 60/100)." in body
     assert "Pessac-sur-Dordogne : 3,92 m, en hausse (+2,1 cm/h)" in body
     assert "Pluie 72 h : 48 mm" in body
-    assert "Prochaine pleine mer : 10/02 16:30, coef. 95" in body   # Europe/Paris (UTC+1)
+    assert "Prochaine pleine mer (confluence) : 10/02 16:30, coef. 95" in body   # Europe/Paris (UTC+1)
     assert "Tableau de bord : http://lidoire.test" in body
     assert request.headers["Priority"] == "5"
     assert request.headers["Tags"] == "rotating_light"

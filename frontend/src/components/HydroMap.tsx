@@ -207,7 +207,7 @@ export default function HydroMap({
         <Marker position={LIBOURNE_PORT} icon={anchorIcon}>
           <Tooltip direction="top" offset={[0, -8]}>
             <div>
-              <span className="font-medium">Maree - Libourne</span>
+              <span className="font-medium">Maree (estimee a la confluence)</span>
               {tide?.current_coefficient != null && (
                 <>
                   <br />
@@ -218,8 +218,8 @@ export default function HydroMap({
           </Tooltip>
           <Popup>
             <div className="text-sm space-y-1">
-              <div className="font-semibold">Station maregraphique</div>
-              <div className="text-xs text-gray-500">Port de Libourne</div>
+              <div className="font-semibold">Maree estimee</div>
+              <div className="text-xs text-gray-500">Confluence de la Lidoire (embouchure + 6 h)</div>
               {tide?.current_coefficient != null && (
                 <div>
                   Coefficient :{' '}
@@ -227,7 +227,7 @@ export default function HydroMap({
                 </div>
               )}
               <div className="text-xs text-gray-400">
-                Source : Open-Meteo Marine
+                Source : Open-Meteo Marine (embouchure de la Gironde)
               </div>
             </div>
           </Popup>
@@ -379,7 +379,7 @@ export default function HydroMap({
         </div>
         <div className="flex items-center gap-1.5">
           <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#2563eb]" />
-          <span>Maree (Libourne)</span>
+          <span>Maree (estimee)</span>
         </div>
       </div>
     </div>
