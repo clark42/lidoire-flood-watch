@@ -604,6 +604,45 @@ async def query_all_stations_levels(
         return {}
 
 
+async def query_station_heights(
+    start: datetime,
+    end: datetime,
+    station_ids: Iterable[str],
+) -> dict[str, list[tuple[datetime, float]]]:
+    """Compact river heights for long scans: station_id -> [(time, height_m)].
+
+    Same points as :func:`query_all_stations_levels` (full resolution,
+    ``[start, end)``) restricted to ``station_ids``, with only ``_time``,
+    ``_value`` and ``station_id`` kept server side. Times are naive UTC,
+    sorted. Query errors propagate: a long scan must not mistake a failed
+    chunk for "no data".
+    """
+    ids = validate_station_ids(station_ids)
+    if not ids:
+        return {}
+
+    query = f'''
+    from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
+        |> filter(fn: (r) => r._measurement == "river_level")
+        |> filter(fn: (r) => r._field == "height_m")
+        {_or_filter("station_id", ids)}
+        |> keep(columns: ["_time", "_value", "station_id"])
+    '''
+
+    tables = await _run_query(query)
+    results: dict[str, list[tuple[datetime, float]]] = {}
+    for table in tables:
+        for record in table.records:
+            station_id = record.values.get("station_id", "unknown")
+            results.setdefault(station_id, []).append(
+                (to_naive_utc(record.get_time()), record.get_value())
+            )
+    for points in results.values():
+        points.sort(key=lambda p: p[0])
+    return results
+
+
 async def query_tides(
     port: str,
     start: datetime,
@@ -1041,6 +1080,49 @@ async def query_risk_scores(
     except Exception as e:
         logger.error("Error querying risk scores from InfluxDB: %s", e)
         return []
+
+
+async def query_risk_score_values(
+    start: datetime,
+    end: datetime,
+    model_version: Optional[str] = None,
+) -> list[dict]:
+    """Lean risk scores for long scans: timestamp, score, model_version, source.
+
+    Only the ``score`` field is read (no pivot, no factor_* fields) and only
+    ``model_version`` (default: current model) or untagged/legacy points are
+    kept server side: other series such as shadow models (e.g. "3.3-gate")
+    never enter detection. Rows then go through the same selection as
+    :func:`query_risk_scores` (one row per timestamp, realtime over backfill
+    within an hour). Query errors propagate (see :func:`query_station_heights`).
+    """
+    version = model_version or _current_risk_model_version()
+    version_filter = "(not exists r.model_version)"
+    for v in (version, LEGACY_RISK_VERSION):
+        if v:
+            version_filter += f" or r.model_version == {flux_string(v)}"
+
+    query = f'''
+    from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
+        |> filter(fn: (r) => r._measurement == "risk_score" and r._field == "score")
+        |> filter(fn: (r) => {version_filter})
+        |> keep(columns: ["_time", "_value", "model_version", "source"])
+    '''
+
+    tables = await _run_query(query)
+    rows = [
+        {
+            "timestamp": record.get_time(),
+            "score": record.get_value(),
+            "model_version": record.values.get("model_version"),
+            "source": record.values.get("source"),
+        }
+        for table in tables
+        for record in table.records
+        if record.get_value() is not None
+    ]
+    return prefer_realtime_risk_rows(select_risk_rows_by_version(rows, version))
 
 
 async def get_data_stats() -> dict:
