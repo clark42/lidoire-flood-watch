@@ -530,10 +530,23 @@ class RainfallStationInfo(BaseModel):
     available: bool = True
 
 
+class IndicatorSeriesInfo(BaseModel):
+    """Hydrological indicator series (outside the risk model), timeline id ``kind:KEY``."""
+    id: str  # "flow:EYRAUD", "gw:MOULIETS", "tide_obs:BORDEAUX"
+    kind: str  # "flow" | "groundwater" | "tide_observed"
+    type: str  # TimelineSeries.type: flow_tributary | flow_dordogne | groundwater | tide_observed
+    name: str
+    unit: str
+    color: str
+    role: Optional[str] = None
+    distance_km: float = 0.0
+
+
 class AvailableSources(BaseModel):
     """Available data sources for timeline comparison."""
     river_stations: list[RiverStationInfo] = []
     rainfall_stations: list[RainfallStationInfo] = []
+    indicator_series: list[IndicatorSeriesInfo] = []
     has_tide: bool = True
     has_risk_score: bool = True
     has_infoclimat: bool = True
@@ -646,3 +659,129 @@ class ForecastSkill(BaseModel):
     notes: list[str] = []
 
     model_config = {"protected_namespaces": ()}
+
+
+# ---------------------------------------------------------------------------
+# Official vigilance (Vigicrues, Meteo-France): informative, not a model input
+# ---------------------------------------------------------------------------
+
+
+class VigilanceWindow(BaseModel):
+    """Validity window of one Meteo-France colour (level 1-4)."""
+    begin: UtcDatetime
+    end: UtcDatetime
+    level: int = Field(..., ge=1, le=4)
+
+
+class VigilanceTroncon(BaseModel):
+    """Vigicrues flood vigilance of one troncon (level 1 vert .. 4 rouge)."""
+    code: str
+    name: str
+    level: Optional[int] = Field(None, ge=1, le=4, description="None when missing from the feed")
+    color: Optional[str] = None  # vert | jaune | orange | rouge
+    url: str
+    station_url: Optional[str] = None
+
+
+class VigicruesVigilance(BaseModel):
+    available: bool = False
+    issued_at: Optional[UtcDatetime] = None
+    fetched_at: Optional[UtcDatetime] = None
+    troncons: list[VigilanceTroncon] = []
+    url: str
+
+
+class VigilancePhenomenon(BaseModel):
+    """Meteo-France colour of one phenomenon on the current (J) map."""
+    id: str
+    key: str  # pluie-inondation | crues | orages | vent ...
+    label: str
+    level: Optional[int] = Field(None, ge=1, le=4)
+    color: Optional[str] = None
+    level_tomorrow: Optional[int] = Field(None, ge=1, le=4)
+    # Windows above green (J and J1), in time order
+    windows: list[VigilanceWindow] = []
+
+
+class VigilanceDepartment(BaseModel):
+    code: str
+    name: str
+    max_level: Optional[int] = Field(None, ge=1, le=4, description="Max over every phenomenon (J)")
+    phenomena: list[VigilancePhenomenon] = []
+    url: str
+
+
+class MeteoFranceVigilance(BaseModel):
+    available: bool = False
+    issued_at: Optional[UtcDatetime] = None
+    fetched_at: Optional[UtcDatetime] = None
+    valid_from: Optional[UtcDatetime] = None
+    valid_to: Optional[UtcDatetime] = None
+    departments: list[VigilanceDepartment] = []
+    url: str
+
+
+class VigilanceStatus(BaseModel):
+    """GET /api/vigilance: official colours, read from the collector cache."""
+    timestamp: UtcDatetime
+    vigicrues: VigicruesVigilance
+    meteofrance: MeteoFranceVigilance
+    note: str = "Vigilance officielle, informative : elle n'entre pas dans le score de risque."
+
+
+# ---------------------------------------------------------------------------
+# Field observations at the mill (ground truth from the owner)
+# ---------------------------------------------------------------------------
+
+
+class ObservationKind(str, Enum):
+    """What the owner saw at the mill."""
+    FLOODED = "flooded"
+    WATER_RISING = "water_rising"
+    NEAR_MISS = "near_miss"
+    NORMAL = "normal"
+
+
+class ObservationCreate(BaseModel):
+    """Body of POST /api/observations (JSON, or the ``data`` field of a multipart form)."""
+    observed_at: Optional[UtcDatetime] = Field(None, description="Default: now (UTC)")
+    kind: ObservationKind
+    water_height_cm: Optional[float] = Field(
+        None, ge=-500, le=1000, description="Height relative to `reference` (cm)"
+    )
+    reference: Optional[str] = Field(
+        None, max_length=100, description='Height reference, e.g. "terrasse", "plancher", "seuil du moulin"'
+    )
+    note: Optional[str] = Field(None, max_length=2000)
+    source: str = Field("user", min_length=1, max_length=100)
+
+
+class Observation(BaseModel):
+    id: int
+    observed_at: UtcDatetime
+    kind: ObservationKind
+    water_height_cm: Optional[float] = None
+    reference: Optional[str] = None
+    note: Optional[str] = None
+    has_photo: bool = False
+    photo_url: Optional[str] = None  # needs X-API-Key when API_KEY is set
+    created_at: UtcDatetime
+    source: str
+
+
+class OutcomeSuggestion(BaseModel):
+    """Outcome offered (never applied) for an unlabelled episode."""
+    outcome: EpisodeOutcome
+    observed_at: UtcDatetime
+    water_height_cm: Optional[float] = None
+    observation_id: int
+    reason: str
+
+
+class EpisodeObservations(BaseModel):
+    """GET /api/episodes/{id}/observations."""
+    episode_id: int
+    window_start: UtcDatetime
+    window_end: UtcDatetime
+    observations: list[Observation] = []
+    suggested_outcome: Optional[OutcomeSuggestion] = None

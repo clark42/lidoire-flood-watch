@@ -171,6 +171,127 @@ class Settings(BaseSettings):
     # Changed from Libourne (P577001001) to Pessac-sur-Dordogne in v2.2
     hubeau_primary_station: str = "P555001001"
 
+    # ------------------------------------------------------------------
+    # Hydrological INDICATORS (display, evaluation, future v4). Read by
+    # app/services/indicators.py and collectors/hydro_indicators.py only:
+    # the risk model (risk_core / risk_v2 / forecast / risk_shadow) never
+    # reads these blocks, and they must NOT be merged into hubeau_stations
+    # (iterated by the river score, momentum and multi-station branches).
+    # ``key`` is the tag value and the timeline id suffix (flow:EYRAUD...).
+    # Thresholds are on the DAILY MEAN discharge (Hub'Eau QmnJ), compared
+    # with the trailing 24 h mean of the stored instantaneous Q:
+    # "watch" = p99 of QmnJ 2022-11 -> 2026-10; Eyraud "alert" = 17.5 m3/s,
+    # above which the 6 mill flood dates (and no other day) lie (research
+    # report 2026-10-26, in sample). ``max_age_hours``: /api/status
+    # freshness (Eyraud/Caudeau publish with ~7 h latency outside floods).
+    # ------------------------------------------------------------------
+    indicator_flow_stations: list[dict] = [
+        {
+            "key": "EYRAUD",
+            "id": "P540401002",
+            "name": "Eyraud a La Force",
+            "river": "Eyraud",
+            "role": "runoff_analog",  # right-bank tributary, Lidoire-like basin
+            "basin_km2": 73.5,
+            "lat": 44.8869,
+            "lon": 0.3624,
+            "collect_h": True,
+            "max_age_hours": 12.0,
+            "thresholds_daily_m3s": {"watch": 13.1, "alert": 17.5},
+        },
+        {
+            "key": "CAUDEAU",
+            "id": "P524401001",
+            "name": "Caudeau a Lembras",
+            "river": "Caudeau",
+            "role": "runoff_analog",
+            "basin_km2": 253.0,
+            "lat": 44.8854,
+            "lon": 0.5488,
+            "max_age_hours": 12.0,
+            "thresholds_daily_m3s": {"watch": 11.7},
+        },
+        {
+            "key": "PESSAC",
+            "id": "P555001001",
+            "name": "Dordogne a Pessac",
+            "river": "Dordogne",
+            "role": "dordogne",
+            "basin_km2": 14976.0,
+            "lat": 44.8212,
+            "lon": 0.0780,
+            "max_age_hours": 3.0,
+            "thresholds_daily_m3s": {"watch": 1316.0},
+        },
+        {
+            # Bergerac publishes no realtime Q: Lamonzie is its substitute
+            "key": "LAMONZIE",
+            "id": "P532001001",
+            "name": "Dordogne a Lamonzie-Saint-Martin",
+            "river": "Dordogne",
+            "role": "dordogne_upstream",
+            "basin_km2": 14288.0,
+            "lat": 44.8547,
+            "lon": 0.3573,
+            "max_age_hours": 12.0,
+            "thresholds_daily_m3s": {"watch": 1249.0},
+        },
+        {
+            # Below the last EDF dam: the releases actually restored
+            "key": "ARGENTAT",
+            "id": "P135001001",
+            "name": "Dordogne a Argentat",
+            "river": "Dordogne",
+            "role": "dam_release",
+            "basin_km2": 4420.0,
+            "lat": 45.0924,
+            "lon": 1.9424,
+            "max_age_hours": 3.0,
+            "thresholds_daily_m3s": {"watch": 455.0},
+        },
+    ]
+    # Alluvial piezometer (BDLISA 942AA01, 6 m): p99-p100 at every flood,
+    # record 7.47 m NGF on 2026-02-12. Hub'Eau niveaux_nappes (BRGM ADES).
+    indicator_groundwater_stations: list[dict] = [
+        {
+            "key": "MOULIETS",
+            "code_bss": "08048X0088/P",
+            "name": "Mouliets-et-Villemartin (nappe alluviale)",
+            "aquifer": "Alluvions Dordogne",
+            "depth_m": 6.0,
+            "lat": 44.8344,
+            "lon": -0.0446,
+            "max_age_hours": 36.0,  # realtime published with ~12 h latency
+            "thresholds_m_ngf": {"watch": 7.0},
+        },
+    ]
+    # Observed estuary water level (tide + surge + river flow), display and
+    # evaluation only: v3.4 keeps the astronomical tide (tide_port_confluence).
+    # SHOM REFMAR (keyless, 1 min, resampled to 10 min, zero hydrographique)
+    # and Hub'Eau (Vigicrues, 5 min, station datum).
+    indicator_tide_gauges: list[dict] = [
+        {
+            "key": "BORDEAUX",
+            "source": "shom",
+            "shom_id": 196,
+            "name": "Bordeaux (SHOM REFMAR)",
+            "datum": "zero hydrographique",
+            "lat": 44.86,
+            "lon": -0.5528,
+            "max_age_hours": 3.0,
+        },
+        {
+            "key": "BEC_AMBES",
+            "source": "hubeau",
+            "id": "P916000101",
+            "name": "Bec d'Ambes (Hub'Eau)",
+            "datum": "zero station Hub'Eau",
+            "lat": 45.0405,
+            "lon": -0.6036,
+            "max_age_hours": 3.0,
+        },
+    ]
+
     # Tide ports. Collectors store the tide ESTIMATED at the Lidoire
     # confluence (source time + tide_phase_lag_hours) under
     # tide_port_confluence. BORDEAUX (Open-Meteo/SHOM times, no lag) and
@@ -251,6 +372,29 @@ class Settings(BaseSettings):
     notify_station_stale_hours: float = 3.0
     notify_score_stale_hours: float = 2.0
 
+    # Official vigilance (app/services/collectors/vigilance.py), informative
+    # only: never a model input. Vigicrues troncons covering the confluence
+    # (DO5 holds Pessac, DO22 holds Libourne), SPC territory 32.
+    vigilance_vigicrues_troncons: list[dict] = [
+        {"code": "DO5", "name": "Dordogne aval", "territory": "32", "station_id": "P555001001"},
+        {"code": "DO22", "name": "Confluence Garonne - Dordogne", "territory": "32", "station_id": "P577001001"},
+    ]
+    # Meteo-France departements (code -> page slug on vigilance.meteofrance.fr)
+    vigilance_meteofrance_departments: list[dict] = [
+        {"code": "33", "name": "Gironde", "slug": "gironde"},
+        {"code": "24", "name": "Dordogne", "slug": "dordogne"},
+    ]
+    # Phenomenon ids of the Meteo-France vigilance map kept by the collector
+    vigilance_meteofrance_phenomena: list[str] = ["2", "4", "3", "1"]
+
+    # Field observations (app/api/observations.py): photos on the backend
+    # data volume (PVC /app/data), never served by nginx.
+    observations_photo_dir: str = "/app/data/observations"
+    observation_photo_max_bytes: int = 8 * 1024 * 1024
+    # An observation belongs to an episode when observed_at is inside
+    # [start - margin, (end or peak or start) + margin]
+    observation_episode_margin_hours: float = 12.0
+
     @property
     def notifications_enabled(self) -> bool:
         return bool(self.ntfy_url.strip() and self.ntfy_topic.strip())
@@ -276,6 +420,21 @@ class Settings(BaseSettings):
                 self.moulin_lat, self.moulin_lon, station.get("lat"), station.get("lon")
             )
             station["distance_km"] = distance if distance is not None else 0.0
+        return self
+
+    @model_validator(mode="after")
+    def _indicator_distances(self) -> "Settings":
+        """Display ``distance_km`` of the indicator stations (never a model input)."""
+        for block in (
+            self.indicator_flow_stations,
+            self.indicator_groundwater_stations,
+            self.indicator_tide_gauges,
+        ):
+            for station in block:
+                distance = display_distance_km(
+                    self.moulin_lat, self.moulin_lon, station.get("lat"), station.get("lon")
+                )
+                station["distance_km"] = distance if distance is not None else 0.0
         return self
 
     @property

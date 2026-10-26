@@ -12,6 +12,7 @@ from fastapi import APIRouter
 from app.config import get_settings
 from app.services import influx_client
 from app.services.cache import TTLCache
+from app.services.collectors.vigilance import STATUS_MAX_AGE_HOURS as VIGILANCE_MAX_AGE_HOURS
 from app.services.risk_core import MODEL_VERSION
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ def source_specs() -> dict[str, dict]:
     primary_name = next(
         (s["name"] for s in settings.hubeau_stations if s["id"] == primary), primary,
     )
-    return {
+    specs = {
         "river_primary": {
             "label": f"Niveau {primary_name} (Hub'Eau)",
             "measurement": "river_level",
@@ -171,7 +172,19 @@ def source_specs() -> dict[str, dict]:
             "max_age_hours": 2.0,
             "critical": True,
         },
+        # Informative: colour changes plus a keepalive every 6 h (collectors/vigilance.py)
+        "vigilance": {
+            "label": "Vigilance officielle (Vigicrues, Meteo-France)",
+            "measurement": "vigilance",
+            "field": "level",
+            "max_age_hours": VIGILANCE_MAX_AGE_HOURS,
+        },
     }
+    # Hydrological indicators (outside the model): informative, never critical
+    from app.services.indicators import status_specs as indicator_status_specs
+
+    specs.update(indicator_status_specs())
+    return specs
 
 
 def _freshness_entry(spec: dict, now: datetime, last: Optional[datetime], error: Optional[str]) -> dict:

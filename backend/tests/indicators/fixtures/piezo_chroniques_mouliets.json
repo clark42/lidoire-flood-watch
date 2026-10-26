@@ -1,0 +1,60 @@
+{
+ "count": 3,
+ "api_version": "1.4.3",
+ "data": [
+  {
+   "code_bss": "08048X0088/P",
+   "bss_id": "BSS001YPBP",
+   "urn_bss": "http://services.ades.eaufrance.fr/pointeau/08048X0088/P",
+   "date_mesure": "2026-02-11",
+   "timestamp_mesure": 1770843600000,
+   "niveau_nappe_eau": 7.38,
+   "mode_obtention": "Valeur mesurée",
+   "statut": "Donnée contrôlée niveau 1",
+   "qualification": "Correcte",
+   "code_continuite": "2",
+   "nom_continuite": "Point lié au point précédent",
+   "code_producteur": "327",
+   "nom_producteur": "Service Géologique Régional d'Aquitaine (327)",
+   "code_nature_mesure": "N",
+   "nom_nature_mesure": "Naturel",
+   "profondeur_nappe": 0.68
+  },
+  {
+   "code_bss": "08048X0088/P",
+   "bss_id": "BSS001YPBP",
+   "urn_bss": "http://services.ades.eaufrance.fr/pointeau/08048X0088/P",
+   "date_mesure": "2026-02-12",
+   "timestamp_mesure": 1770915600000,
+   "niveau_nappe_eau": 7.47,
+   "mode_obtention": "Valeur mesurée",
+   "statut": "Donnée contrôlée niveau 1",
+   "qualification": "Correcte",
+   "code_continuite": "2",
+   "nom_continuite": "Point lié au point précédent",
+   "code_producteur": "327",
+   "nom_producteur": "Service Géologique Régional d'Aquitaine (327)",
+   "code_nature_mesure": "N",
+   "nom_nature_mesure": "Naturel",
+   "profondeur_nappe": 0.59
+  },
+  {
+   "code_bss": "08048X0088/P",
+   "bss_id": "BSS001YPBP",
+   "urn_bss": "http://services.ades.eaufrance.fr/pointeau/08048X0088/P",
+   "date_mesure": "2026-02-13",
+   "timestamp_mesure": 1770940800000,
+   "niveau_nappe_eau": 7.41,
+   "mode_obtention": "Valeur mesurée",
+   "statut": "Donnée contrôlée niveau 1",
+   "qualification": "Correcte",
+   "code_continuite": "2",
+   "nom_continuite": "Point lié au point précédent",
+   "code_producteur": "327",
+   "nom_producteur": "Service Géologique Régional d'Aquitaine (327)",
+   "code_nature_mesure": "N",
+   "nom_nature_mesure": "Naturel",
+   "profondeur_nappe": 0.65
+  }
+ ]
+}

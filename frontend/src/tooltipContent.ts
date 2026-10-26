@@ -171,6 +171,15 @@ export const TOOLTIPS = {
     text: "Prevision de risque sur 72h combinant : pluie horaire (Open-Meteo AROME), marees avec coefficients, et projection des niveaux de riviere basee sur les stations amont avec leurs delais de propagation. Cache 30 min, actualisation automatique.",
     link: { url: 'https://open-meteo.com/', label: 'Open-Meteo' },
   },
+
+  // Indicateurs hydrologiques (hors modele)
+  indicatorsHeader: {
+    text: "Indicateurs collectes pour l'affichage et l'evaluation, sans effet sur le score v3.4. Aucune station ne mesure la Lidoire : l'Eyraud (73,5 km2, rive droite) sert d'analogue de son ruissellement (ses 6 plus gros debits journaliers depuis 2022-11 tombent sur les 6 crues du moulin). La nappe alluviale de Mouliets et la maree reellement observee completent le tableau.",
+    link: { url: 'https://hubeau.eaufrance.fr/page/api-hydrometrie', label: "Hub'Eau" },
+  },
+  indicatorsPercentile: {
+    text: "Rang de la valeur actuelle dans l'historique stocke depuis 2022-11 (moyennes journalieres ; max journaliers pour la maree). p99 = seuls 1 % des jours ont fait plus. Les seuils de debit portent sur la moyenne 24 h.",
+  },
 } as const
 
 export type TooltipKey = keyof typeof TOOLTIPS

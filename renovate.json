@@ -1,0 +1,42 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommits"
+  ],
+  "timezone": "Europe/Paris",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "packageRules": [
+    {
+      "description": "One weekly PR for every minor/patch update outside GitHub Actions",
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchManagers": ["!github-actions"],
+      "groupName": "non-major dependencies",
+      "groupSlug": "non-major"
+    },
+    {
+      "description": "GitHub Actions stay pinned by commit digest with a version comment; minor/patch/digest bumps grouped",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pinDigest"],
+      "groupName": "github-actions",
+      "groupSlug": "github-actions"
+    },
+    {
+      "description": "A new Python minor in the base image (3.12 -> 3.13) is a runtime change: own PR",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["python"],
+      "matchUpdateTypes": ["minor"],
+      "groupName": "python base image",
+      "groupSlug": "python-base-image"
+    },
+    {
+      "description": "Stateful images: a major bump needs a data migration, approve it from the dependency dashboard",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["postgres", "influxdb", "redis"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    }
+  ]
+}

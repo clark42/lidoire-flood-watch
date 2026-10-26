@@ -79,13 +79,13 @@ function formatRawValue(
         : '-'
     case 'tide':
       return factors.tide_coefficient_raw != null
-        ? `${factors.tide_coefficient_raw}`
+        ? `${factors.tide_coefficient_raw}${gateSuffix(factors)}`
         : '-'
     case 'tide_phase': {
       if (factors.tide_hours_to_high == null) return '-'
       const hours = Math.abs(factors.tide_hours_to_high)
-      if (hours < 1) return 'PM'
-      return `PM${factors.tide_hours_to_high > 0 ? '-' : '+'}${hours.toFixed(0)}h`
+      if (hours < 1) return `PM${gateSuffix(factors)}`
+      return `PM${factors.tide_hours_to_high > 0 ? '-' : '+'}${hours.toFixed(0)}h${gateSuffix(factors)}`
     }
     case 'tendency':
       return factors.tendency_rate_cm_h != null
@@ -109,6 +109,11 @@ function formatRawValue(
     default:
       return '-'
   }
+}
+
+/** v3.4: tide and tide_phase scores are already multiplied by the tide gate. */
+function gateSuffix(factors: RiskScore['factors']): string {
+  return factors.tide_gate != null && factors.tide_gate < 1 ? ` x${factors.tide_gate.toFixed(2)}` : ''
 }
 
 function getFactorScore(factorKey: string, factors: RiskScore['factors']): number | null {
@@ -162,14 +167,23 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
     video: 0.05,
   }
 
-  // Calculate base score (before multiplier)
-  const baseScore = risk.score / (factors.conjunction_multiplier || 1)
+  // Same arithmetic as risk_core.compute_risk:
+  // score = sum(weight x factor score) / denominator x conjunction x dampener x 100,
+  // denominator = sum of the weights of the available factors.
+  const unavailable = new Set(factors.unavailable_factors ?? [])
+  const conjunction = factors.conjunction_multiplier ?? 1
+  const dampener = factors.stability_dampener ?? 1
+  const denominator = Object.entries(weights)
+    .filter(([key]) => !unavailable.has(key))
+    .reduce((sum, [, w]) => sum + w, 0)
+  // Points of one unit of (weight x score) in the final score
+  const pointScale = denominator > 0 ? (conjunction * dampener * 100) / denominator : 0
 
   // Build factor rows sorted by contribution
   const factorRows = Object.entries(weights)
     .map(([key, weight]) => {
-      const score = getFactorScore(key, factors)
-      const contribution = score != null ? score * weight * 100 : 0
+      const score = unavailable.has(key) ? null : getFactorScore(key, factors)
+      const contribution = score != null ? score * weight * pointScale : 0
       return {
         key,
         label: FACTOR_LABELS[key] || key,
@@ -180,6 +194,10 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
       }
     })
     .sort((a, b) => b.contribution - a.contribution)
+
+  const weightedSum = factorRows.reduce((sum, r) => sum + (r.score ?? 0) * r.weight, 0)
+  const totalPoints = factorRows.reduce((sum, r) => sum + r.contribution, 0)
+  const tideGate = factors.tide_gate
 
   const stations = factors.stations_detail || []
 
@@ -210,10 +228,27 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
             <div className="text-2xl font-bold">
               Score final: {risk.score.toFixed(0)}/100
             </div>
-            {(factors.conjunction_multiplier || 1) > 1 && (
-              <div className="text-sm text-gray-600 mt-1 flex items-center gap-1 flex-wrap">
-                = Score de base ({baseScore.toFixed(1)}) x Multiplicateur conjonction ({(factors.conjunction_multiplier || 1).toFixed(2)})
-                <InfoTooltip {...TOOLTIPS.conjunctionMultiplier} />
+            <div className="text-sm text-gray-600 mt-1 flex items-center gap-1 flex-wrap font-mono">
+              = somme ponderee {weightedSum.toFixed(3)} / denominateur {denominator.toFixed(2)}
+              {' '}x conjonction {conjunction.toFixed(2)}
+              <InfoTooltip {...TOOLTIPS.conjunctionMultiplier} />
+              {' '}x amortisseur {dampener.toFixed(2)} x 100
+              {' '}= {Math.min(totalPoints, 100).toFixed(1)}
+            </div>
+            <div className="text-xs text-gray-500 mt-1">
+              Denominateur = somme des poids des facteurs disponibles
+              {unavailable.size > 0
+                ? ` (exclus : ${[...unavailable].map(k => FACTOR_LABELS[k] || k).join(', ')})`
+                : ''}
+              {totalPoints > 100 ? ' ; score plafonne a 100' : ''}
+            </div>
+            {tideGate != null && (
+              <div className="text-xs text-gray-500 mt-1">
+                Gate maree : x{tideGate.toFixed(2)} sur Coef. et Phase maree
+                {factors.backwater_level_m != null
+                  ? ` (remous Pessac max 12.5 h : ${factors.backwater_level_m.toFixed(2)} m ; 0 sous le seuil jaune, 1 au seuil orange)`
+                  : ''}
+                {factors.tide_available === false ? ' ; maree indisponible ou estimee' : ''}
               </div>
             )}
           </div>
@@ -263,6 +298,13 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
                   </tr>
                 ))}
               </tbody>
+              <tfoot>
+                <tr className="border-t border-gray-300 font-medium">
+                  <td className="pt-2" colSpan={3}>Total</td>
+                  <td className="pt-2 text-right font-mono">{totalPoints.toFixed(1)} pts</td>
+                  <td />
+                </tr>
+              </tfoot>
             </table>
           </div>
 
@@ -344,12 +386,15 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
               <div className="px-4 pb-4 text-sm text-gray-600 space-y-2">
                 <p>Le score de risque (0-100) est calcule en plusieurs etapes :</p>
                 <ol className="list-decimal list-inside space-y-1 pl-2">
-                  <li>Chaque facteur est normalise de 0 a 1 selon des seuils predefinnis</li>
-                  <li>Chaque score est multiplie par son poids (10 facteurs, total = 100%)</li>
+                  <li>Chaque facteur est normalise de 0 a 1 selon des seuils predefinis</li>
+                  <li>Chaque score est multiplie par son poids (11 facteurs, total = 100%)</li>
                   <li>La saturation du sol amplifie aussi les scores de pluie (multiplicateur)</li>
-                  <li>La somme des contributions donne le score de base</li>
+                  <li>Les facteurs maree sont multiplies par le gate maree (remous a Pessac)</li>
                   <li>
-                    Si maree haute + niveau eleve + hausse : multiplicateur de conjonction (1.0 a 1.5x)
+                    La somme ponderee est divisee par la somme des poids des facteurs disponibles
+                  </li>
+                  <li>
+                    Multiplicateur de conjonction (1.0 a 2.5x) et amortisseur de stabilite (0.65 a 1.0x)
                   </li>
                 </ol>
                 <p className="text-xs text-gray-500 mt-3">

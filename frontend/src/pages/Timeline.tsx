@@ -87,6 +87,8 @@ export default function Timeline() {
   const [forecastEnabled, setForecastEnabled] = useState(() => searchParams.get('forecast') === '1')
   // Shadow model 3.4-gate (v3.4 + backwater gate), compared with the displayed score
   const [riskShadowEnabled, setRiskShadowEnabled] = useState(() => searchParams.get('risk_shadow') === '1')
+  // Hydrological indicators (flow:EYRAUD, gw:MOULIETS, tide_obs:BORDEAUX...), outside the model
+  const [selectedIndicators, setSelectedIndicators] = useState<string[]>(() => parseParamList('ind', []))
 
   // Data
   const [unifiedData, setUnifiedData] = useState<UnifiedTimelineData | null>(null)
@@ -131,8 +133,9 @@ export default function Timeline() {
     if (windEnabled) params.wind = '1'
     if (forecastEnabled) params.forecast = '1'
     if (riskShadowEnabled) params.risk_shadow = '1'
+    if (selectedIndicators.length > 0) params.ind = selectedIndicators.join(',')
     setSearchParams(params, { replace: true })
-  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, setSearchParams])
+  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, selectedIndicators, setSearchParams])
 
   // Fetch available sources and episodes on mount
   useEffect(() => {
@@ -177,8 +180,9 @@ export default function Timeline() {
         forecastEnabled,
         signal,
         riskShadowEnabled,
+        selectedIndicators.length > 0 ? selectedIndicators : undefined,
       ),
-    [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, resolution],
+    [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, selectedIndicators, resolution],
   )
 
   // Each run aborts the previous one, so a slow response (uncached period,
@@ -217,6 +221,7 @@ export default function Timeline() {
           setNotice(`Sources inconnues retirees de la selection : ${unknown.join(', ')}`)
           setSelectedRiverStations((prev) => prev.filter((id) => !unknown.includes(id)))
           setSelectedRainfallStations((prev) => prev.filter((id) => !unknown.includes(id)))
+          setSelectedIndicators((prev) => prev.filter((id) => !unknown.includes(id)))
           return
         }
         setError(errorMessage(err))
@@ -271,6 +276,14 @@ export default function Timeline() {
     )
   }
 
+  const toggleIndicator = (seriesId: string) => {
+    setSelectedIndicators((prev) =>
+      prev.includes(seriesId)
+        ? prev.filter((id) => id !== seriesId)
+        : [...prev, seriesId]
+    )
+  }
+
   const selectAllRivers = () => {
     if (availableSources) {
       setSelectedRiverStations(availableSources.river_stations.map((s) => s.id))
@@ -301,6 +314,7 @@ export default function Timeline() {
     setInfoclimatEnabled(false)
     setWindEnabled(false)
     setForecastEnabled(false)
+    setSelectedIndicators([])
   }
 
   // Unified chart data: merge all series into timestamp-indexed rows
@@ -331,20 +345,23 @@ export default function Timeline() {
   // Group series by type for rendering (4 groups for separate charts)
   type SeriesEntry = { key: string; name: string; color: string; type: string; unit: string }
   const seriesInfo = useMemo(() => {
-    if (!unifiedData) return { level: [], rain: [], risk: [], soil: [], wind: [] }
+    if (!unifiedData) return { level: [], rain: [], risk: [], soil: [], wind: [], flowLocal: [], flowDordogne: [], groundwater: [] }
 
     const level: SeriesEntry[] = []
     const rain: SeriesEntry[] = []
     const risk: SeriesEntry[] = []
     const soil: SeriesEntry[] = []
     const wind: SeriesEntry[] = []
+    const flowLocal: SeriesEntry[] = []
+    const flowDordogne: SeriesEntry[] = []
+    const groundwater: SeriesEntry[] = []
 
     for (const [key, series] of Object.entries(unifiedData.series)) {
       const info: SeriesEntry = {
         key, name: series.name, color: series.color,
         type: series.type, unit: series.unit,
       }
-      if (series.type === 'river_level' || series.type === 'tide' || series.type === 'forecast_level') {
+      if (series.type === 'river_level' || series.type === 'tide' || series.type === 'forecast_level' || series.type === 'tide_observed') {
         level.push(info)
       } else if (
         series.type === 'risk_score' ||
@@ -362,12 +379,18 @@ export default function Timeline() {
         soil.push(info)
       } else if (series.type === 'wind_speed' || series.type === 'wind_westerly') {
         wind.push(info)
+      } else if (series.type === 'flow_tributary') {
+        flowLocal.push(info)
+      } else if (series.type === 'flow_dordogne') {
+        flowDordogne.push(info)
+      } else if (series.type === 'groundwater') {
+        groundwater.push(info)
       } else {
         rain.push(info)
       }
     }
 
-    return { level, rain, risk, soil, wind }
+    return { level, rain, risk, soil, wind, flowLocal, flowDordogne, groundwater }
   }, [unifiedData])
 
   // Tooltip config per panel
@@ -397,6 +420,16 @@ export default function Timeline() {
     }
     if (seriesInfo.wind.length > 0) {
       panels.push({ id: 'wind', label: 'Vent', series: seriesInfo.wind, height: 150, yLabel: 'Vitesse (km/h)' })
+    }
+    // Hydrological indicators (outside the model): tributaries and Dordogne on separate axes
+    if (seriesInfo.flowLocal.length > 0) {
+      panels.push({ id: 'flow_local', label: 'Debits affluents (analogues Lidoire)', series: seriesInfo.flowLocal, height: 160, yLabel: 'Debit (m³/s)' })
+    }
+    if (seriesInfo.flowDordogne.length > 0) {
+      panels.push({ id: 'flow_dordogne', label: 'Debits Dordogne', series: seriesInfo.flowDordogne, height: 160, yLabel: 'Debit (m³/s)' })
+    }
+    if (seriesInfo.groundwater.length > 0) {
+      panels.push({ id: 'groundwater', label: 'Nappe alluviale', series: seriesInfo.groundwater, height: 140, yLabel: 'm NGF' })
     }
     return panels
   }, [seriesInfo])
@@ -509,6 +542,9 @@ export default function Timeline() {
               onWindToggle={() => setWindEnabled((v) => !v)}
               forecastEnabled={forecastEnabled}
               onForecastToggle={() => setForecastEnabled((v) => !v)}
+              indicatorSeries={availableSources.indicator_series}
+              selectedIndicators={selectedIndicators}
+              onIndicatorToggle={toggleIndicator}
             />
           </div>
         )}
@@ -732,7 +768,7 @@ export default function Timeline() {
                         <YAxis
                           yAxisId="left"
                           orientation="left"
-                          domain={panel.id === 'risk' ? [0, 100] : [0, 'auto']}
+                          domain={panel.id === 'risk' ? [0, 100] : panel.id === 'groundwater' ? ['auto', 'auto'] : [0, 'auto']}
                           tick={{ fontSize: 11 }}
                           width={55}
                           label={{

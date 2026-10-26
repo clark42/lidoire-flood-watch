@@ -1,0 +1,494 @@
+{
+ "product": {
+  "warning_type": "vigilance",
+  "type_cdp": "cdp_carte_externe",
+  "version_vigilance": "V6",
+  "version_cdp": "1.0.0",
+  "update_time": "2026-02-12T07:02:32Z",
+  "domain_id": "FRA",
+  "global_max_color_id": "4",
+  "periods": [
+   {
+    "echeance": "J",
+    "begin_validity_time": "2026-02-12T07:00:00Z",
+    "end_validity_time": "2026-02-12T23:00:00Z",
+    "text_items": {
+     "title": "",
+     "text": []
+    },
+    "timelaps": {
+     "domain_ids": [
+      {
+       "domain_id": "40",
+       "max_color_id": 2,
+       "phenomenon_items": [
+        {
+         "phenomenon_id": "1",
+         "phenomenon_max_color_id": 2,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T19:00:00Z",
+           "color_id": 2
+          },
+          {
+           "begin_time": "2026-02-12T19:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "2",
+         "phenomenon_max_color_id": 2,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T17:00:00Z",
+           "color_id": 2
+          },
+          {
+           "begin_time": "2026-02-12T17:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "4",
+         "phenomenon_max_color_id": 2,
+         "timelaps_items": []
+        },
+        {
+         "phenomenon_id": "3",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "5",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "7",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "domain_id": "24",
+       "max_color_id": 3,
+       "phenomenon_items": [
+        {
+         "phenomenon_id": "4",
+         "phenomenon_max_color_id": 3,
+         "timelaps_items": []
+        },
+        {
+         "phenomenon_id": "1",
+         "phenomenon_max_color_id": 2,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T19:00:00Z",
+           "color_id": 2
+          },
+          {
+           "begin_time": "2026-02-12T19:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "2",
+         "phenomenon_max_color_id": 2,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T22:00:00Z",
+           "color_id": 2
+          },
+          {
+           "begin_time": "2026-02-12T22:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "3",
+         "phenomenon_max_color_id": 2,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T12:00:00Z",
+           "color_id": 1
+          },
+          {
+           "begin_time": "2026-02-12T12:00:00Z",
+           "end_time": "2026-02-12T18:00:00Z",
+           "color_id": 2
+          },
+          {
+           "begin_time": "2026-02-12T18:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "5",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "7",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "domain_id": "33",
+       "max_color_id": 4,
+       "phenomenon_items": [
+        {
+         "phenomenon_id": "4",
+         "phenomenon_max_color_id": 4,
+         "timelaps_items": []
+        },
+        {
+         "phenomenon_id": "1",
+         "phenomenon_max_color_id": 2,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T19:00:00Z",
+           "color_id": 2
+          },
+          {
+           "begin_time": "2026-02-12T19:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "2",
+         "phenomenon_max_color_id": 2,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T22:00:00Z",
+           "color_id": 2
+          },
+          {
+           "begin_time": "2026-02-12T22:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "3",
+         "phenomenon_max_color_id": 2,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T12:00:00Z",
+           "color_id": 1
+          },
+          {
+           "begin_time": "2026-02-12T12:00:00Z",
+           "end_time": "2026-02-12T17:00:00Z",
+           "color_id": 2
+          },
+          {
+           "begin_time": "2026-02-12T17:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "5",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "7",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T07:00:00Z",
+           "end_time": "2026-02-12T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    "max_count_items": [],
+    "per_phenomenon_items": []
+   },
+   {
+    "echeance": "J1",
+    "begin_validity_time": "2026-02-12T23:00:00Z",
+    "end_validity_time": "2026-02-13T23:00:00Z",
+    "text_items": {
+     "title": "",
+     "text": []
+    },
+    "timelaps": {
+     "domain_ids": [
+      {
+       "domain_id": "40",
+       "max_color_id": 2,
+       "phenomenon_items": [
+        {
+         "phenomenon_id": "1",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "2",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "4",
+         "phenomenon_max_color_id": 2,
+         "timelaps_items": []
+        },
+        {
+         "phenomenon_id": "3",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "5",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "7",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "domain_id": "24",
+       "max_color_id": 3,
+       "phenomenon_items": [
+        {
+         "phenomenon_id": "4",
+         "phenomenon_max_color_id": 3,
+         "timelaps_items": []
+        },
+        {
+         "phenomenon_id": "1",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "2",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "3",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "5",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "7",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "domain_id": "33",
+       "max_color_id": 4,
+       "phenomenon_items": [
+        {
+         "phenomenon_id": "4",
+         "phenomenon_max_color_id": 4,
+         "timelaps_items": []
+        },
+        {
+         "phenomenon_id": "1",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "2",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "3",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "5",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        },
+        {
+         "phenomenon_id": "7",
+         "phenomenon_max_color_id": 1,
+         "timelaps_items": [
+          {
+           "begin_time": "2026-02-12T23:00:00Z",
+           "end_time": "2026-02-13T23:00:00Z",
+           "color_id": 1
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    "max_count_items": [],
+    "per_phenomenon_items": []
+   }
+  ]
+ },
+ "meta": {
+  "snapshot_id": "e30a8921-5f37-463f-837c-4ad582357ed6",
+  "product_datetime": "2026-02-12T07:00:00+00:00",
+  "generation_timestamp": "2026-02-12T07:02:32+00:00"
+ }
+}

@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for PostgreSQL persistence."""
 
 from datetime import datetime, timezone
-from sqlalchemy import JSON, Integer, String, DateTime, Text, Float, UniqueConstraint
+from sqlalchemy import JSON, Integer, String, DateTime, Text, Float, Index, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -65,3 +65,25 @@ class ForecastRunRow(Base):
     tide_gate: Mapped[float | None] = mapped_column(Float, nullable=True)
     inputs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class ObservationRow(Base):
+    """Field observation at the mill (ground truth reported by the owner).
+
+    ``water_height_cm`` is relative to ``reference`` (free text such as
+    "terrasse", "plancher", "seuil du moulin"); ``photo_path`` is a file name
+    inside settings.observations_photo_dir (never a client-supplied path).
+    """
+
+    __tablename__ = "observations"
+    __table_args__ = (Index("ix_observations_observed_at", "observed_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)  # naive UTC
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    water_height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photo_path: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
+    source: Mapped[str] = mapped_column(String(100), nullable=False, default="user")

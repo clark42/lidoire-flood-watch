@@ -2,6 +2,8 @@
 #   push main  -> sha-<7>, main           (linux/amd64 + linux/arm64)
 #   tag v1.2.3 -> sha-<7>, 1.2.3, 1.2     (linux/amd64 + linux/arm64)
 #   pull_request -> build only, no push   (linux/amd64)
+# Every run scans the linux/amd64 image with Trivy before pushing: CRITICAL
+# vulnerabilities with a fix available fail the job, HIGH ones are reported.
 # The Helm chart (deploy/helm/lidoire-flood-watch) consumes
 # ghcr.io/clark42/lidoire-flood-watch-{backend,frontend}:<tag>.
 name: images
@@ -73,6 +75,48 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
           labels: |
             org.opencontainers.image.title=lidoire-flood-watch-${{ matrix.component }}
+
+      - name: Build for the scan (linux/amd64, local)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./${{ matrix.component }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: lidoire-scan/${{ matrix.component }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+
+      - name: Trivy report (HIGH and CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: lidoire-scan/${{ matrix.component }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: table
+          output: trivy-${{ matrix.component }}.txt
+
+      - name: Trivy report to job summary
+        if: always()
+        env:
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          if [ -f "trivy-${COMPONENT}.txt" ]; then
+            {
+              echo "### Trivy ${COMPONENT} (HIGH, CRITICAL)"
+              echo '```'
+              cat "trivy-${COMPONENT}.txt"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Trivy gate (CRITICAL with a fix available)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: lidoire-scan/${{ matrix.component }}:${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
 
       - name: Build (and push outside pull requests)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
