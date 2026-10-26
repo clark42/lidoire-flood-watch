@@ -155,7 +155,7 @@ Constat cle : le moulin est sur la Lidoire (affluent), PAS sur la Dordogne. Un n
 | Tendance | `tendency` | 13% | Vitesse de la station primaire (Pessac), cm/h |
 | Momentum | `momentum` | 8% | Stations en hausse (> 1 cm/h), avec gate |
 | Coefficient maree | `tide` | 5% | Seuils 70/85/110 |
-| Phase maree | `tide_phase` | 5% | 1.0 a <= 1 h de la PM, 0.1 au-dela de 4 h |
+| Phase maree | `tide_phase` | 5% | 1.0 a <= 1 h de la PM estimee a la confluence, 0.1 au-dela de 4 h |
 | Saturation sol | `soil_sat` | 5% | (facteur - 1.0) / 0.5, facteur 1.0-1.5 |
 | Vent d'ouest | `wind_west` | 3% | Lineaire 30-100 km/h |
 | Analyse video | `video` | 5% | Index camera 0-100 |
@@ -201,7 +201,7 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 
 ## Sources de donnees
 
-- **Marees** : SHOM (cle API) ou Open-Meteo Marine (PM/BM extraites du niveau marin modele, coefficient estime). Marees estimees jamais stockees, `TideForecast.available=False`.
+- **Marees** : SHOM (cle API, port de Bordeaux) ou Open-Meteo Marine (niveau marin modele au large de l'embouchure, 45.6 / -1.2 ; PM/BM extraites, coefficient estime). Les heures sont decalees une seule fois, a la collecte, de `tide_phase_lag_hours[source]` (Open-Meteo 6 h, SHOM 2 h non mesure) pour estimer la maree a la confluence de la Lidoire, et stockees sous `port=LIDOIRE` (`tide_port_confluence`) ; hauteurs et coefficients restent ceux de la source. PM mesuree apres celle de l'embouchure (archives 2023-06 -> 2025-12) : Libourne +4.0 h, Pessac +7.0 h. Les anciens points `BORDEAUX`/`LIBOURNE` (sans decalage) ne sont plus lus : apres deploiement, re-backfill des marees et des scores. Serie timeline `tide:LIDOIRE`. Marees estimees jamais stockees, `TideForecast.available=False`.
 - **Niveaux rivieres** : Hub'Eau temps reel (30 derniers jours), Hydroportail pour l'historique, Vigicrues pour Libourne (metres)
 - **Meteo prevue** : Open-Meteo (modeles AROME/ARPEGE), timestamps UTC
 - **Meteo locale** : Netatmo (stations citoyennes du bassin Lidoire), Infoclimat StatIC
@@ -253,7 +253,7 @@ Tous les POST/PUT/DELETE ci-dessus exigent `X-API-Key` quand `API_KEY` est defin
 
 ## Evaluation (`backend/scripts/eval/`)
 
-Replay horaire causal (points <= t uniquement) de v3.3 et de baselines sur les archives publiques, sans InfluxDB. `build` telecharge une fois (~4 min) dans `backend/data/eval_cache/` ; ensuite `replay`/`report` avec `--offline` (lecture du cache en ~15 s). Sorties dans `backend/data/eval_out/` (gitignore). Options : `--merge-gap 12`, `--strict-start`, `--no-tide`, `--sensitivity`, `--threshold orange=35`.
+Replay horaire causal (points <= t uniquement) de v3.3 et de baselines sur les archives publiques, sans InfluxDB. `build` telecharge une fois (~4 min) dans `backend/data/eval_cache/` ; ensuite `replay`/`report` avec `--offline` (lecture du cache en ~15 s). Sorties dans `backend/data/eval_out/` (gitignore). Options : `--merge-gap 12`, `--strict-start`, `--no-tide`, `--tide-lag 0` (decalage embouchure -> confluence, defaut config), `--sensitivity`, `--threshold orange=35`.
 
 Definitions (`contingency.py`, `hourly.py`) :
 - Alerte = suite d'heures consecutives avec score >= seuil. Elle detecte une crue si elle demarre entre pic - 72 h et pic + 6 h (ou est deja en cours a l'ouverture de la fenetre).
@@ -262,23 +262,23 @@ Definitions (`contingency.py`, `hourly.py`) :
 
 Interface d'un modele candidat : `name`, `score(row: FeatureRow) -> float | None`, optionnellement `kind` (`score` | `probability`), `thresholds`, `reset()`. Voir la docstring de `scripts/eval/__init__.py`.
 
-Resultats (2022-11-01 a 2026-10-25, 5 crues, alertes non fusionnees) :
+Resultats (2022-11-01 a 2026-10-25, 5 crues, alertes non fusionnees, phase maree a +6 h) :
 
 | Modele | Protocole | Niveau | Crues | Alertes | FA brutes (lab.+non lab.) | FAR brut / lab. | CSI | Avance med./min (h) | Alertes/an | AUC |
 |--------|-----------|--------|-------|---------|------|------|-----|------|------|-----|
-| v3.3 | in-sample (~45 constantes) | orange | 5/5 | 241 | 221 (20+201) | 98% / 80% | 0.02 | 63 / 11 | 68.0 | 0.952 [0.89-0.99] |
-| v3.3 | in-sample | rouge | 5/5 | 79 | 65 (13+52) | 93% / 72% | 0.07 | 21 / 5 | 23.1 | |
+| v3.3 | in-sample (~45 constantes) | orange | 5/5 | 411 | 384 (27+357) | 99% / 84% | 0.01 | 70 / 25 | 112.2 | 0.938 [0.87-0.99] |
+| v3.3 | in-sample | rouge | 5/5 | 84 | 67 (12+55) | 93% / 71% | 0.07 | 21 / 3 | 24.9 | |
 | pessac_level | sans label | orange | 4/5 | 20 | 16 (3+13) | 80% / 43% | 0.19 | 37 / -2 | 5.8 | 0.894 [0.78-0.97] |
 | pessac_level | sans label | rouge | 3/5 | 9 | | 67% / 25% | 0.27 | 3 / -4 | 3.0 | |
 | rain_72h | sans label | orange | 1/5 | 1 | | | 0.20 | | | 0.912 |
-| v3.3 + gate remous | sans label, 0 param. | orange | 5/5 | 74 | 62 (11+51) | 93% / 69% | 0.07 | 20 / 0 | 23.6 | 0.948 [0.88-0.99] |
-| v3.3 + gate remous | sans label | rouge | 4/5 | 56 | | | 0.08 | 44 / 11 | | |
+| v3.3 + gate remous | sans label, 0 param. | orange | 5/5 | 91 | 80 (12+68) | 94% / 71% | 0.06 | 21 / 1 | 27.9 | 0.940 [0.85-0.99] |
+| v3.3 + gate remous | sans label | rouge | 4/5 | 68 | | | 0.07 | 44 / 11 | | |
 | bw_rule_api_cv | LOEO bloque, 2 param. | orange | 3/5 | 8 | 5 (1+4) | 62% / 25% | 0.30 | 12 / 4 | 2.5 | 0.928 [0.86-0.98] |
 | lr_gr4h_haval_cv | LOEO bloque, 3 param. | orange | 4/5 | 15 | 10 (2+8) | 71% / 33% | 0.27 | 3 / -2 | 4.0 | 0.909 [0.81-0.98] |
 
-Alertes fusionnees a 12 h (orange) : v3.3 57 alertes / CSI 0.09 / 15.3 par an ; v3.3 + gate remous 21 / CSI 0.24 / 5.8 par an, POD 5/5 ; pessac_level 13 / CSI 0.29 ; bw_rule_api_cv 8 / CSI 0.30 ; lr_gr4h_haval_cv 13 / CSI 0.29.
+Alertes fusionnees a 12 h (orange) : v3.3 96 alertes / CSI 0.05 / 25.9 par an ; v3.3 + gate remous 23 / CSI 0.22 / 6.0 par an, POD 5/5 ; pessac_level 13 / CSI 0.29 ; bw_rule_api_cv 8 / CSI 0.30 ; lr_gr4h_haval_cv 13 / CSI 0.29.
 
-Precautions : 5 crues (une crue = 20 points de POD, IC 95% de 3/5 = 15-95%, aucun ecart hors echantillon significatif) ; labels non exhaustifs (FAR brut pessimiste) ; v3.3 est in-sample donc optimiste ; le score v3.3 oscille autour de 35 au rythme de la maree (`--no-tide` : 241 -> 122 alertes orange). 2023-03-11 est une crue par infiltration (colmatee depuis).
+Precautions : 5 crues (une crue = 20 points de POD, IC 95% de 3/5 = 15-95%, aucun ecart hors echantillon significatif) ; labels non exhaustifs (FAR brut pessimiste) ; v3.3 est in-sample donc optimiste ; le score v3.3 oscille autour de 35 au rythme de la maree (alertes orange : 122 avec `--no-tide`, 241 / 322 / 377 / 411 avec `--tide-lag` 0 / 4 / 5 / 6). v3.3 a ete calibre avec la phase non decalee (PM embouchure ~ BM a Libourne), qui compensait l'oscillation tidale de Pessac (PM a +7 h) ; a +6 h les deux sont en phase. Le recalage du poids `tide_phase` reste a faire. 2023-03-11 est une crue par infiltration (colmatee depuis).
 
 Periodes d'alerte v3.3 non labellisees a faire annoter : 2023-11-02 -> 11-06, 2023-11-09 -> 11-15, 2024-01-18 -> 01-19, 2024-02-10 -> 02-13, 2024-03-02 -> 03-04, 2024-05-14 -> 05-16, 2024-05-20 -> 05-23, 2024-11-21 -> 11-22, 2025-01-27 -> 01-29 (liste complete : `unlabelled_alerts.csv`).
 
