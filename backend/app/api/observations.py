@@ -44,11 +44,16 @@ episode_router = APIRouter()
 FORM_OVERHEAD_BYTES = 256 * 1024
 FORM_FIELDS = ("observed_at", "kind", "water_height_cm", "reference", "note", "source")
 
+# Inline schema: the route reads the raw request, so FastAPI does not
+# register ObservationCreate itself (ObservationKind comes with Observation).
+_JSON_BODY_SCHEMA = ObservationCreate.model_json_schema(ref_template="#/components/schemas/{model}")
+_JSON_BODY_SCHEMA.pop("$defs", None)
+
 _REQUEST_BODY_DOC = {
     "requestBody": {
         "required": True,
         "content": {
-            "application/json": {"schema": {"$ref": "#/components/schemas/ObservationCreate"}},
+            "application/json": {"schema": _JSON_BODY_SCHEMA},
             "multipart/form-data": {
                 "schema": {
                     "type": "object",

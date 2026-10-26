@@ -214,3 +214,17 @@ def test_observations_delete_removes_photo(client, auth, settings):
     assert resp.status_code == 200 and resp.json() == {"status": "deleted", "id": body["id"]}
     assert _photo_files(settings) == []
     assert client.delete(f"/api/observations/{body['id']}", headers=auth).status_code == 404
+
+
+def test_observations_openapi_documents_both_bodies():
+    import re
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    schema = TestClient(create_app()).get("/openapi.json").json()
+    body = schema["paths"]["/api/observations"]["post"]["requestBody"]["content"]
+    assert {"application/json", "multipart/form-data"} <= set(body)
+    refs = set(re.findall(r'"#/components/schemas/([^"]+)"', json.dumps(schema)))
+    assert refs <= set(schema["components"]["schemas"])
