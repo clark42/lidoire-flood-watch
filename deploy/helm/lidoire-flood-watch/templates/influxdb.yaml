@@ -121,9 +121,10 @@ spec:
         - name: config
           emptyDir:
             sizeLimit: 16Mi
+        # Also used as scratch space to restore a backup (influx restore)
         - name: tmp
           emptyDir:
-            sizeLimit: 256Mi
+            sizeLimit: 2Gi
   volumeClaimTemplates:
     - metadata:
         name: data
