@@ -476,17 +476,25 @@ RISK_SOURCE_REALTIME = "realtime"
 RISK_SOURCE_BACKFILL = "backfill"
 RISK_SOURCE_UNKNOWN = "unknown"
 
-# Shadow models (e.g. "3.3-gate", risk_shadow.py) are stored in their own
-# measurement, same tags and fields: every reader of the displayed score
-# filters on ``_measurement == "risk_score"``. A version with a suffix is a
-# shadow version and is also dropped by those readers (defense in depth).
+# Shadow models ("3.4-gate", risk_shadow.py; "4.0a", risk_shadow_v4.py) are
+# stored in their own measurement, same tags and fields: every reader of the
+# displayed score filters on ``_measurement == "risk_score"``. Any version
+# that is not purely numeric ("3.4") is a shadow version and is also dropped
+# by those readers (defense in depth).
 RISK_MEASUREMENT = "risk_score"
 RISK_SHADOW_MEASUREMENT = "risk_score_shadow"
 
+_PRODUCTION_RISK_VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
+
 
 def is_shadow_risk_version(version: Optional[str]) -> bool:
-    """True for a shadow model version ("3.3-gate"), never for "3.3" or legacy."""
-    return bool(version) and "-" in str(version)
+    """True for a shadow model version ("3.4-gate", "4.0a"), never for "3.4", untagged or legacy."""
+    if not version:
+        return False
+    v = str(version)
+    if v == LEGACY_RISK_VERSION:
+        return False
+    return _PRODUCTION_RISK_VERSION_RE.fullmatch(v) is None
 
 
 def _drop_shadow_rows(rows: list[dict]) -> list[dict]:
@@ -1143,6 +1151,8 @@ async def query_risk_score_values(
         for record in table.records
         if record.get_value() is not None
     ]
+    # Defense in depth: the server-side filter already keeps only `version`/legacy
+    rows = _drop_shadow_rows(rows)
     return prefer_realtime_risk_rows(select_risk_rows_by_version(rows, version))
 
 

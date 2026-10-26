@@ -12,8 +12,9 @@ This module:
   are separate: nothing is written unless ``store=True`` is requested;
 - recomputes historical scores (``backfill_risk_scores``) from stored series
   with no future data;
-- stores the shadow model "3.4-gate" (``store_shadow_risk_score``, see
-  risk_shadow.py) next to each realtime score, in its own measurement.
+- stores the shadow models "3.4-gate" (``store_shadow_risk_score``, see
+  risk_shadow.py) and "4.0a" (``store_shadow_v4_score``, v4-alpha, see
+  risk_shadow_v4.py) next to each realtime score, in their own measurement.
 
 Model history (weights and mechanisms unchanged since v3.2, calibrated on
 14 annotated episodes, 5 confirmed floods):
@@ -688,6 +689,7 @@ async def compute_current_risk(store: bool = False) -> tuple[RiskScore, Realtime
     if store:
         await store_risk_score(risk)
         await store_shadow_risk_score(risk, inputs)
+        await store_shadow_v4_score(risk, inputs)
     return risk, inputs
 
 
@@ -924,6 +926,22 @@ async def store_shadow_risk_score(risk: RiskScore, inputs: RealtimeInputs) -> bo
         return False
 
 
+async def store_shadow_v4_score(risk: RiskScore, inputs: RealtimeInputs) -> bool:
+    """Store the shadow model "4.0a" (v4-alpha) at the time of a realtime score (never raises).
+
+    H_aval is the same backwater level as the 3.4-gate shadow; the other
+    inputs are read by risk_shadow_v4 (imported lazily: v3.4, the forecast
+    and the notifier never load the v4 code).
+    """
+    try:
+        from app.services import risk_shadow_v4
+
+        return await risk_shadow_v4.store_realtime(risk.timestamp, inputs.features().backwater_level_m)
+    except Exception as e:
+        logger.error("Error storing shadow v4 risk score: %s", e)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Historical backfill
 # ---------------------------------------------------------------------------
@@ -1091,8 +1109,11 @@ async def backfill_risk_scores(
     (``influx_client.prefer_realtime_risk_rows``). With ``skip_live_hours``
     (anonymous timeline cache-through), hours that already hold a realtime
     score of the current model are not recomputed. With ``shadow``, the
-    shadow model "3.4-gate" is also written for every scored step
-    (``risk_score_shadow``, source=backfill), from the same inputs.
+    shadow models "3.4-gate" (every scored step, same inputs) and "4.0a"
+    (v4-alpha, every step with a backwater level, see
+    :func:`risk_shadow_v4.history_point`) are also written
+    (``risk_score_shadow``, source=backfill). A window whose v4 inputs
+    cannot be read gets no 4.0a point (logged); v3.4 and 3.4-gate go on.
 
     Returns the number of v3.4 scores computed (stored when ``store=True``).
     """
@@ -1129,6 +1150,12 @@ async def backfill_risk_scores(
     skipped = 0
     shadow_computed = 0
     shadow_stored = 0
+    v4_computed = 0
+    v4_stored = 0
+    v4_windows_failed = 0
+    shadow_v4 = None
+    if shadow:
+        from app.services import risk_shadow_v4 as shadow_v4
     windows_with_rivers = 0
     current = _ceil_hour(s)
     while current <= e:
@@ -1151,8 +1178,18 @@ async def backfill_risk_scores(
             except Exception as exc:  # degrade to a plain backfill
                 logger.warning("Risk backfill: cannot read existing scores: %s", exc)
 
+        v4_history = None
+        if shadow_v4 is not None and inputs.station_points:
+            try:
+                v4_history = await shadow_v4.load_history(steps[0], steps[-1])
+            except Exception as exc:  # no 4.0a for this window, v3.4 unaffected
+                v4_windows_failed += 1
+                logger.warning("Risk backfill %s: inputs unavailable %s -> %s: %r",
+                               shadow_v4.SHADOW_V4_MODEL_VERSION, steps[0], steps[-1], exc)
+
         points = []
         shadow_points = []
+        v4_points = []
         for t in steps if inputs.station_points else ():
             if t in live_hours:
                 skipped += 1
@@ -1162,6 +1199,18 @@ async def backfill_risk_scores(
                 t, configs, inputs.station_points, settings.hubeau_primary_station,
                 inputs.rain_hourly, tide_state, max_age_hours=max_age, rate_window_h=rate_window,
             )
+            if v4_history is not None:
+                # Before the station check: as offline, 4.0a only needs H_aval
+                try:
+                    vp = shadow_v4.history_point(
+                        t, features.backwater_level_m, v4_history, influx_client.RISK_SOURCE_BACKFILL,
+                    )
+                except Exception as exc:  # drop 4.0a for this window, never v3.4
+                    logger.warning("Risk backfill %s: error at %s: %r", shadow_v4.SHADOW_V4_MODEL_VERSION, t, exc)
+                    v4_windows_failed += 1
+                    v4_history, v4_points, vp = None, [], None
+                if vp is not None:
+                    v4_points.append(vp)
             if not features.stations:
                 continue
             risk = breakdown_to_risk_score(compute_risk(features))
@@ -1172,7 +1221,7 @@ async def backfill_risk_scores(
                 sp = shadow_risk_point(features, risk, features.backwater_level_m, influx_client.RISK_SOURCE_BACKFILL)
                 if sp is not None:
                     shadow_points.append(sp)
-        del inputs
+        del inputs, v4_history
 
         if points:
             stored += await influx_client.write_points_batch(points)
@@ -1180,6 +1229,9 @@ async def backfill_risk_scores(
             shadow_computed += len(shadow_points)
             if store and shadow_points:
                 shadow_stored += await influx_client.write_points_batch(shadow_points)
+            v4_computed += len(v4_points)
+            if store and v4_points:
+                v4_stored += await influx_client.write_points_batch(v4_points)
         current = next_start
         # CPU-bound loop: let the API serve requests between windows
         await asyncio.sleep(0)
@@ -1192,6 +1244,10 @@ async def backfill_risk_scores(
         logger.info(
             "Risk backfill %s (shadow): computed %d, stored %d scores",
             risk_shadow.SHADOW_MODEL_VERSION, shadow_computed, shadow_stored,
+        )
+        logger.info(
+            "Risk backfill %s (shadow): computed %d, stored %d scores (%d windows without inputs)",
+            shadow_v4.SHADOW_V4_MODEL_VERSION, v4_computed, v4_stored, v4_windows_failed,
         )
     logger.info(
         "Risk backfill v%s: computed %d, stored %d scores (%d hours kept from realtime)",

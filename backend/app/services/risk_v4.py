@@ -1,9 +1,10 @@
 """Model v4-alpha ("4.0a"): mechanism-based flood risk at the mill (pure, no I/O, no utcnow()).
 
-NOT wired into production: no route, job or service imports this module
-yet (a test enforces it; only the offline candidate wrapper does). It is
-meant to be stored later as a shadow series ``4.0a`` once the hydro
-collectors (Eyraud discharge, Mouliets piezometer) feed its inputs.
+Shadow only: the score is stored as the shadow series ``4.0a``
+(variant ``v4a_joint``) by :mod:`app.services.risk_shadow_v4`, the ONLY
+production module allowed to import this one (a test enforces it, the
+offline candidate wrapper aside). It is never displayed, alerted on or used
+by v3.4, the forecast or the notifier.
 
 Physical model (research 2026-10-26): the mill sits on the Lidoire just
 upstream of its confluence with the tidal Dordogne. It floods through:
