@@ -694,3 +694,29 @@ async def get_realtime_data_at(timestamp: str):
         stations=stations_data,
         netatmo_available=False,
     )
+
+
+@router.get("/radar")
+async def get_radar_basin_rain():
+    """Observed basin rain from the OPERA radar composite (EUMETNET, CC BY 4.0).
+
+    Mean ACRR over the Lidoire polygon (pixels weighted by their share inside
+    the basin) for the last 1 / 3 / 6 / 24 h, summed from the 1-hour
+    accumulations ending at the last image time, plus the max pixel and the
+    time of the last image. Read-only (the scheduler stores the images);
+    informative, never read by the risk model.
+    """
+    from app.models.probabilistic import api_json
+    from app.services.collectors.opera_radar import summarize_radar
+    from app.services.probabilistic_store import query_radar_points
+
+    settings = get_settings()
+    now = _utcnow()
+    if not settings.radar_enabled:
+        return api_json({**summarize_radar([], now), "note": "desactive (RADAR_ENABLED=false)"})
+    try:
+        points = await query_radar_points(now - timedelta(hours=25), now + timedelta(minutes=1))
+    except Exception as e:
+        logger.warning("Radar basin rain query failed: %r", e)
+        return api_json({**summarize_radar([], now), "note": "lecture InfluxDB impossible"})
+    return api_json(summarize_radar(points, now))
