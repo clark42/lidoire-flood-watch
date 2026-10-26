@@ -266,6 +266,14 @@ class Settings(BaseSettings):
     # Phenomenon ids of the Meteo-France vigilance map kept by the collector
     vigilance_meteofrance_phenomena: list[str] = ["2", "4", "3", "1"]
 
+    # Field observations (app/api/observations.py): photos on the backend
+    # data volume (PVC /app/data), never served by nginx.
+    observations_photo_dir: str = "/app/data/observations"
+    observation_photo_max_bytes: int = 8 * 1024 * 1024
+    # An observation belongs to an episode when observed_at is inside
+    # [start - margin, (end or peak or start) + margin]
+    observation_episode_margin_hours: float = 12.0
+
     @property
     def notifications_enabled(self) -> bool:
         return bool(self.ntfy_url.strip() and self.ntfy_topic.strip())

@@ -608,3 +608,60 @@ class VigilanceStatus(BaseModel):
     meteofrance: MeteoFranceVigilance
     note: str = "Vigilance officielle, informative : elle n'entre pas dans le score de risque."
 
+
+# ---------------------------------------------------------------------------
+# Field observations at the mill (ground truth from the owner)
+# ---------------------------------------------------------------------------
+
+
+class ObservationKind(str, Enum):
+    """What the owner saw at the mill."""
+    FLOODED = "flooded"
+    WATER_RISING = "water_rising"
+    NEAR_MISS = "near_miss"
+    NORMAL = "normal"
+
+
+class ObservationCreate(BaseModel):
+    """Body of POST /api/observations (JSON, or the ``data`` field of a multipart form)."""
+    observed_at: Optional[UtcDatetime] = Field(None, description="Default: now (UTC)")
+    kind: ObservationKind
+    water_height_cm: Optional[float] = Field(
+        None, ge=-500, le=1000, description="Height relative to `reference` (cm)"
+    )
+    reference: Optional[str] = Field(
+        None, max_length=100, description='Height reference, e.g. "terrasse", "plancher", "seuil du moulin"'
+    )
+    note: Optional[str] = Field(None, max_length=2000)
+    source: str = Field("user", min_length=1, max_length=100)
+
+
+class Observation(BaseModel):
+    id: int
+    observed_at: UtcDatetime
+    kind: ObservationKind
+    water_height_cm: Optional[float] = None
+    reference: Optional[str] = None
+    note: Optional[str] = None
+    has_photo: bool = False
+    photo_url: Optional[str] = None  # needs X-API-Key when API_KEY is set
+    created_at: UtcDatetime
+    source: str
+
+
+class OutcomeSuggestion(BaseModel):
+    """Outcome offered (never applied) for an unlabelled episode."""
+    outcome: EpisodeOutcome
+    observed_at: UtcDatetime
+    water_height_cm: Optional[float] = None
+    observation_id: int
+    reason: str
+
+
+class EpisodeObservations(BaseModel):
+    """GET /api/episodes/{id}/observations."""
+    episode_id: int
+    window_start: UtcDatetime
+    window_end: UtcDatetime
+    observations: list[Observation] = []
+    suggested_outcome: Optional[OutcomeSuggestion] = None
