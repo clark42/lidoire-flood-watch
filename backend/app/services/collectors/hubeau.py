@@ -414,6 +414,8 @@ async def get_multi_station_data() -> MultiStationData:
                 threshold_yellow=thresholds.get("yellow", 3.0),
                 threshold_orange=thresholds.get("orange", 4.0),
                 threshold_red=thresholds.get("red", 5.0),
+                lat=station_config.get("lat"),
+                lon=station_config.get("lon"),
             )
         )
 
