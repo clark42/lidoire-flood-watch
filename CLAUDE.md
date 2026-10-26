@@ -77,6 +77,7 @@ app/
 │   └── orm.py           # Tables PostgreSQL
 └── services/
     ├── risk_core.py     # Coeur de scoring PUR, modele v3.3 (compute_risk, aucune I/O)
+    ├── risk_shadow.py   # Modele shadow 3.3-gate (gate de remous, PUR), stocke, jamais affiche
     ├── risk_v2.py       # Construction des features (temps reel, simulation, backfill), stockage
     ├── forecast.py      # Previsions horaires (features par heure -> compute_risk)
     ├── backfill.py      # Backfill historique (rivers, rain, tides, soil, risk)
@@ -173,6 +174,8 @@ Somme des poids = 1.00. Score station : lineaire par morceaux (0.33 au seuil jau
 - **Score final** = min(100, somme ponderee x conjonction x amortisseur / denominateur x 100). Niveaux : vert < 15, jaune < 35, orange < 55, rouge.
 
 Stockage : seul le job `risk_scorer` du scheduler (toutes les heures, premier passage 2 min apres le demarrage) ecrit le score temps reel ; les routes de lecture ne stockent jamais. Points `risk_score` : `level` en champ, tag `model_version=3.3` ; les lectures preferent la version courante, les anciens points sans tag restent lisibles. Le backfill ecrit la meme serie (pas 1 h jusqu'a 7 jours, 3 h jusqu'a 30 jours, 6 h au-dela).
+
+Shadow `3.3-gate` (`risk_shadow.py`) : score v3.3 x gate de remous g(H_aval), H_aval = max Pessac sur 12.5 h (points <= t), g = 0.5 a <= 3.0 m, 1.0 a >= 3.8 m, lineaire entre ; H_aval absent => 1.0. Meme semantique que `V33BackwaterModel` (qui reutilise la fonction de production, test d'equivalence). Ecrit par `risk_scorer` (via `compute_current_risk(store=True)`, un echec n'affecte jamais v3.3) dans la mesure dediee `risk_score_shadow` (tags `model_version=3.3-gate`, `source`, champs `factor_gate`, `factor_h_aval_m`, `factor_base_score`). Toutes les lectures de `risk_score` filtrent la mesure exacte et ecartent aussi toute version suffixee (`is_shadow_risk_version`) : score affiche, API, previsions, detection d'episodes et TimeMachine inchanges. Historique : `POST /api/episodes/backfill?...&risk_shadow=true` (off par defaut). Timeline : `include_risk_shadow=true` (serie `risk:shadow`, bouton "Shadow + remous").
 
 Les entrees different selon le chemin : le temps reel fusionne Open-Meteo/Netatmo/Infoclimat (max) et a vent et sol ; backfill, TimeMachine et replay n'ont que les archives (vent, sol, video indisponibles).
 
@@ -368,5 +371,5 @@ Installation existante : conserver l'ancien mot de passe Postgres et l'ancien je
 
 - Capteur de niveau au moulin (seule mesure directe possible).
 - Pluie radar (COMEPHORE, ANTILOPE) comme entree d'un modele pluie-debit.
-- Gate de remous sur v3.3 en mode shadow pendant une saison, apres labellisation des periodes ci-dessus.
+- Gate de remous sur v3.3 en mode shadow pendant une saison : en place (serie `risk_score_shadow`, voir Stockage) ; comparer les deux courbes et labelliser les periodes ci-dessus avant toute bascule.
 - Regression logistique / GR4H seulement quand davantage d'episodes seront labellises.

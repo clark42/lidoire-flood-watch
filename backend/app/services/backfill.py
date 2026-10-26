@@ -203,6 +203,7 @@ async def backfill_soil(
 async def recalculate_risk_scores(
     start_date: datetime,
     end_date: datetime,
+    shadow: bool = False,
 ) -> int:
     """
     Recalculate risk scores with the current model for the backfilled period.
@@ -215,12 +216,15 @@ async def recalculate_risk_scores(
     - stores the scores in one batched write, tagged model_version and
       source=backfill (re-runs overwrite; realtime points are preferred on
       read for an hour that has both).
+
+    ``shadow=True`` also writes the shadow model "3.3-gate"
+    (``risk_score_shadow``) for the same steps.
     """
     from app.services.risk_v2 import backfill_risk_scores
 
     logger.info("Recalculating risk scores %s -> %s", start_date, end_date)
 
-    total = await backfill_risk_scores(start_date, end_date)
+    total = await backfill_risk_scores(start_date, end_date, shadow=shadow)
 
     logger.info("Total risk scores stored: %d", total)
     return total
@@ -234,6 +238,7 @@ async def run_full_backfill(
     skip_tides: bool = False,
     skip_soil: bool = False,
     skip_risk: bool = False,
+    risk_shadow: bool = False,
 ) -> dict:
     """
     Run complete backfill of all data sources.
@@ -244,6 +249,7 @@ async def run_full_backfill(
         start_date: Start of backfill (default: 2022-11-01)
         end_date: End of backfill (default: now)
         skip_*: Skip specific data sources
+        risk_shadow: Also backfill the shadow model 3.3-gate (off by default)
 
     Returns:
         Summary of all backfill operations
@@ -290,7 +296,7 @@ async def run_full_backfill(
     # 5. Recalculate risk scores
     if not skip_risk:
         _update_progress("risk: recalculating v3.3 scores (slowest step)...")
-        results["risk_scores"] = await recalculate_risk_scores(start_date, end_date)
+        results["risk_scores"] = await recalculate_risk_scores(start_date, end_date, shadow=risk_shadow)
 
     _update_progress("done")
 

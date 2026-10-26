@@ -46,6 +46,13 @@ from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
+from app.services.risk_shadow import (
+    BACKWATER_GATE_FULL_M,
+    BACKWATER_GATE_LOW_M,
+    BACKWATER_GATE_MIN_FACTOR,
+    backwater_gate,
+)
+
 LIDOIRE_AREA_KM2 = 231.0
 PRIMARY_STATION_ID = "P555001001"  # Pessac-sur-Dordogne
 
@@ -370,12 +377,14 @@ class V33BackwaterModel(_StatefulModel):
     g = ``min_factor`` at H_aval <= ``h_low`` (Pessac yellow, 3.0 m), 1 at
     H_aval >= ``h_full`` (Pessac orange, 3.8 m), linear in between; no
     fitted parameter. A missing H_aval leaves the v3.3 score unchanged.
-    Hours without any station are not scored (as V33Model).
+    Hours without any station are not scored (as V33Model). The gate is the
+    production one (:mod:`app.services.risk_shadow`, shadow series
+    "3.3-gate"), so the replay scores exactly what the scheduler stores.
     """
 
-    h_low: float = PESSAC_THRESHOLDS_M[0]
-    h_full: float = PESSAC_THRESHOLDS_M[1]
-    min_factor: float = 0.5
+    h_low: float = BACKWATER_GATE_LOW_M
+    h_full: float = BACKWATER_GATE_FULL_M
+    min_factor: float = BACKWATER_GATE_MIN_FACTOR
     name: str = "v3.3+backwater"
     kind: str = "score"
     thresholds: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SCORE_THRESHOLDS))
@@ -384,14 +393,7 @@ class V33BackwaterModel(_StatefulModel):
         self._init_extractor()
 
     def gate(self, h_aval: Optional[float]) -> float:
-        if h_aval is None or math.isnan(h_aval):
-            return 1.0
-        if h_aval <= self.h_low:
-            return self.min_factor
-        if h_aval >= self.h_full:
-            return 1.0
-        frac = (h_aval - self.h_low) / (self.h_full - self.h_low)
-        return self.min_factor + (1.0 - self.min_factor) * frac
+        return backwater_gate(h_aval, self.h_low, self.h_full, self.min_factor)
 
     def score(self, row) -> Optional[float]:
         from app.services.risk_core import compute_risk, get_model_params
