@@ -1,21 +1,187 @@
+@import './styles/tokens.css';
+@import './styles/fonts.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--bg);
+    color: var(--ink);
+    font-family: var(--f-body);
+    line-height: 1.5;
+  }
+
+  /* Keyboard focus: always visible, never on mouse click */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  a {
+    color: inherit;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+  }
+
+  /* No animation, transition or smooth scroll for users who opted out */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
-body {
-  @apply bg-gray-50 text-gray-900;
-  margin: 0;
-  min-height: 100vh;
-}
+@layer components {
+  /* 16 px side gutter, wider on notched phones */
+  .page-gutter {
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
 
-.risk-green { @apply bg-green-500; }
-.risk-yellow { @apply bg-yellow-500; }
-.risk-orange { @apply bg-orange-500; }
-.risk-red { @apply bg-red-500; }
+  /* Small uppercase label above a value (Barlow Condensed) */
+  .eyebrow {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  /* Numbers read like a staff gauge */
+  .num {
+    font-family: var(--f-display);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.01em;
+  }
+
+  /* Honesty grammar (ValueTag): line style = nature of the value */
+  .value-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    line-height: 1.5;
+    text-transform: uppercase;
+    border-radius: 4px;
+    padding: 1px 6px;
+    border: 1px solid var(--line-2);
+    color: var(--ink-2);
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .value-tag > i {
+    display: inline-block;
+    width: 14px;
+    height: 0;
+    border-top: 2px solid currentColor;
+  }
+  .value-tag[data-kind='estimated'] > i {
+    border-top-style: dashed;
+  }
+  .value-tag[data-kind='model'] > i {
+    border-top-style: dotted;
+    border-top-width: 3px;
+  }
+  .value-tag[data-kind='analog'] {
+    border-style: dashed;
+  }
+  .value-tag[data-kind='unavailable'] {
+    border-style: dotted;
+    color: var(--ink-3);
+  }
+  .value-tag[data-kind='mockup'] {
+    background: repeating-linear-gradient(135deg, var(--hatch) 0 4px, transparent 4px 8px);
+    color: var(--ink);
+    border-color: var(--ink-3);
+  }
+
+  /* Hatched background of a block waiting for an endpoint ("maquette") */
+  .hatched {
+    background-image: repeating-linear-gradient(135deg, var(--hatch) 0 1px, transparent 1px 9px);
+  }
+
+  /* LevelMeter: 4 position pips + the word, readable without colour */
+  .level-meter {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 8px;
+    font-family: var(--f-display);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+  .level-meter__pips {
+    display: inline-grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 3px;
+    width: 52px;
+    flex: none;
+  }
+  .level-meter__pips > span {
+    height: 10px;
+    border-radius: 2px;
+    box-shadow: inset 0 0 0 1px var(--line-2);
+  }
+  .level-meter__pips > span[data-on] {
+    box-shadow: none;
+  }
+  .level-meter[data-level='green'] .level-meter__pips > span[data-on] {
+    background: var(--lv-green);
+  }
+  .level-meter[data-level='yellow'] .level-meter__pips > span[data-on] {
+    background: var(--lv-yellow);
+  }
+  .level-meter[data-level='orange'] .level-meter__pips > span[data-on] {
+    background: var(--lv-orange);
+  }
+  .level-meter[data-level='red'] .level-meter__pips > span[data-on] {
+    background: var(--lv-red);
+  }
+
+  /* Sticky section bar: full bleed over the page gutter, scrolls
+     horizontally, scrollbar hidden */
+  .section-nav {
+    margin-left: calc(-1 * max(16px, env(safe-area-inset-left, 0px)));
+    margin-right: calc(-1 * max(16px, env(safe-area-inset-right, 0px)));
+    background-color: var(--bg);
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  @supports (background-color: color-mix(in srgb, red 50%, transparent)) {
+    .section-nav {
+      background-color: color-mix(in srgb, var(--bg) 92%, transparent);
+      -webkit-backdrop-filter: blur(8px);
+      backdrop-filter: blur(8px);
+    }
+  }
+  .section-nav::-webkit-scrollbar {
+    display: none;
+  }
+}
 
 /* HydroMap markers */
 .marker-moulin {
@@ -38,6 +204,19 @@ body {
 
 /* TimeMachine banner */
 .time-machine-active {
-  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-  border-bottom: 2px solid #f59e0b;
+  background: linear-gradient(135deg, var(--lv-yellow-soft) 0%, var(--surface) 100%);
+  border: 1px solid var(--lv-yellow);
+}
+
+/* Third-party widgets drawn with a white background: follow the theme.
+   Leaflet's stylesheet loads later (map chunk): out-specify it. */
+.leaflet-container .leaflet-popup-content-wrapper,
+.leaflet-container .leaflet-popup-tip {
+  background: var(--surface);
+  color: var(--ink);
+}
+.recharts-default-tooltip {
+  background-color: var(--surface) !important;
+  border-color: var(--line-2) !important;
+  color: var(--ink);
 }

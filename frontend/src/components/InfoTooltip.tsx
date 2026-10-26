@@ -85,7 +85,7 @@ export default function InfoTooltip({ text, link, size = 'sm', className = '' }:
         tabIndex={0}
         onKeyDown={(e) => e.key === 'Enter' && setVisible((v) => !v)}
       >
-        <HelpCircle className={`${iconSize} text-gray-400 hover:text-gray-600 transition-colors`} />
+        <HelpCircle className={`${iconSize} text-ink-3 hover:text-ink transition-colors`} />
       </span>
       {visible &&
         createPortal(
@@ -100,14 +100,14 @@ export default function InfoTooltip({ text, link, size = 'sm', className = '' }:
             onMouseEnter={() => setVisible(true)}
             onMouseLeave={() => setVisible(false)}
           >
-            <div className="bg-gray-900 text-white text-xs rounded-lg p-3 shadow-xl transition-opacity duration-150">
+            <div className="bg-ink text-canvas text-xs rounded-lg p-3 shadow-xl transition-opacity duration-150">
               <p className="leading-relaxed">{text}</p>
               {link && (
                 <a
                   href={link.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="mt-2 inline-flex items-center gap-1 text-blue-300 hover:text-blue-200"
+                  className="mt-2 inline-flex items-center gap-1 text-canvas underline underline-offset-2"
                   onClick={(e) => e.stopPropagation()}
                 >
                   {link.label}
@@ -118,8 +118,8 @@ export default function InfoTooltip({ text, link, size = 'sm', className = '' }:
               <div
                 className={`absolute left-1/2 -translate-x-1/2 w-0 h-0 border-x-[6px] border-x-transparent ${
                   position.above
-                    ? 'bottom-[-6px] border-t-[6px] border-t-gray-900'
-                    : 'top-[-6px] border-b-[6px] border-b-gray-900'
+                    ? 'bottom-[-6px] border-t-[6px] border-t-ink'
+                    : 'top-[-6px] border-b-[6px] border-b-ink'
                 }`}
               />
             </div>
