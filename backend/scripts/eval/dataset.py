@@ -6,7 +6,21 @@ Every row holds, at hour ``t`` (naive UTC):
   historical builder (:func:`risk_core.build_historical_features`, same as
   the backfill/TimeMachine), i.e. the exact input of ``compute_risk``;
 - ``values``: flat causal features for candidate models (station heights and
-  rates, rolling Pessac level, rain windows, tide).
+  rates, rolling Pessac level, rain windows, tide, and the hydrological
+  inputs of the v4-alpha candidates: discharge of the Eyraud / Caudeau /
+  Pessac, Libourne level and confluence stage, Mouliets groundwater level,
+  GloFAS Lidoire discharge).
+
+Real-world latencies (research 2026-10-26, hydro report) are applied as
+lags, so a value is only used once it would have been published:
+
+- Eyraud and Caudeau Q: Hub'Eau/Vigicrues publish them ~7 h late outside
+  crises -> points with timestamp <= t - 7 h only (``HYDRO_Q_SERIES``);
+- Pessac Q and Libourne H: ~10-20 min -> points <= t;
+- Mouliets piezometer (daily): day D used from D+1 12:00 UTC (real-time
+  feed ~12 h late);
+- GloFAS (daily): day D used from D+1 00:00 UTC (the end of day D under
+  either date convention; production would read the forecast day 0).
 
 No future leakage (default ``level_mode="causal"``): observed series only
 contribute points with timestamp <= t (river levels, rain buckets ending at
@@ -66,6 +80,22 @@ DAILY_MAX_AGE_DAYS = 2
 ROLLING_WINDOW_H = 12.5
 RAIN_WINDOWS_H = (1, 3, 6, 12, 24, 48, 72, 168)
 
+# v4-alpha hydrological inputs: name -> (Hub'Eau station, publication lag h)
+HYDRO_Q_SERIES = {
+    "eyraud": ("P540401002", 7.0),  # bras de l'Eyraud a La Force, 73.5 km2
+    "caudeau": ("P524401001", 7.0),  # Caudeau a Lembras, 253 km2
+    "pessac": ("P555001001", 0.0),  # Dordogne a Pessac-sur-Dordogne
+}
+# series also exposed without the publication lag (flagged sensitivity only)
+LAG0_SENSITIVITY = ("eyraud",)
+LIBOURNE_STATION_ID = "P577001001"
+PIEZO_BSS = "08048X0088/P"  # Mouliets-et-Villemartin, Dordogne alluvium, 5.9 km
+PIEZO_LAG_AFTER_DAY_H = 12.0
+GLOFAS_CELL = (44.875, -0.025)  # Lidoire cell of the GloFAS v4 0.05 deg grid
+GLOFAS_LAG_AFTER_DAY_H = 0.0
+# Daily values older than this (days) are not used
+DAILY_INPUT_MAX_AGE_DAYS = 3
+
 
 @dataclass(frozen=True)
 class FeatureRow:
@@ -88,6 +118,13 @@ class RawInputs:
     rain_by_point: dict[str, dict[datetime, float]] = field(default_factory=dict)
     # Hourly model sea level (naive UTC, m or None)
     sea_level: list[tuple[datetime, Optional[float]]] = field(default_factory=list)
+    # v4-alpha: variable-step discharge per HYDRO_Q_SERIES name (naive UTC, m3/s)
+    discharge: dict[str, list[LevelPoint]] = field(default_factory=dict)
+    # v4-alpha: Libourne variable-step level (scale m), tidal, not scored by v3.4
+    libourne_points: list[LevelPoint] = field(default_factory=list)
+    # v4-alpha: daily groundwater level (m NGF) and GloFAS discharge (m3/s)
+    piezo_daily: list[tuple[date, float]] = field(default_factory=list)
+    glofas_daily: list[tuple[date, float]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -271,6 +308,60 @@ def _window_values(points: Sequence[LevelPoint], t: datetime, hours: float) -> l
     return [h for _, h in points[lo:hi]]
 
 
+def _latest_value(points: Sequence[LevelPoint], t: datetime, max_age_h: float) -> Optional[float]:
+    """Last value with timestamp <= t, None if older than ``max_age_h``."""
+    i = bisect.bisect_right(points, (t, float("inf")))
+    if i == 0:
+        return None
+    ts, v = points[i - 1]
+    return v if (t - ts).total_seconds() <= max_age_h * 3600 else None
+
+
+def _window_max(points: Sequence[LevelPoint], t: datetime, hours: float) -> Optional[float]:
+    win = _window_values(points, t, hours)
+    return max(win) if win else None
+
+
+def daily_value_at(
+    daily: Sequence[tuple[date, float]],
+    t: datetime,
+    lag_after_day_h: float,
+    max_age_days: int = DAILY_INPUT_MAX_AGE_DAYS,
+) -> Optional[float]:
+    """Value of the last day D published at t: D+1 00:00 + ``lag_after_day_h`` <= t."""
+    if not daily:
+        return None
+    last_day = (t - timedelta(hours=lag_after_day_h) - timedelta(days=1)).date()
+    i = bisect.bisect_right(daily, (last_day, float("inf")))
+    if i == 0:
+        return None
+    d, v = daily[i - 1]
+    return v if (last_day - d).days <= max_age_days else None
+
+
+def hydro_values(raw: RawInputs, t: datetime, primary_pts: Sequence[LevelPoint]) -> dict[str, Optional[float]]:
+    """v4-alpha raw inputs at t, with the publication lags (see module docstring)."""
+    from app.services.risk_v4 import confluence_stage
+
+    out: dict[str, Optional[float]] = {}
+    for name, (_, lag_h) in HYDRO_Q_SERIES.items():
+        pts = raw.discharge.get(name) or []
+        t_pub = t - timedelta(hours=lag_h)
+        out[f"q_{name}_m3s"] = _latest_value(pts, t_pub, CAUSAL_MAX_AGE_HOURS)
+        out[f"q_{name}_max_12h"] = _window_max(pts, t_pub, ROLLING_WINDOW_H)
+        if name in LAG0_SENSITIVITY and lag_h:
+            # sensitivity / timing analysis only: no publication lag (optimistic)
+            out[f"q_{name}_lag0_m3s"] = _latest_value(pts, t, CAUSAL_MAX_AGE_HOURS)
+            out[f"q_{name}_lag0_max_12h"] = _window_max(pts, t, ROLLING_WINDOW_H)
+    out["libourne_h"] = _latest_value(raw.libourne_points, t, CAUSAL_MAX_AGE_HOURS)
+    lib_env = _window_max(raw.libourne_points, t, ROLLING_WINDOW_H)
+    out["libourne_max_12h"] = lib_env
+    out["z_conf_ngf"] = confluence_stage(_window_max(primary_pts, t, ROLLING_WINDOW_H), lib_env)
+    out["piezo_ngf"] = daily_value_at(raw.piezo_daily, t, PIEZO_LAG_AFTER_DAY_H)
+    out["glofas_lidoire_m3s"] = daily_value_at(raw.glofas_daily, t, GLOFAS_LAG_AFTER_DAY_H)
+    return out
+
+
 def build_rows(
     raw: RawInputs,
     start: datetime,
@@ -367,6 +458,7 @@ def build_rows(
             float(feats.tide_coefficient) if feats.tide_coefficient is not None else None
         )
         values["hours_to_high_tide"] = feats.hours_to_high_tide
+        values.update(hydro_values(raw, t, primary_pts))
 
         rows.append(FeatureRow(timestamp=t, features=feats, values=values))
         t += timedelta(hours=1)
@@ -425,7 +517,7 @@ def collect_raw_inputs(
     fetch_start = start - timedelta(days=8)
 
     raw = RawInputs()
-    meta: dict = {"stations": {}, "rain": {}, "tide": {}}
+    meta: dict = {"stations": {}, "rain": {}, "tide": {}, "hydro": {}}
     try:
         for cfg in default_station_configs(settings):
             sr = sources.download_station_levels(cfg.station_id, fetch_start, end, cache, client, refresh)
@@ -455,6 +547,38 @@ def collect_raw_inputs(
             "n_hours": {pid: len(v) for pid, v in rain.by_point.items()},
             "era5_filled_hours": rain.era5_filled,
         }
+
+        hydro_meta: dict = {}
+        for name, (sid, lag_h) in HYDRO_Q_SERIES.items():
+            sq = sources.download_station_levels(sid, fetch_start, end, cache, client, refresh, variable="Q")
+            # chunks without variable-step data: daily maxima (QIXnJ) stamped at the
+            # end of the day, so that the max of day D is never used before D+1 00:00
+            fallback = [(datetime(d.year, d.month, d.day) + timedelta(days=1), q) for d, q in sq.daily_max]
+            raw.discharge[name] = sorted(sq.points + fallback)
+            hydro_meta[f"q_{name}"] = {
+                "station": sid, "n_points": len(sq.points), "lag_h": lag_h,
+                "chunks_daily_max_fallback": sq.chunks_daily_fallback, "chunks_missing": sq.chunks_missing,
+                "source": "Hydroportail variable-step Q (most_valid), m3/s",
+            }
+        lib = sources.download_station_levels(LIBOURNE_STATION_ID, fetch_start, end, cache, client, refresh)
+        raw.libourne_points = sorted(lib.points)
+        hydro_meta["libourne_h"] = {"station": LIBOURNE_STATION_ID, "n_points": len(lib.points),
+                                    "chunks_missing": lib.chunks_missing}
+        raw.piezo_daily = sources.download_piezo(PIEZO_BSS, fetch_start, end, cache, client, refresh)
+        hydro_meta["piezo"] = {"bss": PIEZO_BSS, "n_days": len(raw.piezo_daily),
+                               "lag": f"day D used from D+1 + {PIEZO_LAG_AFTER_DAY_H:g} h",
+                               "source": "Hub'Eau niveaux_nappes chroniques (m NGF)"}
+        glofas = sources.download_glofas("seamless_v4", *GLOFAS_CELL, fetch_start, end, cache, client, refresh)
+        raw.glofas_daily = [(d, v) for d, v in glofas if v is not None]
+        hydro_meta["glofas"] = {"cell": GLOFAS_CELL, "n_days": len(raw.glofas_daily),
+                                "lag": f"day D used from D+1 + {GLOFAS_LAG_AFTER_DAY_H:g} h",
+                                "source": "Open-Meteo Flood seamless_v4 (consolidated reanalysis to 2025-05, "
+                                          "then archived forecast_v4)"}
+        meta["hydro"] = hydro_meta
+        # warm the cache of the climatology series (a-priori v4 thresholds)
+        from scripts.eval import climatology
+
+        climatology.download_series(cache, client, refresh)
 
         from app.services.collectors.tide import MARINE_LAT, MARINE_LON
 
@@ -523,4 +647,6 @@ def coverage_summary(rows: Sequence[FeatureRow], configs: Sequence[StationConfig
     out["tide_available"] = round(sum(1 for r in rows if r.features.tide_available) / n, 4)
     out["rain_72h_complete"] = round(sum(1 for r in rows if (r.values.get("rain_hours_72h") or 0) >= 72) / n, 4)
     out["daily_max_fallback_hours"] = sum(1 for r in rows if (r.values.get("n_daily_fallback") or 0) > 0)
+    for key in ("q_eyraud_m3s", "q_caudeau_m3s", "q_pessac_m3s", "z_conf_ngf", "piezo_ngf", "glofas_lidoire_m3s"):
+        out[key] = round(sum(1 for r in rows if r.values.get(key) is not None) / n, 4)
     return out

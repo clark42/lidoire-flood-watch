@@ -22,6 +22,13 @@ Protocol (every number of a FITTED model is out-of-sample):
   distribution: v3.3+backwater gate, a-priori backwater rules, GR4H) are not
   fitted: their in-sample numbers are their out-of-sample numbers. v3.3
   itself was hand-tuned on these 14 episodes: its numbers are IN-SAMPLE.
+- v4-alpha (:mod:`app.services.risk_v4`, pre-registered 2026-10-26 before
+  any v4 metric): backwater AND runoff, OR overbank, optional groundwater;
+  thresholds from config, physics and pre-2022-10 climatology
+  (:mod:`scripts.eval.climatology`), zero label-tuned parameter. Variants:
+  runoff proxy (Eyraud Q lagged 7 h, Caudeau Q, GR4H, GloFAS), backwater
+  input (Pessac H_aval or confluence stage Z_c), groundwater on/off,
+  overbank off (ablation). Fitted Eyraud rules go through the blocked LOEO.
 
 Small sample: 5 floods (one of them an infiltration flood, 2023-03-11, since
 sealed). POD comes with a Clopper-Pearson 95% interval, AUC with a
@@ -42,12 +49,14 @@ from typing import Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
+from app.services import risk_v4
 from app.services.models_experimental import (
     DEFAULT_PROBABILITY_THRESHOLDS,
     PESSAC_THRESHOLDS_M,
     BackwaterRuleModel,
     LogisticModel,
     V33BackwaterModel,
+    V4AlphaModel,
     design_matrix,
     feature_table,
     fit_logistic_l2,
@@ -621,12 +630,162 @@ def build_candidates(
     cv(lambda ds, ev, **kw: fit_logistic(ds, ev, ("api_fast", "h_aval", "api_slow"), **kw),
        "lr_api_haval_soil_cv", 4)
     cv(lambda ds, ev, **kw: fit_logistic(ds, ev, ("q_gr4h", "h_aval"), **kw), "lr_gr4h_haval_cv", 3)
+
+    # (3) v4-alpha (pre-registered, label-free) and its variants
+    for model, protocol in v4_alpha_models(dataset):
+        plain(model, protocol, params={"runoff": model.runoff_feature, "backwater": model.params.backwater_source,
+                                       "overbank": model.params.use_overbank,
+                                       "groundwater": model.params.use_groundwater})
+    if has_feature(table, "q_eyraud"):
+        cv(lambda ds, ev, **kw: fit_backwater_rule(ds, ev, forcing="q_eyraud", **kw), "bw_rule_eyraud_cv", 2)
+        cv(lambda ds, ev, **kw: fit_logistic(ds, ev, ("q_eyraud", "h_aval"), **kw), "lr_eyraud_haval_cv", 3)
     return out
+
+
+def has_feature(table: Mapping[str, np.ndarray], name: str) -> bool:
+    return name in table and bool(np.isfinite(table[name]).any())
+
+
+V4_HEADLINE = "v4a_joint"
+TIMING_WINDOWS = {
+    "2025-04 flood (label peak 2025-04-23 16:00)": (datetime(2025, 4, 18), datetime(2025, 4, 25, 23)),
+    "2026-02 Pessac record (unlabelled)": (datetime(2026, 2, 8), datetime(2026, 2, 17, 23)),
+}
+
+
+def v4_alpha_models(dataset: EvalDataset, include_sensitivity: bool = False) -> list[tuple[V4AlphaModel, str]]:
+    """The pre-registered v4-alpha variants (no parameter fitted on labels).
+
+    GR4H thresholds: 0.4 / 0.7 / 1.0 x the simulated Q2 (whole simulated
+    series, no label), as ``bw_rule_gr4h_apriori``.
+    """
+    table = candidate_table(dataset)
+    base = risk_v4.default_v4_params()
+    gr4h_th = label_free_q_thresholds(dataset.times, table["q_gr4h"])
+    models = [
+        (V4AlphaModel(base, "q_eyraud", name=V4_HEADLINE), "label-free (pre-registered)"),
+        (V4AlphaModel(replace(base, backwater_source="confluence"), "q_eyraud", name="v4a_joint_zc"),
+         "label-free (pre-registered)"),
+        (V4AlphaModel(replace(base, runoff=risk_v4.runoff_thresholds(risk_v4.CAUDEAU_Q2_M3S), runoff_source="caudeau"),
+                      "q_caudeau", name="v4a_caudeau"), "label-free (pre-registered)"),
+        (V4AlphaModel(replace(base, runoff=risk_v4.GradedThresholds(0.0, *gr4h_th), runoff_source="gr4h"),
+                      "q_gr4h", name="v4a_gr4h"), "label-free (pre-registered)"),
+        (V4AlphaModel(replace(base, runoff=risk_v4.runoff_thresholds(risk_v4.GLOFAS_Q2_M3S), runoff_source="glofas"),
+                      "q_glofas", name="v4a_glofas"), "label-free (pre-registered)"),
+        (V4AlphaModel(replace(base, use_groundwater=True), "q_eyraud", name="v4a_joint+gw"),
+         "label-free (pre-registered)"),
+        (V4AlphaModel(replace(base, use_overbank=False), "q_eyraud", name="v4a_joint_no_overbank"),
+         "label-free (ablation)"),
+    ]
+    if include_sensitivity:
+        models.append((V4AlphaModel(base, "q_eyraud_lag0", name="v4a_joint[Eyraud lag 0, optimistic]"),
+                       "label-free (sensitivity)"))
+    return models
+
+
+def climatology_check(dataset: EvalDataset) -> list[str]:
+    """Recompute the pre-registered thresholds (offline cache) and compare with risk_v4."""
+    from scripts.eval import climatology
+
+    lines = []
+    try:
+        res = climatology.compute(climatology.download_series(client=None))
+    except Exception as exc:  # cache missing: informative only
+        return [f"- climatology not recomputed: {exc!r}"]
+    expected = {
+        "eyraud_q2_m3s": risk_v4.EYRAUD_Q2_M3S, "caudeau_q2_m3s": risk_v4.CAUDEAU_Q2_M3S,
+        "glofas_q2_m3s": risk_v4.GLOFAS_Q2_M3S,
+    }
+    for k, v in expected.items():
+        lines.append(f"- {k}: recomputed {_fmt(res.get(k), 2)}, risk_v4 {v:g}")
+    lines.append(f"- pessac_t_year_levels_m (T=2/5/10): recomputed "
+                 f"{tuple(round(x, 2) for x in res.get('pessac_t_year_levels_m') or ())}, "
+                 f"risk_v4 {risk_v4.PESSAC_T_YEAR_LEVELS_M}")
+    lines.append(f"- piezo_percentiles_ngf (50/90/97/99.5): recomputed "
+                 f"{tuple(round(x, 2) for x in res.get('piezo_percentiles_ngf') or ())}, "
+                 f"risk_v4 {risk_v4.PIEZO_PERCENTILES_NGF}")
+    table = candidate_table(dataset)
+    if has_feature(table, "z_conf"):
+        from scripts.eval.climatology import quantile_mapped_thresholds
+
+        zc = quantile_mapped_thresholds(table["h_aval"], table["z_conf"], PESSAC_THRESHOLDS_M)
+        lines.append(f"- confluence thresholds (quantile-mapped): recomputed {tuple(round(x, 2) for x in zc)}, "
+                     f"risk_v4 {risk_v4.CONFLUENCE_THRESHOLDS_NGF}")
+    gr = label_free_q_thresholds(dataset.times, table["q_gr4h"])
+    lines.append(f"- GR4H runoff thresholds (0.4/0.7/1.0 x simulated Q2): {tuple(round(x, 2) for x in gr)} m3/s")
+    return lines
+
+
+# Unlabelled periods worth a look (research 2026-10-26), peak times approximate
+EXTRA_PERIODS = {
+    "U 2023-11-03 (Ciaran)": datetime(2023, 11, 3, 12),
+    "U 2024-05-15": datetime(2024, 5, 15, 12),
+    "U 2025-01-28": datetime(2025, 1, 28, 12),
+    "U 2026-02-14 (Pessac record)": datetime(2026, 2, 14, 11),
+}
+
+
+def mechanism_table_markdown(dataset: EvalDataset, events: Sequence[EvalEvent], model: V4AlphaModel) -> str:
+    """Max of each v4-alpha mechanism and raw input over [peak - 72h, peak + 6h] per event."""
+    from app.services.models_experimental import _graded_vec
+
+    table = candidate_table(dataset)
+    p = model.params
+    sb = _graded_vec(table["h_aval"], p.backwater)
+    sr = _graded_vec(table[model.runoff_feature], p.runoff)
+    so = _graded_vec(table["h_aval"], p.overbank)
+    sg = _graded_vec(table["piezo"], p.groundwater)
+    joint = np.where(np.isnan(sb) | np.isnan(sr), np.nan, np.minimum(sb, sr))
+    lag0 = table.get("q_eyraud_lag0")
+    times = np.array(dataset.times, dtype="datetime64[s]")
+    cols = [("joint", joint), ("backwater", sb), ("runoff", sr), ("overbank", so), ("gw", sg),
+            ("H_aval m", table["h_aval"]), ("Q Eyraud lag7 m3/s", table["q_eyraud"]),
+            ("Q Eyraud lag0 m3/s", lag0 if lag0 is not None else np.full(len(times), np.nan)),
+            ("Z_c NGF", table["z_conf"]), ("piezo NGF", table["piezo"]), ("GloFAS m3/s", table["q_glofas"]),
+            ("rain 72h mm", table["rain_72h"])]
+    lines = ["| Event | Outcome | " + " | ".join(c for c, _ in cols) + " |", "|---|---|" + "---|" * len(cols)]
+    items = [(e.key, e.outcome.value, e.peak_time) for e in events]
+    items += [(k, "unlabelled", t) for k, t in EXTRA_PERIODS.items()]
+    for key, outcome, peak in items:
+        lo, hi = np.datetime64(peak - timedelta(hours=LEAD_H)), np.datetime64(peak + timedelta(hours=LAG_H))
+        m = (times >= lo) & (times <= hi)
+        cells = []
+        for _, arr in cols:
+            seg = np.asarray(arr, dtype=float)[m]
+            cells.append(_fmt(float(np.nanmax(seg)), 1) if seg.size and np.isfinite(seg).any() else "-")
+        lines.append(f"| {key} | {outcome} | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def timing_table_markdown(dataset: EvalDataset, start: datetime, end: datetime, step_h: int = 6) -> str:
+    """Inputs every ``step_h`` hours over [start, end] (label timing checks; Eyraud WITHOUT lag)."""
+    keys = [("rain_6h", "rain 6h mm"), ("rain_72h", "rain 72h mm"), ("q_eyraud_lag0_m3s", "Q Eyraud m3/s"),
+            ("q_caudeau_m3s", "Q Caudeau lag7 m3/s"), ("pessac_h", "Pessac m"), ("pessac_max_12h", "H_aval m"),
+            ("libourne_max_12h", "Libourne env m"), ("piezo_ngf", "piezo NGF"), ("glofas_lidoire_m3s", "GloFAS m3/s")]
+    lines = ["| Hour (UTC) | " + " | ".join(k[1] for k in keys) + " |", "|---|" + "---|" * len(keys)]
+    for r in dataset.rows:
+        if start <= r.timestamp <= end and r.timestamp.hour % step_h == 0:
+            lines.append(f"| {r.timestamp:%Y-%m-%d %H} | " + " | ".join(
+                _fmt(r.values.get(k), 1) for k, _ in keys) + " |")
+    return "\n".join(lines)
+
+
+def series_peak(
+    dataset: EvalDataset, key: str, start: datetime, end: datetime,
+) -> tuple[Optional[datetime], Optional[float]]:
+    best = (None, None)
+    for r in dataset.rows:
+        v = r.values.get(key)
+        if start <= r.timestamp <= end and v is not None and (best[1] is None or v > best[1]):
+            best = (r.timestamp, v)
+    return best
 
 
 def gate_sensitivity(dataset: EvalDataset) -> list[Candidate]:
     """v3.3 x backwater gate with other a-priori constants (robustness, not a fit)."""
     out = []
+    out += [Candidate(m.name, protocol, 0, replay(m, dataset), "score", model_thresholds(m))
+            for m, protocol in v4_alpha_models(dataset, include_sensitivity=True)[-1:]]
     for min_factor in (0.3, 0.5, 0.7):
         for h_low, h_full in ((2.5, 3.5), (3.0, 3.8), (3.4, 4.2)):
             m = V33BackwaterModel(h_low=h_low, h_full=h_full, min_factor=min_factor,
@@ -645,12 +804,18 @@ def harness_loeo_crosscheck(dataset: EvalDataset, events: Sequence[EvalEvent], p
         return f
 
     out = {}
-    for name, fit in (
+    fits = [
         ("bw_rule_api_cv", lambda ds, ev, **kw: fit_backwater_rule(ds, ev, forcing="api_fast", **kw)),
         ("bw_rule_gr4h_cv", lambda ds, ev, **kw: fit_backwater_rule(ds, ev, forcing="q_gr4h", **kw)),
         ("lr_api_haval_cv", lambda ds, ev, **kw: fit_logistic(ds, ev, ("api_fast", "h_aval"), **kw)),
         ("lr_gr4h_haval_cv", lambda ds, ev, **kw: fit_logistic(ds, ev, ("q_gr4h", "h_aval"), **kw)),
-    ):
+    ]
+    if has_feature(candidate_table(dataset), "q_eyraud"):
+        fits += [
+            ("bw_rule_eyraud_cv", lambda ds, ev, **kw: fit_backwater_rule(ds, ev, forcing="q_eyraud", **kw)),
+            ("lr_eyraud_haval_cv", lambda ds, ev, **kw: fit_logistic(ds, ev, ("q_eyraud", "h_aval"), **kw)),
+        ]
+    for name, fit in fits:
         res = leave_one_event_out(wrap(fit), dataset, events)
         out[name] = res.to_dict()
     return out
@@ -702,13 +867,30 @@ def run(dataset: EvalDataset, out_dir: Path, events=None, period=None, crosschec
     ]
     if sens_rows:
         md += [
-            "## Sensitivity of the v3.3 backwater gate (a-priori constants varied, runs merged <= 12h)",
+            "## Sensitivity (runs merged <= 12h): v4-alpha without the Eyraud publication lag, v3.4 backwater gate",
             "",
-            "g = factor below the low height, 1 above the full height (Pessac 12.5h max).",
+            "Eyraud lag 0 uses data published ~7 h later in reality (optimistic bound). Gate: g = factor below "
+            "the low height, 1 above the full height (Pessac 12.5h max).",
             "",
             comparison_markdown(sens_rows),
             "",
         ]
+    v4 = next((m for m, _ in v4_alpha_models(dataset) if m.name == V4_HEADLINE), None)
+    md += ["## v4-alpha pre-registered thresholds (climatology recomputed from the cache)", ""]
+    md += climatology_check(dataset)
+    md += ["", f"## v4-alpha mechanisms per event ({V4_HEADLINE}, max over [peak-72h, peak+6h])", "",
+           "Scores 0-100 (15 yellow / 35 orange / 55 red); Eyraud lag7 = the model input (published "
+           "~7 h late), lag0 = for reading only.", "",
+           mechanism_table_markdown(dataset, events, v4), ""]
+    for label, (t0, t1) in TIMING_WINDOWS.items():
+        if dataset.times and t0 >= dataset.times[0] and t1 <= dataset.times[-1]:
+            peaks = []
+            for key, name in (("q_eyraud_lag0_m3s", "Eyraud Q"), ("pessac_h", "Pessac H"), ("rain_1h", "rain 1h")):
+                t, v = series_peak(dataset, key, t0, t1)
+                if t is not None:
+                    peaks.append(f"{name} max {v:.2f} at {t:%Y-%m-%d %H}h UTC")
+            md += [f"## Timing check: {label}", "", "- " + "; ".join(peaks), "",
+                   timing_table_markdown(dataset, t0, t1), ""]
     md += [
         "## Fitted parameters per fold",
         "",
