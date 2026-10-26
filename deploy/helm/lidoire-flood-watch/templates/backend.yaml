@@ -1,0 +1,186 @@
+{{- $c := .Values.backend -}}
+# The Service MUST be named "backend": frontend/nginx.conf proxies /api/ to
+# http://backend:8000.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "backend") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "backend") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backend-data
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "backend") | nindent 4 }}
+  annotations:
+    # Netatmo OAuth tokens: keep the claim on helm uninstall
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ $c.persistence.storageClass }}
+  resources:
+    requests:
+      storage: {{ $c.persistence.size }}
+---
+# ONE replica + Recreate: the embedded APScheduler (collections, hourly risk
+# score) must never run twice, not even during a rollout.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "backend") | nindent 4 }}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "lfw.selectorLabels" (dict "ctx" $ "component" "backend") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "lfw.labels" (dict "ctx" $ "component" "backend") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- include "lfw.podSecurityContext" $c.securityContext | nindent 8 }}
+      {{- include "lfw.podScheduling" $ | nindent 6 }}
+      {{- if $c.waitForDependencies }}
+      initContainers:
+        - name: wait-for-dependencies
+          image: {{ include "lfw.appImage" (dict "ctx" $ "repository" $c.image.repository) }}
+          imagePullPolicy: {{ include "lfw.appImagePullPolicy" $ }}
+          securityContext:
+            {{- include "lfw.containerSecurityContext" $ | nindent 12 }}
+          command:
+            - python
+            - -c
+            - |
+              import socket, sys, time
+              deps = [("postgres", 5432), ("influxdb", 8086), ("redis", 6379)]
+              deadline = time.monotonic() + 600
+              for host, port in deps:
+                  while True:
+                      try:
+                          socket.create_connection((host, port), timeout=3).close()
+                          print(f"{host}:{port} reachable", flush=True)
+                          break
+                      except OSError as exc:
+                          if time.monotonic() > deadline:
+                              sys.exit(f"timeout waiting for {host}:{port}: {exc}")
+                          time.sleep(3)
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+      {{- end }}
+      containers:
+        - name: backend
+          image: {{ include "lfw.appImage" (dict "ctx" $ "repository" $c.image.repository) }}
+          imagePullPolicy: {{ include "lfw.appImagePullPolicy" $ }}
+          securityContext:
+            {{- include "lfw.containerSecurityContext" $ | nindent 12 }}
+          env:
+            # Secrets (lidoire-backend is built by ESO, see externalsecrets.yaml)
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfw.backendSecret" $ }}
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfw.backendSecret" $ }}
+                  key: REDIS_URL
+            - name: INFLUXDB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfw.backendSecret" $ }}
+                  key: INFLUXDB_TOKEN
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lfw.backendSecret" $ }}
+                  key: API_KEY
+            # Plain settings
+            - name: INFLUXDB_URL
+              value: "http://influxdb:8086"
+            - name: INFLUXDB_ORG
+              value: {{ .Values.influxdb.org | quote }}
+            - name: INFLUXDB_BUCKET
+              value: {{ .Values.influxdb.bucket | quote }}
+            - name: CORS_ORIGINS
+              value: {{ $c.config.corsOrigins | quote }}
+            - name: FRONTEND_URL
+              value: {{ $c.config.frontendUrl | quote }}
+            - name: MOULIN_LAT
+              value: {{ $c.config.moulinLat | quote }}
+            - name: MOULIN_LON
+              value: {{ $c.config.moulinLon | quote }}
+            - name: LOG_LEVEL
+              value: {{ $c.config.logLevel | quote }}
+            {{- with $c.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.externalApis.enabled }}
+          envFrom:
+            # Netatmo / Infoclimat / SHOM / Meteo-France keys (optional)
+            - secretRef:
+                name: {{ include "lfw.externalApisSecret" $ }}
+                optional: true
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+          # Startup creates the tables and starts the scheduler: be patient
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: backend-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi

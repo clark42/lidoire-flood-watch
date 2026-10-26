@@ -1,0 +1,13 @@
+Lidoire Flood Watch {{ .Values.image.tag | default .Chart.AppVersion }} deployed in namespace {{ .Release.Namespace }}.
+
+Dashboard (tailnet): {{ .Values.backend.config.frontendUrl }}  (Service frontend, ClusterIP {{ .Values.frontend.service.clusterIP }})
+
+Check:
+  kubectl get externalsecret,pods,pvc -n {{ .Release.Namespace }}
+  kubectl logs deploy/backend -n {{ .Release.Namespace }}
+
+The API key (X-API-Key for POST/PUT/DELETE) is in the Secret lidoire-backend, key API_KEY.
+{{- if .Values.backup.enabled }}
+Daily backup: CronJob backup ({{ .Values.backup.schedule }} {{ .Values.backup.timeZone }}).
+  Manual run: kubectl create job --from=cronjob/backup backup-manual -n {{ .Release.Namespace }}
+{{- end }}

@@ -1,0 +1,33 @@
+# Scaleway Kapsule "sharedhosting" (context admin@sharedhosting-production).
+# The chart defaults already target this cluster; this file pins the
+# environment-specific bindings (created by the Terraform stack 11-lidoire)
+# so that they stay explicit if the defaults evolve.
+#
+#   helm upgrade --install lidoire deploy/helm/lidoire-flood-watch -n lidoire \
+#     -f deploy/helm/lidoire-flood-watch/values-sharedhosting.yaml \
+#     --set image.tag=sha-$(git rev-parse --short=7 HEAD) \
+#     --kube-context admin@sharedhosting-production
+
+externalSecrets:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: scaleway-secret-manager
+
+frontend:
+  service:
+    clusterIP: 10.32.0.100
+
+backend:
+  config:
+    frontendUrl: "http://lidoire.ts.kamorion.cloud"
+    corsOrigins: "http://lidoire.ts.kamorion.cloud"
+  persistence:
+    storageClass: sbs-default-retain
+
+postgres:
+  persistence:
+    storageClass: sbs-default-retain
+
+influxdb:
+  persistence:
+    storageClass: sbs-default-retain

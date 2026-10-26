@@ -1,0 +1,243 @@
+# Lidoire Flood Watch - default values.
+#
+# One release per namespace: the Services have fixed names (backend, frontend,
+# postgres, influxdb, redis) because the frontend nginx proxies /api/ to
+# http://backend:8000 (frontend/nginx.conf).
+#
+# The chart creates NEITHER the namespace NOR the NetworkPolicies (both are
+# managed by Terraform). Every pod follows the Pod Security Standard
+# "restricted" (non-root, explicit uid, seccomp RuntimeDefault, no privilege
+# escalation, all capabilities dropped, read-only root filesystem).
+#
+# No secret value ever appears in these values or in the rendered manifests:
+# they come from Scaleway Secret Manager through External Secrets Operator.
+
+# -----------------------------------------------------------------------------
+# Application images (built by .github/workflows/images.yml)
+# -----------------------------------------------------------------------------
+image:
+  # Tag shared by the backend and frontend images. Empty = Chart appVersion
+  # ("main"). Prefer an immutable tag: --set image.tag=sha-$(git rev-parse --short=7 HEAD)
+  tag: ""
+  # Empty = "Always" for the mutable "main" tag, "IfNotPresent" otherwise.
+  pullPolicy: ""
+
+# The GHCR packages are public: no pull secret needed. Example if they become
+# private: [{name: ghcr-pull}] (secret created outside this chart).
+imagePullSecrets: []
+
+# Scheduling applied to every pod of the chart (backend, frontend, databases,
+# backup). The volumes are zonal (WaitForFirstConsumer): once bound, a
+# StatefulSet pod stays in the zone of its volume.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -----------------------------------------------------------------------------
+# Secrets (External Secrets Operator, ClusterSecretStore on Scaleway SM)
+# -----------------------------------------------------------------------------
+externalSecrets:
+  # ESO v0.10 serves external-secrets.io/v1beta1 (v1 from ESO 0.17).
+  apiVersion: external-secrets.io/v1beta1
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: scaleway-secret-manager
+  # JSON secret created by Terraform with the keys POSTGRES_PASSWORD,
+  # INFLUXDB_ADMIN_PASSWORD, INFLUXDB_ADMIN_TOKEN, REDIS_PASSWORD, API_KEY.
+  # It produces two Kubernetes Secrets:
+  #   lidoire-generated : raw passwords for postgres / influxdb / redis / backup
+  #   lidoire-backend   : DATABASE_URL, REDIS_URL, INFLUXDB_TOKEN, API_KEY
+  #                       (URLs built by the ESO template, never in clear here)
+  generated:
+    remoteKey: "name:lidoire-generated"
+
+# Optional third-party API credentials (JSON with keys among NETATMO_CLIENT_ID,
+# NETATMO_CLIENT_SECRET, NETATMO_REFRESH_TOKEN, INFOCLIMAT_API_KEY,
+# SHOM_API_KEY, METEOFRANCE_API_KEY; CAMERA_RTSP_URL also works). The Scaleway
+# secret is created empty by Terraform: enable once a version has been added.
+# Injected into the backend with envFrom (optional: the pod starts even if the
+# Kubernetes Secret is not synced yet).
+externalApis:
+  enabled: false
+  remoteKey: "name:lidoire-external-apis"
+
+# -----------------------------------------------------------------------------
+# Backend (FastAPI + APScheduler)
+# -----------------------------------------------------------------------------
+backend:
+  # Always ONE replica with the Recreate strategy: the embedded APScheduler
+  # would otherwise run every collection (and the hourly risk score) twice.
+  image:
+    repository: ghcr.io/clark42/lidoire-flood-watch-backend
+  config:
+    # Public URL of the dashboard (also the Netatmo OAuth callback base:
+    # <frontendUrl>/api/auth/netatmo/callback). Reached through the tailnet.
+    frontendUrl: "http://lidoire.ts.kamorion.cloud"
+    # Comma-separated, no wildcard (frontendUrl is added by the backend).
+    corsOrigins: "http://lidoire.ts.kamorion.cloud"
+    moulinLat: "44.8759811"
+    moulinLon: "0.0015091"
+    logLevel: INFO
+  # Extra plain (non-secret) environment variables, e.g.
+  #   - name: CAMERA_SNAPSHOT_INTERVAL
+  #     value: "60"
+  extraEnv: []
+  # Wait for postgres / influxdb / redis (TCP) before starting the API.
+  waitForDependencies: true
+  persistence:
+    # /app/data: Netatmo OAuth tokens, future camera snapshots
+    size: 1Gi
+    storageClass: sbs-default-retain
+  securityContext:
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+  resources:
+    requests:
+      cpu: 100m
+      memory: 384Mi
+    limits:
+      memory: 1Gi
+
+# -----------------------------------------------------------------------------
+# Frontend (nginx-unprivileged serving the SPA, proxies /api/ to the backend)
+# -----------------------------------------------------------------------------
+frontend:
+  replicas: 1
+  image:
+    repository: ghcr.io/clark42/lidoire-flood-watch-frontend
+  service:
+    # Fixed ClusterIP announced on the headscale tailnet by the subnet router
+    # (10.32.0.0/20); lidoire.ts.kamorion.cloud resolves to it.
+    clusterIP: 10.32.0.100
+    port: 80
+  securityContext:
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+# Optional public exposure (disabled: the dashboard is tailnet-only). When
+# enabling it, also update backend.config.frontendUrl / corsOrigins.
+ingress:
+  enabled: false
+  className: nginx
+  clusterIssuer: letsencrypt-prod
+  host: ""
+  tlsSecretName: lidoire-tls
+  annotations: {}
+
+# -----------------------------------------------------------------------------
+# PostgreSQL (episodes, labels)
+# -----------------------------------------------------------------------------
+postgres:
+  image:
+    repository: postgres
+    tag: 15.19-alpine
+    pullPolicy: IfNotPresent
+  user: postgres
+  database: lidoire_flood
+  persistence:
+    size: 5Gi
+    storageClass: sbs-default-retain
+  # postgres user of the alpine image
+  securityContext:
+    runAsUser: 70
+    runAsGroup: 70
+    fsGroup: 70
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# InfluxDB 2 (time series: levels, rain, tides, risk scores)
+# -----------------------------------------------------------------------------
+influxdb:
+  image:
+    repository: influxdb
+    tag: 2.7.12-alpine
+    pullPolicy: IfNotPresent
+  # Initial setup (first start on an empty volume only)
+  adminUser: admin
+  org: lidoire
+  bucket: flood_data
+  persistence:
+    size: 10Gi
+    storageClass: sbs-default-retain
+  # influxdb user of the alpine image; the entrypoint runs influxd directly
+  # when started as non-root.
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 384Mi
+    limits:
+      memory: 1Gi
+
+# -----------------------------------------------------------------------------
+# Redis (cache only: no persistence, no PVC)
+# -----------------------------------------------------------------------------
+redis:
+  image:
+    repository: redis
+    tag: 7.4.11-alpine
+    pullPolicy: IfNotPresent
+  maxmemory: 96mb
+  # redis user (uid 999, gid 1000) of the alpine image
+  securityContext:
+    runAsUser: 999
+    runAsGroup: 1000
+    fsGroup: 1000
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 160Mi
+
+# -----------------------------------------------------------------------------
+# Daily backup: pg_dump + influx backup -> S3 (Scaleway Object Storage)
+# -----------------------------------------------------------------------------
+backup:
+  enabled: true
+  schedule: "30 3 * * *"
+  timeZone: Europe/Paris
+  # JSON secret with ACCESS_KEY, SECRET_KEY, BUCKET, ENDPOINT, REGION
+  remoteKey: "name:lidoire-backup-s3"
+  # Objects land in s3://<BUCKET>/<prefix>/<UTC timestamp>/
+  prefix: lidoire-flood-watch
+  # Delete backups older than N days (0 = keep everything, e.g. when a bucket
+  # lifecycle rule already handles expiry).
+  retentionDays: 30
+  # Size limit of the scratch emptyDir holding the dumps before upload
+  scratchSizeLimit: 2Gi
+  activeDeadlineSeconds: 3600
+  backoffLimit: 1
+  # Upload image (pg_dump and influx backup reuse the database images)
+  rclone:
+    image:
+      repository: rclone/rclone
+      tag: 1.75.2
+      pullPolicy: IfNotPresent
+  # Any unprivileged uid works for the upload container
+  securityContext:
+    runAsUser: 65534
+    runAsGroup: 65534
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi

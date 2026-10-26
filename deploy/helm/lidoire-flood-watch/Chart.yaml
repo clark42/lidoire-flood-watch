@@ -1,0 +1,15 @@
+apiVersion: v2
+name: lidoire-flood-watch
+description: >-
+  Lidoire Flood Watch (FastAPI backend + React/nginx frontend) with its
+  PostgreSQL, InfluxDB and Redis dependencies, secrets from External Secrets
+  Operator and a daily backup to S3.
+type: application
+version: 0.1.0
+# Default image tag of the backend and frontend images (overridden by
+# image.tag, recommended: an immutable "sha-<7 chars>" tag).
+appVersion: "main"
+home: https://github.com/clark42/lidoire-flood-watch
+sources:
+  - https://github.com/clark42/lidoire-flood-watch
+kubeVersion: ">=1.29.0-0"

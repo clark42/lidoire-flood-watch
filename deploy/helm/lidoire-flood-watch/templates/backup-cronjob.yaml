@@ -1,0 +1,196 @@
+{{- if .Values.backup.enabled }}
+{{- $b := .Values.backup -}}
+{{- $pg := .Values.postgres -}}
+{{- $influx := .Values.influxdb -}}
+# Daily backup. The two init containers write to a shared emptyDir, in order:
+#   1. pg_dump (custom format)  -> /backup/postgres.dump
+#   2. influx backup (all orgs) -> /backup/influxdb/
+# then rclone uploads /backup to s3://<BUCKET>/<prefix>/<UTC timestamp>/ and
+# prunes the backups older than retentionDays.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "backup") | nindent 4 }}
+spec:
+  schedule: {{ $b.schedule | quote }}
+  {{- with $b.timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "lfw.labels" (dict "ctx" $ "component" "backup") | nindent 8 }}
+    spec:
+      backoffLimit: {{ $b.backoffLimit }}
+      activeDeadlineSeconds: {{ $b.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "lfw.labels" (dict "ctx" $ "component" "backup") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            # Shared group so every container can write the scratch volume
+            fsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          {{- include "lfw.podScheduling" $ | nindent 10 }}
+          initContainers:
+            - name: pg-dump
+              image: "{{ $pg.image.repository }}:{{ $pg.image.tag }}"
+              imagePullPolicy: {{ $pg.image.pullPolicy }}
+              securityContext:
+                {{- include "lfw.containerSecurityContext" $ | nindent 16 }}
+                runAsUser: {{ $pg.securityContext.runAsUser }}
+                runAsGroup: {{ $pg.securityContext.runAsGroup }}
+              env:
+                - name: PGHOST
+                  value: postgres
+                - name: PGUSER
+                  value: {{ $pg.user | quote }}
+                - name: PGDATABASE
+                  value: {{ $pg.database | quote }}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "lfw.generatedSecret" $ }}
+                      key: POSTGRES_PASSWORD
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  pg_dump --format=custom --no-owner --file=/backup/postgres.dump
+                  # readable by the (different) uid of the upload container
+                  chmod a+r /backup/postgres.dump
+                  ls -l /backup/postgres.dump
+              resources:
+                {{- toYaml $b.resources | nindent 16 }}
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+            - name: influx-backup
+              image: "{{ $influx.image.repository }}:{{ $influx.image.tag }}"
+              imagePullPolicy: {{ $influx.image.pullPolicy }}
+              securityContext:
+                {{- include "lfw.containerSecurityContext" $ | nindent 16 }}
+                runAsUser: {{ $influx.securityContext.runAsUser }}
+                runAsGroup: {{ $influx.securityContext.runAsGroup }}
+              env:
+                # Read by the influx CLI: the token never appears in the arguments
+                - name: INFLUX_HOST
+                  value: "http://influxdb:8086"
+                - name: INFLUX_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "lfw.generatedSecret" $ }}
+                      key: INFLUXDB_ADMIN_TOKEN
+                - name: INFLUX_CONFIGS_PATH
+                  value: /tmp/influx-configs
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  influx backup /backup/influxdb
+                  chmod -R a+rX /backup/influxdb
+                  du -sh /backup/influxdb
+              resources:
+                {{- toYaml $b.resources | nindent 16 }}
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+          containers:
+            - name: upload
+              image: "{{ $b.rclone.image.repository }}:{{ $b.rclone.image.tag }}"
+              imagePullPolicy: {{ $b.rclone.image.pullPolicy }}
+              securityContext:
+                {{- include "lfw.containerSecurityContext" $ | nindent 16 }}
+                runAsUser: {{ $b.securityContext.runAsUser }}
+                runAsGroup: {{ $b.securityContext.runAsGroup }}
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: XDG_CONFIG_HOME
+                  value: /tmp/.config
+                - name: XDG_CACHE_HOME
+                  value: /tmp/.cache
+                # rclone remote "backup" defined entirely through the environment
+                - name: RCLONE_CONFIG_BACKUP_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_BACKUP_PROVIDER
+                  value: Scaleway
+                - name: RCLONE_CONFIG_BACKUP_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "lfw.backupSecret" $ }}
+                      key: ACCESS_KEY
+                - name: RCLONE_CONFIG_BACKUP_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "lfw.backupSecret" $ }}
+                      key: SECRET_KEY
+                - name: RCLONE_CONFIG_BACKUP_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "lfw.backupSecret" $ }}
+                      key: ENDPOINT
+                - name: RCLONE_CONFIG_BACKUP_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "lfw.backupSecret" $ }}
+                      key: REGION
+                # The bucket is created by Terraform: do not try to create it
+                - name: RCLONE_CONFIG_BACKUP_NO_CHECK_BUCKET
+                  value: "true"
+                - name: BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "lfw.backupSecret" $ }}
+                      key: BUCKET
+                - name: BACKUP_PREFIX
+                  value: {{ $b.prefix | quote }}
+                - name: RETENTION_DAYS
+                  value: {{ $b.retentionDays | quote }}
+              command:
+                - sh
+                - -c
+                - |
+                  set -eu
+                  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+                  dest="backup:${BUCKET}/${BACKUP_PREFIX}/${ts}"
+                  rclone copy /backup "${dest}" --stats-one-line --stats=30s -v
+                  rclone size "${dest}"
+                  if [ "${RETENTION_DAYS}" -gt 0 ]; then
+                    rclone delete "backup:${BUCKET}/${BACKUP_PREFIX}" --min-age "${RETENTION_DAYS}d" -v
+                  fi
+                  echo "backup uploaded to ${BACKUP_PREFIX}/${ts}"
+              resources:
+                {{- toYaml $b.resources | nindent 16 }}
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backup
+              emptyDir:
+                sizeLimit: {{ $b.scratchSizeLimit }}
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
+{{- end }}
