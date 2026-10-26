@@ -9,7 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
 from app.api import router as api_router
-from app.api.deps import API_KEY_HEADER_NAME, warn_if_api_key_missing
+from app.api.deps import (
+    API_KEY_HEADER_NAME,
+    InsecureConfigurationError,
+    check_secrets_not_placeholders,
+    warn_if_api_key_missing,
+)
 from app.services.scheduler import start_scheduler, stop_scheduler
 from app.db import init_db, close_db
 from app.services.cache import close_redis
@@ -33,6 +38,11 @@ async def lifespan(app: FastAPI):
     # Startup
     settings = get_settings()
     logger.info("Starting Lidoire Flood Watch API...")
+    try:
+        check_secrets_not_placeholders(settings)
+    except InsecureConfigurationError as e:
+        logger.critical("%s", e)
+        raise
     logger.info("Moulin location: %s, %s", settings.moulin_lat, settings.moulin_lon)
     warn_if_api_key_missing(settings)
 

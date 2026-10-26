@@ -106,7 +106,9 @@ def test_security_env_example_has_only_placeholders():
         key, value = line.split("=", 1)
         if key in secret_keys:
             seen.add(key)
-            assert value in {"", "change-me"}, f"{key} must be a placeholder"
+            # EMPTY (not "change-me"): compose ":?" fails fast and the backend
+            # refuses known placeholders at startup
+            assert value == "", f"{key} must be empty in .env.example"
     # Every variable required by docker-compose is documented
     assert {"API_KEY", "POSTGRES_PASSWORD", "INFLUXDB_ADMIN_TOKEN", "REDIS_PASSWORD"} <= seen
 
