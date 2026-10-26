@@ -111,23 +111,23 @@ def no_sparkline(monkeypatch):
 
 
 async def test_dashboard_basin_rainfall_unavailable_without_netatmo(monkeypatch, no_sparkline):
-    async def _unavailable():
+    def _unavailable():
         return {"available": False, "stations_count": 0, "auth_url": "/api/auth/netatmo"}
 
-    monkeypatch.setattr(realtime_api, "get_basin_rainfall", _unavailable)
+    monkeypatch.setattr(realtime_api, "peek_basin_rainfall", _unavailable)
     summary = await realtime_api.get_basin_rainfall_summary()
     assert summary.available is False
     assert summary.stations_count == 0
 
 
 async def test_dashboard_basin_weighted_average_ignores_empty_positions(monkeypatch, no_sparkline):
-    async def _aval_only():
+    def _aval_only():
         return {"available": True, "lidoire_stations": [
             {"position": "aval", "rain_24h_mm": 10.0, "rain_1h_mm": 1.0},
             {"position": "aval", "rain_24h_mm": 20.0, "rain_1h_mm": 0.0},
         ]}
 
-    monkeypatch.setattr(realtime_api, "get_basin_rainfall", _aval_only)
+    monkeypatch.setattr(realtime_api, "peek_basin_rainfall", _aval_only)
     summary = await realtime_api.get_basin_rainfall_summary()
     assert summary.available is True
     assert summary.stations_count == 2
