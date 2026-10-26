@@ -63,9 +63,30 @@ function TendencyIcon({ tendency }: { tendency: string | null }) {
 }
 
 const POLL_INTERVAL_MS = 60_000
-// Data older than this is flagged as stale (backend cache or collector failure)
-const STALE_AFTER_MS = 15 * 60_000
+// Newest river measurement older than this is flagged as stale (collector or
+// Hub'Eau failure). Hub'Eau publishes with up to ~1-2 h of latency, so a
+// shorter threshold would flag normal operation.
+const STALE_AFTER_MS = 3 * 60 * 60_000
 const PESSAC_STATION_ID = 'P555001001'
+
+/**
+ * Time of the newest underlying measurement. RealtimeData.timestamp is the
+ * request time (always "now"), so freshness uses the station observations:
+ * max of stations[].current_level.timestamp, falling back to Pessac / the
+ * reference river level.
+ */
+function latestMeasurementDate(d: RealtimeData): Date | null {
+  const candidates: (string | null | undefined)[] = [
+    ...(d.stations?.stations ?? []).map(s => s.current_level?.timestamp),
+    d.river?.current?.timestamp,
+  ]
+  let latest: Date | null = null
+  for (const value of candidates) {
+    const date = parseApiDate(value)
+    if (date && (!latest || date > latest)) latest = date
+  }
+  return latest
+}
 
 const SECONDARY_SOURCE_LABELS = {
   netatmo: 'Netatmo',
@@ -106,6 +127,9 @@ export default function Dashboard() {
     tmParam ? new Date(tmParam) : null
   )
   const [timeMachineLoading, setTimeMachineLoading] = useState(false)
+  const [timeMachineError, setTimeMachineError] = useState<string | null>(null)
+  // Id of the latest TimeMachine request (older responses are ignored)
+  const timeMachineRequestRef = useRef(0)
 
   // Refs used by the polling loop (avoid stale closures and overlapping polls)
   const inFlightRef = useRef(false)
@@ -198,8 +222,12 @@ export default function Dashboard() {
 
   const handleTimeMachineToggle = useCallback(() => {
     if (timeMachineActive) {
-      // Return to live — remove ?tm from URL; the polling effect refetches
+      // Return to live — remove ?tm from URL; the polling effect refetches.
+      // Bumping the request id drops any TimeMachine response still in flight.
+      timeMachineRequestRef.current += 1
       timeMachineActiveRef.current = false
+      setTimeMachineLoading(false)
+      setTimeMachineError(null)
       setTimeMachineActive(false)
       setTimeMachineDate(null)
       setSearchParams((prev) => {
@@ -213,21 +241,30 @@ export default function Dashboard() {
   }, [timeMachineActive, setSearchParams])
 
   const handleTimeMachineDateChange = useCallback(async (date: Date) => {
+    // Only the latest request may write: picking another date or going back
+    // to live invalidates any response still in flight.
+    const requestId = ++timeMachineRequestRef.current
+    const isCurrent = () =>
+      requestId === timeMachineRequestRef.current && timeMachineActiveRef.current
     setTimeMachineDate(date)
+    setTimeMachineError(null)
     // Sync URL with ?tm= param
     setSearchParams({ tm: date.toISOString() }, { replace: true })
     setTimeMachineLoading(true)
     try {
       const result = await getRealtimeDataAt(date.toISOString())
+      if (!isCurrent()) return
       setData(result)
       const primaryId = result.stations?.primary_station_id
       if (primaryId) {
         setSelectedStation(prev => prev ?? primaryId)
       }
     } catch (err) {
+      if (!isCurrent()) return
       console.error('TimeMachine error:', err)
+      setTimeMachineError(errorMessage(err))
     } finally {
-      setTimeMachineLoading(false)
+      if (requestId === timeMachineRequestRef.current) setTimeMachineLoading(false)
     }
   }, [setSearchParams])
 
@@ -303,8 +340,8 @@ export default function Dashboard() {
   const stations = data.stations?.stations || []
   const pessacStation = stations.find(s => s.station_id === PESSAC_STATION_ID)
 
-  // Freshness is based on the backend data timestamp, not on the fetch time
-  const dataDate = parseApiDate(data.timestamp)
+  // Freshness is based on the newest measurement, not on the request time
+  const dataDate = latestMeasurementDate(data)
   const dataAgeMs = dataDate ? now - dataDate.getTime() : null
   const isStale = !timeMachineActive && (
     error !== null || (dataAgeMs !== null && dataAgeMs > STALE_AFTER_MS)
@@ -361,6 +398,15 @@ export default function Dashboard() {
         episodes={episodes}
         loading={timeMachineLoading}
       />
+      {timeMachineActive && timeMachineError && (
+        <div role="alert" className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-sm text-red-800 flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
+          <span>
+            Chargement TimeMachine impossible : {timeMachineError}. Les valeurs affichees
+            ne correspondent pas a la date choisie.
+          </span>
+        </div>
+      )}
 
       {/* Data Sources Status - Compact at top */}
       <DataSourcesStatus sources={sources} loading={loading} />
@@ -646,7 +692,7 @@ export default function Dashboard() {
           <span>
             {timeMachineActive && timeMachineDate
               ? `Mode TimeMachine - ${format(timeMachineDate, 'dd/MM/yyyy HH:mm', { locale: fr })}`
-              : `Donnees du : ${dataDate ? `${format(dataDate, 'dd/MM/yyyy HH:mm:ss', { locale: fr })} (${formatAge(dataDate, now)})` : '-'}`}
+              : `Derniere mesure : ${dataDate ? `${format(dataDate, 'dd/MM/yyyy HH:mm:ss', { locale: fr })} (${formatAge(dataDate, now)})` : '-'}`}
           </span>
           {isStale && <span className="text-red-600 font-medium">perimees</span>}
         </div>
