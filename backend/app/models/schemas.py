@@ -291,6 +291,12 @@ class EpisodeOutcome(str, Enum):
     UNKNOWN = "unknown"
 
 
+class EpisodeStatus(str, Enum):
+    """Derived state of an episode (never stored, see data_store.episode_status)."""
+    ONGOING = "ongoing"
+    CLOSED = "closed"
+
+
 class FloodEpisode(BaseModel):
     """Historical flood episode record."""
     id: Optional[int] = None
@@ -312,6 +318,9 @@ class FloodEpisode(BaseModel):
     outcome_source: Optional[str] = Field(
         None, max_length=100, description="Who/what set the outcome"
     )
+    # Derived by the episodes API: "ongoing" only while the episode is recent
+    # and live data keeps coming, else "closed" (even without end_time)
+    status: Optional[EpisodeStatus] = None
 
 
 class FloodEpisodeCreate(BaseModel):

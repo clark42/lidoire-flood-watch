@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.models.schemas import (
     EpisodeOutcome,
+    EpisodeStatus,
     FloodEpisode,
     FloodEpisodeCreate,
     TideData,
@@ -140,6 +141,60 @@ def _row_to_episode(row: FloodEpisodeRow) -> FloodEpisode:
         water_height_cm=getattr(row, "water_height_cm", None),
         outcome_source=outcome_source,
     )
+
+
+# An episode without end_time stays "ongoing" only while its peak (or start)
+# is at most this old: episodes are recorded by hand and often never get an
+# end_time, so "no end" must not mean "still running" months later.
+EPISODE_OPEN_MAX_HOURS = 72.0
+# ... and only while the live risk score keeps coming (data stopped = closed).
+EPISODE_LIVE_DATA_MAX_AGE_HOURS = 3.0
+
+
+def episode_status(
+    episode: FloodEpisode,
+    now: datetime,
+    last_live_data_at: Optional[datetime],
+) -> EpisodeStatus:
+    """Derived status of an episode at ``now`` (naive UTC, pure).
+
+    Closed when its end is in the past, when it has no end and its peak (or
+    start) is older than EPISODE_OPEN_MAX_HOURS, or when the live data
+    stopped (no realtime risk score for EPISODE_LIVE_DATA_MAX_AGE_HOURS, or
+    unknown). Ongoing otherwise.
+    """
+    now = influx_client.to_naive_utc(now)
+    end = influx_client.to_naive_utc(episode.end_time) if episode.end_time else None
+    if end is not None and end <= now:
+        return EpisodeStatus.CLOSED
+    if end is None:
+        ref = influx_client.to_naive_utc(episode.peak_time or episode.start_time)
+        if ref > now:
+            ref = now
+        if (now - ref).total_seconds() / 3600 > EPISODE_OPEN_MAX_HOURS:
+            return EpisodeStatus.CLOSED
+    if last_live_data_at is None:
+        return EpisodeStatus.CLOSED
+    age_h = (now - influx_client.to_naive_utc(last_live_data_at)).total_seconds() / 3600
+    if age_h > EPISODE_LIVE_DATA_MAX_AGE_HOURS:
+        return EpisodeStatus.CLOSED
+    return EpisodeStatus.ONGOING
+
+
+def may_be_ongoing(episode: FloodEpisode, now: datetime) -> bool:
+    """True when only the live data freshness can still close the episode."""
+    return episode_status(episode, now, now) == EpisodeStatus.ONGOING
+
+
+async def last_live_risk_score_at() -> Optional[datetime]:
+    """Time of the newest realtime risk score (None if none in 30 days or on error)."""
+    try:
+        return await influx_client.query_last_time(
+            "risk_score", tags={"source": [influx_client.RISK_SOURCE_REALTIME]}, field="score",
+        )
+    except Exception as e:
+        logger.warning("Episode status: last realtime risk score unavailable: %r", e)
+        return None
 
 
 def _apply_ground_truth(row: FloodEpisodeRow, episode: FloodEpisodeCreate, only_set: bool) -> None:

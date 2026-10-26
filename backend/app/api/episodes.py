@@ -15,6 +15,9 @@ from app.models.schemas import (
     EpisodeOutcome,
 )
 from app.services.data_store import (
+    episode_status,
+    last_live_risk_score_at,
+    may_be_ongoing,
     get_all_episodes,
     get_episode_by_id,
     create_episode,
@@ -51,6 +54,15 @@ _backfill_status: dict = {
 router = APIRouter()
 
 
+async def _with_status(episodes: list[FloodEpisode]) -> list[FloodEpisode]:
+    """Set the derived ``status`` (the live data is only read for recent episodes)."""
+    now = _utcnow()
+    last_live = None
+    if any(may_be_ongoing(ep, now) for ep in episodes):
+        last_live = await last_live_risk_score_at()
+    return [ep.model_copy(update={"status": episode_status(ep, now, last_live)}) for ep in episodes]
+
+
 @router.get("", response_model=list[FloodEpisode])
 async def list_episodes(
     limit: int = Query(50, ge=1, le=200),
@@ -59,7 +71,7 @@ async def list_episodes(
 ):
     """List all recorded flood episodes."""
     episodes = await get_all_episodes(limit=limit, offset=offset, min_severity=min_severity)
-    return episodes
+    return await _with_status(episodes)
 
 
 @router.get("/labels", response_model=EpisodeLabelSet)
@@ -610,7 +622,7 @@ async def get_episode(episode_id: int):
     episode = await get_episode_by_id(episode_id)
     if episode is None:
         raise HTTPException(status_code=404, detail="Episode not found")
-    return episode
+    return (await _with_status([episode]))[0]
 
 
 @router.put("/{episode_id}", response_model=FloodEpisode)

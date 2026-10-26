@@ -242,6 +242,8 @@ Verite terrain : `backend/app/data/episodes_labels.json` (servie par `GET /api/e
 
 En base, l'issue est un champ structure (`outcome`, `observed_at`, `water_height_cm`, `outcome_source`) ; les anciens prefixes `[CONFIRMED: ...]` dans `notes` sont migres au demarrage.
 
+Statut derive (`status`, jamais stocke, `data_store.episode_status`) sur `GET /api/episodes` et `/{id}` : `closed` si `end_time` est passe, si l'episode sans `end_time` a un pic (ou debut) de plus de 72 h, ou si le score temps reel ne remonte plus depuis 3 h (inconnu = `closed`) ; `ongoing` sinon. Le texte "EN COURS" de l'episode 14 est dans sa `description` (saisie manuelle) : a corriger via `PUT /api/episodes/14`.
+
 ```bash
 # Labels de reference
 GET /api/episodes/labels

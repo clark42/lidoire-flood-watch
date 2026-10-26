@@ -309,6 +309,8 @@ export interface FloodEpisode {
   observed_at?: string | null // observed peak time at the mill
   water_height_cm?: number | null
   outcome_source?: string | null // who/what labelled the episode
+  // Derived by the API: 'ongoing' only while recent and live data flows
+  status?: 'ongoing' | 'closed' | null
 }
 
 export interface EpisodeLabel {
