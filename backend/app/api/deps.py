@@ -79,10 +79,10 @@ def _url_password(url: str) -> str | None:
 def check_secrets_not_placeholders(settings: Settings | None = None) -> None:
     """Refuse to start when a secret is still a template placeholder.
 
-    Checks ``API_KEY``, the InfluxDB tokens and the passwords embedded in
-    ``DATABASE_URL`` / ``REDIS_URL``. Empty values are allowed (dev mode for
-    API_KEY, warned separately). The error names the variable, never its
-    value.
+    Checks ``API_KEY``, the InfluxDB tokens, ``NTFY_TOKEN`` and the passwords
+    embedded in ``DATABASE_URL`` / ``REDIS_URL``. Empty values are allowed
+    (dev mode for API_KEY, warned separately). The error names the variable,
+    never its value.
 
     Raises:
         InsecureConfigurationError: with a message explaining how to
@@ -95,6 +95,7 @@ def check_secrets_not_placeholders(settings: Settings | None = None) -> None:
         "INFLUXDB_READ_TOKEN": settings.influxdb_read_token,
         "DATABASE_URL (password)": _url_password(settings.database_url),
         "REDIS_URL (password)": _url_password(settings.redis_url),
+        "NTFY_TOKEN": settings.ntfy_token,
     }
     bad = [name for name, value in candidates.items() if is_placeholder_secret(value)]
     if bad:
