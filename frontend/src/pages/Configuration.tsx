@@ -13,12 +13,79 @@ import {
   AlertTriangle,
   ExternalLink,
 } from 'lucide-react'
-import { getStatus, getSourcesDetail, simulateRisk } from '../api'
+import { useLocation } from 'react-router-dom'
+import { getStatus, getSourcesDetail, simulateRisk, errorMessage, toActionError } from '../api'
+import type { ActionErrorState } from '../api'
+import type {
+  DependencyCheck,
+  DependencyName,
+  DependencyState,
+  RiskSimulationResult,
+  SourcesDetail,
+  SystemStatus,
+} from '../types'
 import ApiKeyPanel from '../components/ApiKeyPanel'
+import ActionError from '../components/ActionError'
+
+const DEPENDENCIES: { key: DependencyName; label: string }[] = [
+  { key: 'database', label: 'PostgreSQL' },
+  { key: 'influxdb', label: 'InfluxDB' },
+  { key: 'redis', label: 'Redis' },
+]
+
+const DEPENDENCY_BADGE: Record<DependencyState, string> = {
+  connected: 'bg-green-100 text-green-700',
+  timeout: 'bg-orange-100 text-orange-700',
+  error: 'bg-red-100 text-red-700',
+}
+
+function statusBadgeClass(status: string): string {
+  if (status === 'healthy') return 'bg-green-100 text-green-800'
+  if (status === 'degraded') return 'bg-orange-100 text-orange-800'
+  return 'bg-red-100 text-red-800'
+}
+
+function collectorBadgeClass(state: string): string {
+  if (state === 'running') return 'bg-green-100 text-green-700'
+  if (state === 'disabled') return 'bg-gray-100 text-gray-600'
+  return 'bg-red-100 text-red-700'
+}
+
+function DependencyRow({
+  label,
+  state,
+  check,
+}: {
+  label: string
+  state: DependencyState | undefined
+  check: DependencyCheck | undefined
+}) {
+  const current = state ?? check?.status
+  const badge = current ? DEPENDENCY_BADGE[current] ?? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'
+  return (
+    <div className="text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <span>{label}</span>
+        <span className="flex items-center gap-2">
+          {check?.latency_ms != null && (
+            <span className="text-xs text-gray-400 font-mono">{check.latency_ms.toFixed(0)} ms</span>
+          )}
+          <span className={`px-2 py-0.5 rounded ${badge}`}>{current ?? 'inconnu'}</span>
+        </span>
+      </div>
+      {check?.error && (
+        <p className="text-xs text-red-600 mt-0.5 text-right break-words">{check.error}</p>
+      )}
+    </div>
+  )
+}
 
 export default function Configuration() {
-  const [status, setStatus] = useState<any>(null)
-  const [sources, setSources] = useState<any>(null)
+  const location = useLocation()
+  const [status, setStatus] = useState<SystemStatus | null>(null)
+  const [statusError, setStatusError] = useState<string | null>(null)
+  const [sources, setSources] = useState<SourcesDetail | null>(null)
+  const [sourcesError, setSourcesError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [sourcesLoading, setSourcesLoading] = useState(true)
 
@@ -30,7 +97,8 @@ export default function Configuration() {
     tide_coefficient: 80,
     hours_to_high_tide: 2,
   })
-  const [simResult, setSimResult] = useState<any>(null)
+  const [simResult, setSimResult] = useState<RiskSimulationResult | null>(null)
+  const [simError, setSimError] = useState<ActionErrorState | null>(null)
   const [simulating, setSimulating] = useState(false)
 
   useEffect(() => {
@@ -38,13 +106,23 @@ export default function Configuration() {
     fetchSources()
   }, [])
 
+  // Links like /config#api-key (from a 401/403 error) scroll to the panel
+  useEffect(() => {
+    if (!location.hash) return
+    const target = document.getElementById(location.hash.slice(1))
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    target?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true })
+  }, [location.hash])
+
   const fetchStatus = async () => {
     setLoading(true)
     try {
       const data = await getStatus()
       setStatus(data)
+      setStatusError(null)
     } catch (err) {
       console.error('Error fetching status:', err)
+      setStatusError(errorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -55,8 +133,10 @@ export default function Configuration() {
     try {
       const data = await getSourcesDetail()
       setSources(data)
+      setSourcesError(null)
     } catch (err) {
       console.error('Error fetching sources detail:', err)
+      setSourcesError(errorMessage(err))
     } finally {
       setSourcesLoading(false)
     }
@@ -64,11 +144,14 @@ export default function Configuration() {
 
   const runSimulation = async () => {
     setSimulating(true)
+    setSimError(null)
     try {
       const result = await simulateRisk(simParams)
       setSimResult(result)
     } catch (err) {
       console.error('Error simulating:', err)
+      setSimResult(null)
+      setSimError(toActionError(err, 'Simulation impossible'))
     } finally {
       setSimulating(false)
     }
@@ -78,7 +161,9 @@ export default function Configuration() {
     <div className="space-y-6">
       <h2 className="text-xl font-bold">Configuration</h2>
 
-      <ApiKeyPanel />
+      <div id="api-key" className="scroll-mt-20">
+        <ApiKeyPanel />
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Status */}
@@ -96,11 +181,17 @@ export default function Configuration() {
             </button>
           </div>
           <div className="p-4">
+            {statusError && (
+              <div role="alert" className="mb-4 bg-red-50 border border-red-200 text-red-800 rounded px-3 py-2 text-sm">
+                Etat du systeme indisponible : {statusError}
+                {status ? ' (valeurs ci-dessous perimees)' : ''}
+              </div>
+            )}
             {status ? (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-gray-500">Status</span>
-                  <span className="px-2 py-1 bg-green-100 text-green-800 rounded text-sm">
+                  <span className={`px-2 py-1 rounded text-sm ${statusBadgeClass(status.status)}`}>
                     {status.status}
                   </span>
                 </div>
@@ -111,7 +202,23 @@ export default function Configuration() {
 
                 <div className="pt-4 border-t">
                   <h4 className="text-sm font-medium text-gray-500 mb-2">
-                    Services
+                    Dependances
+                  </h4>
+                  <div className="space-y-2">
+                    {DEPENDENCIES.map(({ key, label }) => (
+                      <DependencyRow
+                        key={key}
+                        label={label}
+                        state={status.services?.[key]}
+                        check={status.services?.checks?.[key]}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t">
+                  <h4 className="text-sm font-medium text-gray-500 mb-2">
+                    Collecteurs (declares)
                   </h4>
                   <div className="space-y-2">
                     {status.services?.collectors &&
@@ -122,14 +229,8 @@ export default function Configuration() {
                             className="flex items-center justify-between text-sm"
                           >
                             <span className="capitalize">{name}</span>
-                            <span
-                              className={`px-2 py-0.5 rounded ${
-                                state === 'running'
-                                  ? 'bg-green-100 text-green-700'
-                                  : 'bg-gray-100 text-gray-600'
-                              }`}
-                            >
-                              {state as string}
+                            <span className={`px-2 py-0.5 rounded ${collectorBadgeClass(state)}`}>
+                              {state}
                             </span>
                           </div>
                         )
@@ -137,9 +238,9 @@ export default function Configuration() {
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : loading ? (
               <div className="text-gray-400 text-center py-4">Chargement...</div>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -189,6 +290,10 @@ export default function Configuration() {
         <div className="bg-white rounded-lg shadow p-8 text-center text-gray-400">
           Chargement des sources...
         </div>
+      ) : sourcesError && !sources ? (
+        <div role="alert" className="bg-red-50 border border-red-200 text-red-800 rounded-lg p-4 text-sm">
+          Detail des sources indisponible : {sourcesError}
+        </div>
       ) : sources ? (
         <div className="space-y-6">
           <h3 className="text-lg font-bold">Sources de donnees</h3>
@@ -233,7 +338,7 @@ export default function Configuration() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sources.sources.river.stations?.map((s: any) => (
+                    {sources.sources.river.stations?.map((s) => (
                       <tr key={s.id} className="border-b last:border-0">
                         <td className="py-2 pr-3 font-medium">{s.name}</td>
                         <td className="py-2 pr-3 font-mono text-xs text-gray-500">
@@ -282,7 +387,7 @@ export default function Configuration() {
                   Rayon de recherche : {sources.sources.netatmo.search_radius_km} km
                 </p>
               </div>
-              {sources.sources.netatmo.priority_stations?.length > 0 && (
+              {(sources.sources.netatmo.priority_stations?.length ?? 0) > 0 && (
                 <div className="p-4 overflow-x-auto">
                   <p className="text-sm font-medium text-gray-500 mb-2">
                     Stations prioritaires
@@ -297,7 +402,7 @@ export default function Configuration() {
                       </tr>
                     </thead>
                     <tbody>
-                      {sources.sources.netatmo.priority_stations.map((s: any, i: number) => (
+                      {sources.sources.netatmo.priority_stations?.map((s, i) => (
                         <tr key={i} className="border-b last:border-0">
                           <td className="py-2 pr-3 font-medium">{s.city}</td>
                           <td className="py-2 pr-3 capitalize">{s.position}</td>
@@ -400,7 +505,7 @@ export default function Configuration() {
                     ))}
                   </div>
                 </div>
-                {sources.sources.open_meteo.basin_points?.length > 0 && (
+                {(sources.sources.open_meteo.basin_points?.length ?? 0) > 0 && (
                   <div>
                     <p className="text-sm font-medium text-gray-500 mb-2">
                       Points du bassin Lidoire
@@ -415,7 +520,7 @@ export default function Configuration() {
                         </tr>
                       </thead>
                       <tbody>
-                        {sources.sources.open_meteo.basin_points.map((p: any) => (
+                        {sources.sources.open_meteo.basin_points?.map((p) => (
                           <tr key={p.id} className="border-b last:border-0">
                             <td className="py-1 pr-3 font-mono text-xs">{p.id}</td>
                             <td className="py-1 pr-3">{p.name}</td>
@@ -451,7 +556,7 @@ export default function Configuration() {
                 <div>
                   <p className="text-gray-500 mb-1">Ports surveilles</p>
                   <div className="space-y-1">
-                    {sources.sources.tide.ports?.map((port: any, i: number) => (
+                    {sources.sources.tide.ports?.map((port, i) => (
                       <div key={i} className="flex justify-between">
                         <span className="font-medium">{port.name}</span>
                         <span className="font-mono text-xs text-gray-400">
@@ -751,6 +856,7 @@ export default function Configuration() {
               >
                 {simulating ? 'Calcul en cours...' : 'Calculer le risque'}
               </button>
+              <ActionError error={simError} onDismiss={() => setSimError(null)} />
             </div>
 
             {/* Result */}

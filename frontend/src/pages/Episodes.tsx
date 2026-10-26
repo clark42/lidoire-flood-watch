@@ -27,8 +27,12 @@ import {
   deleteEpisode,
   confirmEpisode,
   analyzeExistingEpisode,
+  errorMessage,
+  toActionError,
 } from '../api'
+import type { ActionErrorState } from '../api'
 import type { FloodEpisode, EpisodeAnalysis, EpisodeOutcome } from '../types'
+import ActionError from '../components/ActionError'
 
 // Ground truth comes from the structured `outcome` field (null = not labelled yet)
 const OUTCOME_OPTIONS: { value: EpisodeOutcome; label: string }[] = [
@@ -75,6 +79,9 @@ export default function Episodes() {
   const [editingObservedAt, setEditingObservedAt] = useState<string>('')
   const [isEditing, setIsEditing] = useState(false)
   const [saving, setSaving] = useState(false)
+  // Error of the last action on the selected episode (confirm/save/delete)
+  const [actionError, setActionError] = useState<ActionErrorState | null>(null)
+  const [listError, setListError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchEpisodes()
@@ -82,6 +89,7 @@ export default function Episodes() {
 
   const fetchEpisodes = async () => {
     setLoading(true)
+    setListError(null)
     try {
       const data = await getEpisodes(100)
       // Sort by peak_time descending
@@ -93,6 +101,7 @@ export default function Episodes() {
       setEpisodes(data)
     } catch (err) {
       console.error('Error fetching episodes:', err)
+      setListError(errorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -122,6 +131,7 @@ export default function Episodes() {
       resetEditing(ep)
       setIsEditing(false)
       setAnalyzeError(null)
+      setActionError(null)
 
       if (ep.id) {
         setSearchParams({ id: ep.id.toString() }, { replace: true })
@@ -154,6 +164,7 @@ export default function Episodes() {
   const handleConfirm = async (outcome: EpisodeOutcome) => {
     if (!selectedEpisode?.id) return
     setSaving(true)
+    setActionError(null)
     try {
       // Re-confirming replaces the outcome server-side (no notes prefixes)
       const result = await confirmEpisode(selectedEpisode.id, outcome, {
@@ -164,6 +175,7 @@ export default function Episodes() {
       setIsEditing(false)
     } catch (err) {
       console.error('Error confirming episode:', err)
+      setActionError(toActionError(err, 'Validation impossible'))
     } finally {
       setSaving(false)
     }
@@ -172,6 +184,7 @@ export default function Episodes() {
   const handleSaveNotes = async () => {
     if (!selectedEpisode?.id) return
     setSaving(true)
+    setActionError(null)
     try {
       const outcome = editingOutcome || null
       const outcomeChanged = outcome !== (selectedEpisode.outcome || null)
@@ -194,6 +207,7 @@ export default function Episodes() {
       setIsEditing(false)
     } catch (err) {
       console.error('Error saving notes:', err)
+      setActionError(toActionError(err, 'Enregistrement impossible'))
     } finally {
       setSaving(false)
     }
@@ -202,6 +216,7 @@ export default function Episodes() {
   const handleDelete = async () => {
     if (!selectedEpisode?.id) return
     if (!confirm('Supprimer cet episode ?')) return
+    setActionError(null)
     try {
       await deleteEpisode(selectedEpisode.id)
       setEpisodes((prev) => prev.filter((ep) => ep.id !== selectedEpisode.id))
@@ -210,6 +225,7 @@ export default function Episodes() {
       setSearchParams({}, { replace: true })
     } catch (err) {
       console.error('Error deleting episode:', err)
+      setActionError(toActionError(err, 'Suppression impossible'))
     }
   }
 
@@ -281,6 +297,18 @@ export default function Episodes() {
 
           {loading ? (
             <div className="p-8 text-center text-gray-400">Chargement...</div>
+          ) : listError ? (
+            <div className="p-8 text-center space-y-3">
+              <AlertTriangle className="w-12 h-12 text-red-400 mx-auto" />
+              <p className="text-red-600 text-sm">Chargement des episodes impossible : {listError}</p>
+              <button
+                onClick={fetchEpisodes}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Reessayer
+              </button>
+            </div>
           ) : episodes.length === 0 ? (
             <div className="p-8 text-center">
               <AlertTriangle className="w-12 h-12 text-gray-300 mx-auto mb-4" />
@@ -353,6 +381,12 @@ export default function Episodes() {
               </div>
             )}
           </div>
+
+          <ActionError
+            error={actionError}
+            onDismiss={() => setActionError(null)}
+            className="m-4 mb-0"
+          />
 
           {analyzeError ? (
             <div className="p-6 text-center space-y-4">
@@ -655,7 +689,7 @@ function AddEpisodeModal({
   onSave,
 }: {
   onClose: () => void
-  onSave: (episode: any) => Promise<void>
+  onSave: (episode: Omit<FloodEpisode, 'id' | 'created_at'>) => Promise<void>
 }) {
   const [formData, setFormData] = useState({
     start_time: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
@@ -666,18 +700,25 @@ function AddEpisodeModal({
     outcome: '' as EpisodeOutcome | '',
   })
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<ActionErrorState | null>(null)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
+    setError(null)
     try {
       await onSave({
         ...formData,
         start_time: new Date(formData.start_time).toISOString(),
         peak_time: formData.peak_time ? new Date(formData.peak_time).toISOString() : null,
+        end_time: null,
         outcome: formData.outcome || null,
         outcome_source: formData.outcome ? 'user' : null,
       })
+    } catch (err) {
+      // The modal stays open with the form data so the user can retry
+      console.error('Error creating episode:', err)
+      setError(toActionError(err, 'Creation impossible'))
     } finally {
       setSaving(false)
     }
@@ -770,6 +811,8 @@ function AddEpisodeModal({
               placeholder="Observations, niveau atteint, degats..."
             />
           </div>
+
+          <ActionError error={error} onDismiss={() => setError(null)} />
 
           <div className="flex gap-3 pt-4">
             <button

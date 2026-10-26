@@ -12,13 +12,16 @@ import {
   ResponsiveContainer,
   Brush,
 } from 'recharts'
-import { ChevronLeft, ChevronRight, Calendar, AlertTriangle } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Calendar, AlertTriangle, X } from 'lucide-react'
 import InfoTooltip from '../components/InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 import {
+  ApiError,
+  errorMessage,
   getAvailableSources,
   getUnifiedTimeline,
   getEpisodesList,
+  isAbortError,
 } from '../api'
 import type {
   AvailableSources,
@@ -36,6 +39,22 @@ const DEFAULT_RAIN_SOURCE = 'netatmo-lidoire:Saint-Rémy'
 const LEGACY_RAIN_SOURCE_IDS: Record<string, string> = {
   'netatmo-lidoire:Saint-Remy': 'netatmo-lidoire:Saint-Rémy',
   "netatmo-lidoire:Saint-Antoine-sur-l'Isle": 'netatmo-lidoire:Saint-Antoine-de-Breuilh',
+}
+
+// X-Backfill-Pending: the backend returned partial data and keeps backfilling.
+// Refetch every BACKFILL_RETRY_MS, at most BACKFILL_MAX_RETRIES times per query.
+const BACKFILL_RETRY_MS = 8000
+const BACKFILL_MAX_RETRIES = 8
+
+/** Unknown ids listed in a 422 detail ({error, unknown, valid}), or []. */
+function unknownIdsFromError(err: unknown): string[] {
+  if (!(err instanceof ApiError) || err.status !== 422) return []
+  const detail = err.detail
+  if (detail && typeof detail === 'object' && 'unknown' in detail) {
+    const unknown = (detail as { unknown: unknown }).unknown
+    if (Array.isArray(unknown)) return unknown.filter((u): u is string => typeof u === 'string')
+  }
+  return []
 }
 
 export default function Timeline() {
@@ -126,11 +145,19 @@ export default function Timeline() {
     fetchSources()
   }, [])
 
-  // Fetch data
-  const fetchData = useCallback(async () => {
-    setLoading(true)
-    try {
-      const result = await getUnifiedTimeline(
+  // Fetch state
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [backfillPending, setBackfillPending] = useState<string[]>([])
+  const [backfillRetry, setBackfillRetry] = useState(0)
+  const [backfillGaveUp, setBackfillGaveUp] = useState(false)
+  const lastFetcher = useRef<unknown>(null)
+  const retriesForQuery = useRef(0)
+
+  // One query = one identity of this callback (changes with every input)
+  const fetchTimeline = useCallback(
+    (signal: AbortSignal) =>
+      getUnifiedTimeline(
         startDate.toISOString(),
         endDate.toISOString(),
         selectedRiverStations.length > 0 ? selectedRiverStations : undefined,
@@ -142,18 +169,71 @@ export default function Timeline() {
         infoclimatEnabled,
         windEnabled,
         forecastEnabled,
-      )
-      setUnifiedData(result)
-    } catch (err) {
-      console.error('Error fetching timeline:', err)
-    } finally {
-      setLoading(false)
-    }
-  }, [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, resolution])
+        signal,
+      ),
+    [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, resolution],
+  )
 
+  // Each run aborts the previous one, so a slow response (uncached period,
+  // 5 s inline backfill wait) can never overwrite the result of a newer query.
   useEffect(() => {
-    fetchData()
-  }, [fetchData])
+    const isRetry = lastFetcher.current === fetchTimeline
+    lastFetcher.current = fetchTimeline
+    if (!isRetry) {
+      // New query: fresh retry budget, spinner, no pending timer from the old one
+      retriesForQuery.current = 0
+      setBackfillGaveUp(false)
+      setBackfillPending([])
+      setLoading(true)
+    }
+
+    const controller = new AbortController()
+    fetchTimeline(controller.signal)
+      .then(({ data, backfillPending: pending }) => {
+        if (controller.signal.aborted) return
+        setUnifiedData(data)
+        setError(null)
+        setBackfillPending(pending)
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted || isAbortError(err)) return
+        console.error('Error fetching timeline:', err)
+        setBackfillPending([])
+        // Never leave another period's series under an error message
+        setUnifiedData(null)
+
+        const unknown = unknownIdsFromError(err)
+        if (unknown.length > 0) {
+          // Bookmarked URL with removed/renamed ids: drop them from the
+          // selection; the state change rewrites the URL and refetches.
+          setError(null)
+          setNotice(`Sources inconnues retirees de la selection : ${unknown.join(', ')}`)
+          setSelectedRiverStations((prev) => prev.filter((id) => !unknown.includes(id)))
+          setSelectedRainfallStations((prev) => prev.filter((id) => !unknown.includes(id)))
+          return
+        }
+        setError(errorMessage(err))
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+
+    return () => controller.abort()
+  }, [fetchTimeline, backfillRetry])
+
+  // Bounded refetch while the backend reports running backfills
+  useEffect(() => {
+    if (backfillPending.length === 0) return
+    if (retriesForQuery.current >= BACKFILL_MAX_RETRIES) {
+      setBackfillGaveUp(true)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      retriesForQuery.current += 1
+      setBackfillRetry((n) => n + 1)
+    }, BACKFILL_RETRY_MS)
+    return () => window.clearTimeout(timer)
+  }, [backfillPending])
 
   // Period navigation
   const shiftPeriod = (days: number) => {
@@ -456,6 +536,33 @@ export default function Timeline() {
               )
             })}
           </div>
+        </div>
+      )}
+
+      {error && (
+        <div role="alert" className="bg-red-50 border border-red-200 text-red-800 rounded-lg px-4 py-3 text-sm flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <span>Impossible de charger la timeline. {error}</span>
+        </div>
+      )}
+      {notice && (
+        <div role="status" className="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg px-4 py-3 text-sm flex items-start justify-between gap-2">
+          <span>{notice}</span>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            className="text-yellow-700 hover:text-yellow-900"
+            aria-label="Fermer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+      {backfillPending.length > 0 && !loading && (
+        <div role="status" className="bg-blue-50 border border-blue-200 text-blue-800 rounded-lg px-4 py-3 text-sm">
+          {backfillGaveUp
+            ? `Donnees encore incompletes (${backfillPending.join(', ')}) : le chargement historique continue cote serveur. Rechargez la page dans quelques minutes.`
+            : `Donnees en cours de chargement (${backfillPending.join(', ')}) : les courbes seront completees automatiquement.`}
         </div>
       )}
 

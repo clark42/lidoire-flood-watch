@@ -15,6 +15,9 @@ import type {
   AvailableSources,
   UnifiedTimelineData,
   BasinRainfallData,
+  RiskSimulationResult,
+  SystemStatus,
+  SourcesDetail,
 } from './types'
 
 const API_BASE = '/api'
@@ -48,7 +51,101 @@ export function authHeaders(method: string = 'GET'): Record<string, string> {
   return key ? { 'X-API-Key': key } : {}
 }
 
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+/** Error thrown by every API call: HTTP status plus the parsed FastAPI `detail`. */
+export class ApiError extends Error {
+  readonly status: number
+  readonly detail: unknown
+
+  constructor(status: number, message: string, detail: unknown = null) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.detail = detail
+  }
+
+  /** 401/403: API key missing or wrong (see Configuration > Cle API). */
+  get isAuthError(): boolean {
+    return this.status === 401 || this.status === 403
+  }
+}
+
+export function isAuthError(err: unknown): boolean {
+  return err instanceof ApiError && err.isAuthError
+}
+
+/** True when the error comes from an aborted request (superseded fetch). */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError'
+}
+
+/** Human readable message for any error raised by an API call. */
+export function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return String(err)
+}
+
+/** Error of a user action, as shown by components/ActionError. */
+export interface ActionErrorState {
+  message: string
+  /** 401/403: show the link to Configuration > Cle API */
+  auth: boolean
+}
+
+export function toActionError(err: unknown, context?: string): ActionErrorState {
+  const message = errorMessage(err)
+  return {
+    message: context ? `${context} : ${message}` : message,
+    auth: isAuthError(err),
+  }
+}
+
+/** Render a FastAPI `detail` (string, {error, ...} object or validation list). */
+function describeDetail(detail: unknown): string | null {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) => (d && typeof d === 'object' && 'msg' in d ? String((d as { msg: unknown }).msg) : null))
+      .filter((m): m is string => !!m)
+    return msgs.length > 0 ? msgs.join('; ') : null
+  }
+  if (detail && typeof detail === 'object') {
+    const obj = detail as { error?: unknown; unknown?: unknown }
+    const parts: string[] = []
+    if (typeof obj.error === 'string') parts.push(obj.error)
+    if (Array.isArray(obj.unknown) && obj.unknown.length > 0) {
+      parts.push(`: ${obj.unknown.join(', ')}`)
+    }
+    return parts.length > 0 ? parts.join('') : null
+  }
+  return null
+}
+
+async function buildApiError(response: Response): Promise<ApiError> {
+  let detail: unknown = null
+  try {
+    const body: unknown = await response.json()
+    if (body && typeof body === 'object' && 'detail' in body) {
+      detail = (body as { detail: unknown }).detail
+    }
+  } catch {
+    // Non-JSON error body (proxy error page, empty body)
+  }
+  if (response.status === 401 || response.status === 403) {
+    return new ApiError(
+      response.status,
+      `Cle API manquante ou invalide (HTTP ${response.status}) : renseignez-la dans Configuration > Cle API`,
+      detail,
+    )
+  }
+  const described = describeDetail(detail)
+  return new ApiError(
+    response.status,
+    `Erreur API ${response.status}${described ? ` : ${described}` : ` ${response.statusText}`}`,
+    detail,
+  )
+}
+
+async function fetchResponse(url: string, options?: RequestInit): Promise<Response> {
   const response = await fetch(url, {
     ...options,
     cache: 'no-store',
@@ -58,17 +155,32 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
       ...options?.headers,
     },
   })
-
-  if (response.status === 401 || response.status === 403) {
-    throw new Error(
-      `API error: ${response.status} - cle API manquante ou invalide (voir Configuration)`
-    )
-  }
   if (!response.ok) {
-    throw new Error(`API error: ${response.status} ${response.statusText}`)
+    throw await buildApiError(response)
   }
+  return response
+}
 
+async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const response = await fetchResponse(url, options)
+  if (response.status === 204) return undefined as T
   return response.json()
+}
+
+const NETATMO_AUTH_PATH = `${API_BASE}/auth/netatmo`
+
+/**
+ * Netatmo OAuth start link. The start endpoint is a plain browser navigation
+ * (no X-API-Key header possible), so the stored key goes in ?api_key=.
+ * Only same-origin API paths are accepted (the key never leaves the backend
+ * origin); anything else falls back to the default start path.
+ */
+export function netatmoAuthUrl(authUrl?: string | null): string {
+  const base = authUrl && authUrl.startsWith(`${API_BASE}/`) ? authUrl : NETATMO_AUTH_PATH
+  const key = getApiKey()
+  if (!key) return base
+  const sep = base.includes('?') ? '&' : '?'
+  return `${base}${sep}api_key=${encodeURIComponent(key)}`
 }
 
 // Realtime data
@@ -130,25 +242,25 @@ export async function simulateRisk(params: {
   dordogne_level_m: number
   tide_coefficient: number
   hours_to_high_tide: number
-}): Promise<unknown> {
+}): Promise<RiskSimulationResult> {
   const searchParams = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {
     searchParams.set(key, value.toString())
   })
 
-  return fetchJson<unknown>(`${API_BASE}/risk/simulate?${searchParams}`, {
+  return fetchJson<RiskSimulationResult>(`${API_BASE}/risk/simulate?${searchParams}`, {
     method: 'POST',
   })
 }
 
-// Status
-export async function getStatus(): Promise<unknown> {
-  return fetchJson<unknown>(`${API_BASE}/status`)
+// Status (real dependency checks)
+export async function getStatus(): Promise<SystemStatus> {
+  return fetchJson<SystemStatus>(`${API_BASE}/status`)
 }
 
 // Sources detail (exhaustive config)
-export async function getSourcesDetail(): Promise<unknown> {
-  return fetchJson<unknown>(`${API_BASE}/sources-detail`)
+export async function getSourcesDetail(): Promise<SourcesDetail> {
+  return fetchJson<SourcesDetail>(`${API_BASE}/sources-detail`)
 }
 
 // Stations
@@ -182,6 +294,12 @@ export async function getAvailableSources(): Promise<AvailableSources> {
 }
 
 // Unified Timeline (River + Rainfall + Tide + Risk)
+export interface UnifiedTimelineResult {
+  data: UnifiedTimelineData
+  /** Backfills still running server side (X-Backfill-Pending): data is partial, retry later. */
+  backfillPending: string[]
+}
+
 export async function getUnifiedTimeline(
   start?: string,
   end?: string,
@@ -194,7 +312,8 @@ export async function getUnifiedTimeline(
   includeInfoclimat?: boolean,
   includeWind?: boolean,
   includeForecast?: boolean,
-): Promise<UnifiedTimelineData> {
+  signal?: AbortSignal,
+): Promise<UnifiedTimelineResult> {
   const params = new URLSearchParams({ resolution })
   if (start) params.set('start', start)
   if (end) params.set('end', end)
@@ -212,7 +331,13 @@ export async function getUnifiedTimeline(
   if (includeWind) params.set('include_wind', 'true')
   if (includeForecast) params.set('include_forecast', 'true')
 
-  return fetchJson<UnifiedTimelineData>(`${API_BASE}/timeline/unified?${params}`)
+  const response = await fetchResponse(`${API_BASE}/timeline/unified?${params}`, { signal })
+  const data: UnifiedTimelineData = await response.json()
+  const pendingHeader = response.headers.get('X-Backfill-Pending')
+  const backfillPending = pendingHeader
+    ? pendingHeader.split(',').map((p) => p.trim()).filter(Boolean)
+    : []
+  return { data, backfillPending }
 }
 
 // Basin Rainfall
@@ -244,13 +369,7 @@ export async function updateEpisode(
 
 // Delete episode
 export async function deleteEpisode(id: number): Promise<void> {
-  const response = await fetch(`${API_BASE}/episodes/${id}`, {
-    method: 'DELETE',
-    headers: authHeaders('DELETE'),
-  })
-  if (!response.ok) {
-    throw new Error(`API error: ${response.status} ${response.statusText}`)
-  }
+  await fetchJson<unknown>(`${API_BASE}/episodes/${id}`, { method: 'DELETE' })
 }
 
 // Set the ground-truth outcome of an episode (re-confirming replaces it)
