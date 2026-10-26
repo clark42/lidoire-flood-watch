@@ -3,6 +3,13 @@
 > Document de reference pour le calcul du risque d'inondation au moulin
 > Coordonnees : 44.8759811, 0.0015091
 
+> **Statut (octobre 2026)** : analyse initiale, conservee pour l'historique. Le modele
+> implemente est `backend/app/services/risk_core.py` (v3.3), decrit dans le README et
+> CLAUDE.md ; le pseudo-code et les poids ci-dessous ne sont plus a jour.
+> Corrections : bassin versant de la Lidoire = 231 km² (SAGE Dordogne Atlantique), pas
+> ~450 km² ; aucune station de hauteur/debit sur la Lidoire ; Pessac-sur-Dordogne est a
+> environ 7 km en amont de la confluence.
+
 ---
 
 ## 1. Contexte Geographique
