@@ -53,15 +53,22 @@ async def test_risk_detector_episode_and_libourne_excluded(monkeypatch):
     ]
 
     async def q_scores(start, end, model_version=None):
-        return rows
+        s, e = start.replace(tzinfo=timezone.utc), end.replace(tzinfo=timezone.utc)
+        return [r for r in rows if s <= r["timestamp"] < e]
+
+    base = [{"timestamp": (T + timedelta(hours=i)).replace(tzinfo=timezone.utc), "height_m": 2.0}
+            for i in range(10)]
+    all_levels = {
+        "P577001001": [dict(r, height_m=9.0) for r in base],  # Libourne way above red
+        "P555001001": base,
+    }
 
     async def q_levels(start, end):
-        base = [{"timestamp": (T + timedelta(hours=i)).replace(tzinfo=timezone.utc), "height_m": 2.0}
-                for i in range(10)]
-        return {
-            "P577001001": [dict(r, height_m=9.0) for r in base],  # Libourne way above red
-            "P555001001": base,
-        }
+        return all_levels
+
+    async def q_heights(start, end, station_ids):
+        # Even if Libourne points came back, the detector must ignore them
+        return {sid: [(r["timestamp"], r["height_m"]) for r in pts] for sid, pts in all_levels.items()}
 
     async def q_rain(start, end, source=None):
         return []
@@ -69,8 +76,9 @@ async def test_risk_detector_episode_and_libourne_excluded(monkeypatch):
     async def q_tides(port, start, end):
         return []
 
-    monkeypatch.setattr(influx_client, "query_risk_scores", q_scores)
+    monkeypatch.setattr(influx_client, "query_risk_score_values", q_scores)
     monkeypatch.setattr(influx_client, "query_all_stations_levels", q_levels)
+    monkeypatch.setattr(influx_client, "query_station_heights", q_heights)
     monkeypatch.setattr(influx_client, "query_rainfall", q_rain)
     monkeypatch.setattr(influx_client, "query_tides", q_tides)
 

@@ -12,17 +12,23 @@ Durations are measured in hours, not samples: a run of consecutive samples
 (no gap larger than 1.5 x the series step) lasts (last - first) + step, so a
 6-hourly backfill sample counts as 6h. Libourne (weight 0, tidal) is
 excluded. Episodes are merged if they're within 24h of each other.
+
+Memory is bounded whatever the range: Influx is read in windows of
+``DETECTION_CHUNK_DAYS`` with the episode state carried across windows, so
+the result is the one of a single pass. Only the current model version (and
+untagged legacy points) of ``risk_score`` is read.
 """
 
 import logging
 import statistics
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dataclasses import dataclass, asdict
 
 from app.config import get_settings
 from app.services import influx_client
-from app.services.risk_core import score_to_level, to_utc_naive
+from app.services.risk_core import floor_hour, score_to_level, to_utc_naive
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +132,125 @@ def _active_station_ids() -> set[str]:
     return {s["id"] for s in get_settings().hubeau_stations if s.get("weight", 0) > 0}
 
 
+# Long ranges (years) are scanned in chunks of this many days, the episode
+# state being carried from one chunk to the next: memory is bounded by one
+# chunk whatever the range, and the result is identical to a single pass.
+# A single 2022-11 -> 2026-10 query (~800k points at full resolution)
+# OOM-killed a 1 GiB backend.
+DETECTION_CHUNK_DAYS = 30
+
+
+def detection_chunks(
+    start: datetime,
+    end: datetime,
+    chunk_days: float = DETECTION_CHUNK_DAYS,
+) -> list[tuple[datetime, datetime]]:
+    """Contiguous half-open windows [a, b) covering [start, end), naive UTC.
+
+    Inner bounds are whole hours, so an hour bucket (used to prefer realtime
+    over backfill risk points) never straddles two chunks.
+    """
+    step = timedelta(days=chunk_days)
+    if step < timedelta(hours=1):
+        raise ValueError("chunk_days must cover at least one hour")
+    s, e = to_utc_naive(start), to_utc_naive(end)
+    if e <= s:
+        return []
+    bounds = [s]
+    inner = floor_hour(s) + step
+    while inner < e:
+        bounds.append(inner)
+        inner += step
+    bounds.append(e)
+    return list(zip(bounds, bounds[1:]))
+
+
+def _median_from_counts(counts: Counter) -> float:
+    """``statistics.median`` of a multiset given as {value: count} (1.0 if empty)."""
+    n = sum(counts.values())
+    if n == 0:
+        return 1.0
+
+    def nth(k: int) -> float:
+        seen = 0
+        for value in sorted(counts):
+            seen += counts[value]
+            if k < seen:
+                return value
+        raise IndexError(k)
+
+    if n % 2:
+        return nth(n // 2)
+    return (nth(n // 2 - 1) + nth(n // 2)) / 2
+
+
+class _RiskEpisodeScan:
+    """Streaming episode builder over time-ordered (timestamp, score) samples.
+
+    A point >= threshold opens or extends an episode; a point below it closes
+    the open episode once it is more than ``merge_gap_hours`` after the
+    episode's last significant point. Every sample seen while an episode is
+    open is kept (trimmed to the episode span on close) so the consecutive
+    run lengths can be measured afterwards. The sampling step (median
+    spacing of the whole series) is accumulated as a histogram.
+    """
+
+    def __init__(self, threshold: float, merge_gap_hours: float):
+        self.threshold = threshold
+        self.merge_gap_hours = merge_gap_hours
+        self.episodes: list[dict] = []
+        self.current: Optional[dict] = None
+        self.spacings: Counter = Counter()
+        self.prev_ts: Optional[datetime] = None
+        self.count = 0
+
+    def feed(self, ts: datetime, score: float) -> None:
+        if self.prev_ts is not None and ts > self.prev_ts:
+            self.spacings[(ts - self.prev_ts).total_seconds() / 3600] += 1
+        self.prev_ts = ts
+        self.count += 1
+
+        cur = self.current
+        if score >= self.threshold:
+            # Level derived from the score (legacy points may lack the level)
+            level = score_to_level(score).value
+            if cur is None:
+                self.current = {
+                    "start": ts,
+                    "end": ts,
+                    "peak_score": score,
+                    "peak_time": ts,
+                    "peak_level": level,
+                    "samples": [(ts, score)],
+                }
+            else:
+                cur["end"] = ts
+                cur["samples"].append((ts, score))
+                if score > cur["peak_score"]:
+                    cur["peak_score"] = score
+                    cur["peak_time"] = ts
+                    cur["peak_level"] = level
+        elif cur is not None:
+            cur["samples"].append((ts, score))
+            if (ts - cur["end"]).total_seconds() / 3600 > self.merge_gap_hours:
+                self._close()
+
+    def _close(self) -> None:
+        cur = self.current
+        cur["samples"] = [s for s in cur["samples"] if s[0] <= cur["end"]]
+        self.episodes.append(cur)
+        self.current = None
+
+    def finish(self) -> list[dict]:
+        if self.current is not None:
+            self._close()
+        return self.episodes
+
+    @property
+    def step_hours(self) -> float:
+        return _median_from_counts(self.spacings)
+
+
 async def detect_episodes_from_risk_scores(
     start_date: datetime,
     end_date: datetime,
@@ -133,6 +258,7 @@ async def detect_episodes_from_risk_scores(
     min_orange_hours: int = 6,
     threshold: float = RISK_ORANGE_THRESHOLD,
     merge_gap_hours: int = 24,
+    chunk_days: float = DETECTION_CHUNK_DAYS,
 ) -> list[DetectedEpisode]:
     """
     Detect flood episodes from stored risk scores.
@@ -143,70 +269,32 @@ async def detect_episodes_from_risk_scores(
         min_red_hours: Minimum consecutive RED hours to trigger detection
         min_orange_hours: Minimum consecutive ORANGE hours to trigger detection
         merge_gap_hours: Merge episodes that are within this gap
+        chunk_days: Influx is read in windows of this size (memory bound)
 
     Returns:
         List of detected episodes
     """
     logger.info("Detecting episodes from risk scores: %s -> %s", start_date.date(), end_date.date())
 
-    # One row per timestamp (current model version preferred over legacy)
-    risk_scores = await influx_client.query_risk_scores(start_date, end_date)
-    risk_scores = [rs for rs in risk_scores if rs.get("score") is not None]
+    # Current model version (+ legacy points) only, one row per timestamp
+    scan = _RiskEpisodeScan(threshold, merge_gap_hours)
+    for chunk_start, chunk_end in detection_chunks(start_date, end_date, chunk_days):
+        rows = await influx_client.query_risk_score_values(chunk_start, chunk_end)
+        points = sorted(
+            ((to_utc_naive(rs["timestamp"]), rs["score"]) for rs in rows if rs.get("score") is not None),
+            key=lambda p: p[0],
+        )
+        del rows
+        for ts, score in points:
+            scan.feed(ts, score)
 
-    if not risk_scores:
+    if scan.count == 0:
         logger.info("No risk score data found")
         return []
 
-    logger.info("Found %d risk score records", len(risk_scores))
-
-    for rs in risk_scores:
-        rs["timestamp"] = to_utc_naive(rs["timestamp"])
-    risk_scores.sort(key=lambda x: x["timestamp"])
-    step_hours = _series_step_hours([rs["timestamp"] for rs in risk_scores])
-
-    # Find periods where risk exceeds thresholds
-    episodes_raw = []
-    current_episode = None
-
-    for rs in risk_scores:
-        score = rs["score"]
-        # Level derived from the score (legacy points may lack the level)
-        level = score_to_level(score).value
-        ts = rs["timestamp"]
-
-        # Check if this point should be part of an episode
-        is_significant = score >= threshold
-
-        if is_significant:
-            if current_episode is None:
-                # Start new episode
-                current_episode = {
-                    "start": ts,
-                    "end": ts,
-                    "peak_score": score,
-                    "peak_time": ts,
-                    "peak_level": level,
-                    "scores": [(ts, score, level)],
-                }
-            else:
-                # Extend current episode
-                current_episode["end"] = ts
-                current_episode["scores"].append((ts, score, level))
-                if score > current_episode["peak_score"]:
-                    current_episode["peak_score"] = score
-                    current_episode["peak_time"] = ts
-                    current_episode["peak_level"] = level
-        else:
-            # Not significant - close episode if gap is too large
-            if current_episode is not None:
-                gap = (ts - current_episode["end"]).total_seconds() / 3600
-                if gap > merge_gap_hours:
-                    episodes_raw.append(current_episode)
-                    current_episode = None
-
-    # Don't forget the last episode
-    if current_episode is not None:
-        episodes_raw.append(current_episode)
+    logger.info("Found %d risk score records", scan.count)
+    episodes_raw = scan.finish()
+    step_hours = scan.step_hours
 
     # Filter episodes by duration criteria
     filtered_episodes = []
@@ -214,12 +302,9 @@ async def detect_episodes_from_risk_scores(
         duration_hours = (ep["end"] - ep["start"]).total_seconds() / 3600 + step_hours
 
         # Longest CONSECUTIVE run, in hours (not a count of samples).
-        # Use every sample of the episode span (including sub-threshold ones)
-        # so a dip below the threshold breaks the run.
-        span = [
-            (rs["timestamp"], rs["score"]) for rs in risk_scores
-            if ep["start"] <= rs["timestamp"] <= ep["end"]
-        ]
+        # Every sample of the episode span (including sub-threshold ones)
+        # is used so a dip below the threshold breaks the run.
+        span = ep.pop("samples")
         red_hours = longest_run_hours(span, RISK_RED_THRESHOLD, step_hours)
         orange_hours = longest_run_hours(span, RISK_ORANGE_THRESHOLD, step_hours)
 
@@ -244,73 +329,75 @@ async def detect_episodes_from_risk_scores(
     return enriched_episodes
 
 
+# A river exceedance ends at the first below-red point more than this many
+# hours after the last above-red point.
+RIVER_EPISODE_GAP_HOURS = 12
+
+
 async def detect_episodes_from_river_levels(
     start_date: datetime,
     end_date: datetime,
+    chunk_days: float = DETECTION_CHUNK_DAYS,
 ) -> list[DetectedEpisode]:
     """
     Detect flood episodes from river level thresholds.
 
-    Looks for periods where any station exceeds its red threshold.
+    Looks for periods where any station exceeds its red threshold. Levels
+    are read at full resolution, one chunk at a time, the per-station state
+    being carried across chunks.
     """
     logger.info("Detecting episodes from river levels")
 
     settings = get_settings()
+    # Libourne (weight 0): tidal oscillation masks the flood signal
+    stations = [s for s in settings.hubeau_stations if s.get("weight", 0) > 0]
+    station_ids = [s["id"] for s in stations]
+    current: dict[str, Optional[dict]] = {sid: None for sid in station_ids}
+    closed: dict[str, list[dict]] = {sid: [] for sid in station_ids}
+
+    for chunk_start, chunk_end in detection_chunks(start_date, end_date, chunk_days):
+        heights = await influx_client.query_station_heights(chunk_start, chunk_end, station_ids)
+        for station in stations:
+            station_id = station["id"]
+            thresholds = station.get("thresholds", {})
+            red_threshold = thresholds.get("red", 999)  # Default high to avoid false positives
+            episode = current[station_id]
+
+            for ts, height in heights.get(station_id, []):
+                if height is None:
+                    continue
+                ts = to_utc_naive(ts)
+
+                if height >= red_threshold:
+                    if episode is None:
+                        episode = {
+                            "start": ts,
+                            "end": ts,
+                            "peak_height": height,
+                            "peak_time": ts,
+                            "station_id": station_id,
+                            "station_name": station["name"],
+                        }
+                    else:
+                        episode["end"] = ts
+                        if height > episode["peak_height"]:
+                            episode["peak_height"] = height
+                            episode["peak_time"] = ts
+                elif episode is not None:
+                    gap = (ts - episode["end"]).total_seconds() / 3600
+                    if gap > RIVER_EPISODE_GAP_HOURS:
+                        closed[station_id].append(episode)
+                        episode = None
+
+            current[station_id] = episode
+        del heights
+
+    # Station order, then time order (as a single pass over each station)
     episodes_raw = []
-
-    # Query river levels for all stations
-    all_levels = await influx_client.query_all_stations_levels(start_date, end_date)
-
-    if not all_levels:
-        logger.info("No river level data found")
-        return []
-
-    # Check each station for threshold exceedances
-    for station in settings.hubeau_stations:
-        station_id = station["id"]
-        if station.get("weight", 0) <= 0:
-            continue  # Libourne: tidal oscillation masks the flood signal
-        thresholds = station.get("thresholds", {})
-        red_threshold = thresholds.get("red", 999)  # Default high to avoid false positives
-
-        levels = all_levels.get(station_id, [])
-        if not levels:
-            continue
-
-        # Find periods above red threshold
-        current_episode = None
-        for lv in levels:
-            height = lv.get("height_m")
-            ts = to_utc_naive(lv["timestamp"])
-
-            if height is None:
-                continue
-
-            if height >= red_threshold:
-                if current_episode is None:
-                    current_episode = {
-                        "start": ts,
-                        "end": ts,
-                        "peak_height": height,
-                        "peak_time": ts,
-                        "station_id": station_id,
-                        "station_name": station["name"],
-                    }
-                else:
-                    current_episode["end"] = ts
-                    if height > current_episode["peak_height"]:
-                        current_episode["peak_height"] = height
-                        current_episode["peak_time"] = ts
-            else:
-                if current_episode is not None:
-                    # Check gap
-                    gap = (ts - current_episode["end"]).total_seconds() / 3600
-                    if gap > 12:  # 12 hour gap to end episode
-                        episodes_raw.append(current_episode)
-                        current_episode = None
-
-        if current_episode is not None:
-            episodes_raw.append(current_episode)
+    for station_id in station_ids:
+        episodes_raw.extend(closed[station_id])
+        if current[station_id] is not None:
+            episodes_raw.append(current[station_id])
 
     logger.info("Found %d river threshold exceedances", len(episodes_raw))
 
@@ -498,11 +585,13 @@ async def run_episode_detection(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     threshold: float = RISK_ORANGE_THRESHOLD,
+    chunk_days: float = DETECTION_CHUNK_DAYS,
 ) -> dict:
     """
     Run full episode detection on the backfilled data.
 
     ``threshold`` is the risk score above which a point belongs to an episode.
+    ``chunk_days`` only bounds memory (Influx read window), not the result.
 
     Returns summary with all detected episodes for user validation.
     """
@@ -514,10 +603,12 @@ async def run_episode_detection(
     logger.info("Starting episode detection: %s -> %s", start_date.date(), end_date.date())
 
     # Detect from risk scores
-    risk_episodes = await detect_episodes_from_risk_scores(start_date, end_date, threshold=threshold)
+    risk_episodes = await detect_episodes_from_risk_scores(
+        start_date, end_date, threshold=threshold, chunk_days=chunk_days,
+    )
 
     # Detect from river thresholds
-    river_episodes = await detect_episodes_from_river_levels(start_date, end_date)
+    river_episodes = await detect_episodes_from_river_levels(start_date, end_date, chunk_days=chunk_days)
 
     # Merge overlapping episodes
     all_episodes = risk_episodes + river_episodes
