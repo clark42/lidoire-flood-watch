@@ -11,7 +11,9 @@ This module:
 - persists scores to InfluxDB (``store_risk_score``) - computing and storing
   are separate: nothing is written unless ``store=True`` is requested;
 - recomputes historical scores (``backfill_risk_scores``) from stored series
-  with no future data.
+  with no future data;
+- stores the shadow model "3.3-gate" (``store_shadow_risk_score``, see
+  risk_shadow.py) next to each realtime score, in its own measurement.
 
 Model history (weights and mechanisms unchanged since v3.2, calibrated on
 14 annotated episodes, 5 confirmed floods):
@@ -53,7 +55,7 @@ from app.models.schemas import (
     TideForecast,
     TideType,
 )
-from app.services import risk_core
+from app.services import risk_core, risk_shadow
 from app.services.risk_core import (
     MODEL_VERSION,
     RISING_RATE_CM_H,
@@ -640,6 +642,7 @@ async def compute_current_risk(store: bool = False) -> tuple[RiskScore, Realtime
     risk = risk_from_inputs(inputs)
     if store:
         await store_risk_score(risk)
+        await store_shadow_risk_score(risk, inputs)
     return risk, inputs
 
 
@@ -827,6 +830,65 @@ _store_risk_to_influx = store_risk_score
 
 
 # ---------------------------------------------------------------------------
+# Shadow model 3.3-gate (stored for comparison, never displayed or alerted on)
+# ---------------------------------------------------------------------------
+
+def shadow_risk_point(
+    features: RiskFeatures,
+    risk: RiskScore,
+    h_aval: Optional[float],
+    source: str,
+):
+    """``risk_score_shadow`` point of the gated score, None when not scored."""
+    from app.services import influx_client
+
+    score = risk_shadow.gated_score(features, risk.score, h_aval)
+    if score is None:
+        return None
+    factors = {"base_score": risk.score, "gate": risk_shadow.backwater_gate(h_aval)}
+    if h_aval is not None:
+        factors["h_aval_m"] = h_aval
+    return influx_client.make_risk_point(
+        score=score,
+        level=risk_shadow.shadow_level(score).value,
+        timestamp=risk.timestamp,
+        factors=factors,
+        model_version=risk_shadow.SHADOW_MODEL_VERSION,
+        source=source,
+        measurement=influx_client.RISK_SHADOW_MEASUREMENT,
+    )
+
+
+async def store_shadow_risk_score(risk: RiskScore, inputs: RealtimeInputs) -> bool:
+    """Store the shadow score of a realtime v3.3 score (never raises).
+
+    H_aval = max of the primary station over the trailing 12.5 h: stored
+    river levels plus the realtime Hub'Eau level, points <= t only.
+    """
+    try:
+        from app.services import influx_client
+
+        t = to_utc_naive(risk.timestamp)
+        primary = get_settings().hubeau_primary_station
+        rows = await influx_client.query_river_levels(
+            primary, t - timedelta(hours=risk_shadow.BACKWATER_WINDOW_H), t + timedelta(minutes=1),
+        )
+        pts = _level_points(rows)
+        for s in (inputs.stations.stations if inputs.stations else []):
+            if s.station_id == primary:
+                pts.append((to_utc_naive(s.current_level.timestamp), float(s.current_level.height_m)))
+        pts.sort()
+        h_aval = risk_shadow.backwater_level(pts, t)
+        point = shadow_risk_point(inputs.features(), risk, h_aval, influx_client.RISK_SOURCE_REALTIME)
+        if point is None:
+            return False
+        return await influx_client.write_points_batch([point]) == 1
+    except Exception as e:
+        logger.error("Error storing shadow risk score: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Historical backfill
 # ---------------------------------------------------------------------------
 
@@ -920,6 +982,7 @@ async def backfill_risk_scores(
     end: datetime,
     store: bool = True,
     skip_live_hours: bool = False,
+    shadow: bool = False,
 ) -> int:
     """Recompute (and store) risk scores from historical data in InfluxDB.
 
@@ -933,8 +996,11 @@ async def backfill_risk_scores(
     an hour that has both (``influx_client.prefer_realtime_risk_rows``). With
     ``skip_live_hours`` (anonymous timeline cache-through), hours that
     already hold a realtime score of the current model are not recomputed.
+    With ``shadow``, the shadow model "3.3-gate" is also written for every
+    scored step (``risk_score_shadow``, source=backfill), from the same
+    inputs.
 
-    Returns the number of scores computed (stored when ``store=True``).
+    Returns the number of v3.3 scores computed (stored when ``store=True``).
     """
     from app.services import influx_client
 
@@ -952,7 +1018,8 @@ async def backfill_risk_scores(
 
     max_age = settings.risk_level_max_age_hours
     rate_window = settings.risk_rate_window_hours
-    lookback = timedelta(hours=max(max_age, rate_window) + 1)
+    lookback_h = max(max_age, rate_window, risk_shadow.BACKWATER_WINDOW_H if shadow else 0.0)
+    lookback = timedelta(hours=lookback_h + 1)
 
     logger.info("Risk backfill v%s: loading data for %s -> %s (step=%s)", MODEL_VERSION, s, e, step)
 
@@ -993,6 +1060,8 @@ async def backfill_risk_scores(
     computed = 0
     skipped = 0
     points = []
+    shadow_points = []
+    primary_points = station_points.get(settings.hubeau_primary_station, [])
     current = _ceil_hour(s)
     while current <= e:
         if current in live_hours:
@@ -1009,9 +1078,20 @@ async def backfill_risk_scores(
             computed += 1
             if store:
                 points.append(risk_point(risk, influx_client.RISK_SOURCE_BACKFILL))
+            if shadow:
+                h_aval = risk_shadow.backwater_level(primary_points, current)
+                sp = shadow_risk_point(features, risk, h_aval, influx_client.RISK_SOURCE_BACKFILL)
+                if sp is not None:
+                    shadow_points.append(sp)
         current += step
 
     stored = await influx_client.write_points_batch(points) if points else 0
+    if shadow:
+        shadow_stored = await influx_client.write_points_batch(shadow_points) if store and shadow_points else 0
+        logger.info(
+            "Risk backfill %s (shadow): computed %d, stored %d scores",
+            risk_shadow.SHADOW_MODEL_VERSION, len(shadow_points), shadow_stored,
+        )
     logger.info(
         "Risk backfill v%s: computed %d, stored %d scores (%d hours kept from realtime)",
         MODEL_VERSION, computed, stored, skipped,

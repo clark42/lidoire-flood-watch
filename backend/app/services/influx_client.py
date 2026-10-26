@@ -476,6 +476,22 @@ RISK_SOURCE_REALTIME = "realtime"
 RISK_SOURCE_BACKFILL = "backfill"
 RISK_SOURCE_UNKNOWN = "unknown"
 
+# Shadow models (e.g. "3.3-gate", risk_shadow.py) are stored in their own
+# measurement, same tags and fields: every reader of the displayed score
+# filters on ``_measurement == "risk_score"``. A version with a suffix is a
+# shadow version and is also dropped by those readers (defense in depth).
+RISK_MEASUREMENT = "risk_score"
+RISK_SHADOW_MEASUREMENT = "risk_score_shadow"
+
+
+def is_shadow_risk_version(version: Optional[str]) -> bool:
+    """True for a shadow model version ("3.3-gate"), never for "3.3" or legacy."""
+    return bool(version) and "-" in str(version)
+
+
+def _drop_shadow_rows(rows: list[dict]) -> list[dict]:
+    return [r for r in rows if not is_shadow_risk_version(r.get("model_version"))]
+
 
 def make_risk_point(
     score: float,
@@ -484,9 +500,13 @@ def make_risk_point(
     factors: Optional[dict] = None,
     model_version: Optional[str] = None,
     source: Optional[str] = None,
+    measurement: str = RISK_MEASUREMENT,
 ) -> Point:
-    """Build a ``risk_score`` point (same shape as :func:`write_risk_score`)."""
-    point = Point("risk_score").field("score", float(score)).field("level", str(level))
+    """Build a ``risk_score`` point (same shape as :func:`write_risk_score`).
+
+    ``measurement=RISK_SHADOW_MEASUREMENT`` builds a shadow-model point.
+    """
+    point = Point(measurement).field("score", float(score)).field("level", str(level))
     if model_version:
         point = point.tag("model_version", str(model_version))
     if source:
@@ -1036,7 +1056,8 @@ async def query_risk_scores(
 
     try:
         tables = await _run_query(query)
-        rows = select_risk_rows_by_version(_risk_rows_from_tables(tables), preferred)
+        rows = _drop_shadow_rows(_risk_rows_from_tables(tables))
+        rows = select_risk_rows_by_version(rows, preferred)
         return prefer_realtime_risk_rows(rows)
     except Exception as e:
         logger.error("Error querying risk scores from InfluxDB: %s", e)
@@ -1435,13 +1456,46 @@ async def query_risk_scores_timeline(
     version (default: current model), else the newest one, and within a
     version the realtime series over the backfilled one.
     """
-    settings = get_settings()
     preferred = model_version or _current_risk_model_version()
+    rows = await _query_risk_timeline_rows(RISK_MEASUREMENT, start, end, resolution)
+    return [
+        {"timestamp": r["timestamp"], "value": r["value"]}
+        for r in select_risk_window_rows(_drop_shadow_rows(rows), preferred)
+    ]
+
+
+async def query_risk_shadow_timeline(
+    start: datetime,
+    end: datetime,
+    model_version: str,
+    resolution: str = "1h",
+) -> list[dict]:
+    """Shadow-model scores (``risk_score_shadow``) of ONE version, for the timeline.
+
+    Same aggregation as :func:`query_risk_scores_timeline` (realtime series
+    preferred over the backfilled one per window); other versions dropped.
+    """
+    rows = await _query_risk_timeline_rows(RISK_SHADOW_MEASUREMENT, start, end, resolution)
+    rows = [r for r in rows if r.get("model_version") == model_version]
+    return [
+        {"timestamp": r["timestamp"], "value": r["value"]}
+        for r in select_risk_window_rows(rows, model_version)
+    ]
+
+
+async def _query_risk_timeline_rows(
+    measurement: str,
+    start: datetime,
+    end: datetime,
+    resolution: str,
+) -> list[dict]:
+    """Windowed mean score per (model_version, source) series of ``measurement``."""
+    settings = get_settings()
 
     query = f'''
     from(bucket: "{settings.influxdb_bucket}")
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-        |> filter(fn: (r) => r._measurement == "risk_score")
+        |> filter(fn: (r) => r._measurement == {flux_string(measurement)})
         |> filter(fn: (r) => r._field == "score")
         |> map(fn: (r) => ({{r with model_version: if exists r.model_version then r.model_version else "{LEGACY_RISK_VERSION}"}}))
         |> map(fn: (r) => ({{r with source: if exists r.source then r.source else "{RISK_SOURCE_UNKNOWN}"}}))
@@ -1462,13 +1516,9 @@ async def query_risk_scores_timeline(
                     "model_version": record.values.get("model_version"),
                     "source": record.values.get("source"),
                 })
-
-        return [
-            {"timestamp": r["timestamp"], "value": r["value"]}
-            for r in select_risk_window_rows(results, preferred)
-        ]
+        return results
     except Exception as e:
-        logger.error("Error querying risk scores timeline from InfluxDB: %s", e)
+        logger.error("Error querying %s timeline from InfluxDB: %s", measurement, e)
         return []
 
 
@@ -1596,7 +1646,9 @@ async def query_historical_snapshot(target_time: datetime, window_hours: int = 1
                         "port": record.values.get("port"),
                         "tide_type": record.values.get("tide_type"),
                     })
-                elif measurement == "risk_score":
+                elif measurement == "risk_score" and not is_shadow_risk_version(
+                    record.values.get("model_version")
+                ):
                     snapshot["risk_scores"].append({
                         "timestamp": record.get_time().isoformat(),
                         "score": record.get_value() if record.get_field() == "score" else None,
