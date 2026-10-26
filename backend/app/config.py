@@ -431,6 +431,53 @@ class Settings(BaseSettings):
         {"id": "aval", "lat": 44.907, "lon": 0.033, "weight": 97.4},    # Lechout + aval
     ]
 
+    # ------------------------------------------------------------------
+    # Lidoire long profile, confluence stage, episode drivers and analogs
+    # (GET /api/geo/profile, /api/episodes/drivers, /api/risk/analogs).
+    # Display only: the risk model v3.4 never reads these settings.
+    # ------------------------------------------------------------------
+    # Station zeros in m NGF-IGN69 (Hub'Eau referentiel hydrometrie,
+    # altitude_ref_alti_station): height in m NGF = zero + H.
+    ngf_station_zeros_m: dict[str, float] = {
+        "P555001001": 3.33,   # Pessac-sur-Dordogne
+        "P577001001": -1.17,  # Libourne
+    }
+    # Confluence stage Z_c (ESTIMATED, no gauge at the confluence):
+    # (1 - alpha) x Pessac NGF + alpha x Libourne NGF, each the max over the
+    # last confluence_envelope_hours (one tidal cycle, points <= t). Pessac
+    # is ~7 km above the confluence, Libourne ~30 km below: alpha = 0.2.
+    confluence_upstream_station: str = "P555001001"
+    confluence_downstream_station: str = "P577001001"
+    confluence_downstream_weight: float = 0.2
+    confluence_envelope_hours: float = 12.5
+    # Mill ground (m NGF): IGN RGE ALTI at the mill point, 11.6-12.7 m
+    # within 60 m (API altimetrie Geoplateforme, 2026-10-26). Not the floor
+    # level of the building, which is unknown.
+    mill_ground_z_m_ngf: float = 12.0
+    mill_ground_z_source: str = (
+        "IGN RGE ALTI (API altimetrie de la Geoplateforme), terrain au point du moulin, "
+        "11.6-12.7 m a moins de 60 m ; altitude du plancher inconnue"
+    )
+    # Episode drivers: values at the labelled peak hour (points <= t)
+    drivers_envelope_hours: float = 12.5   # Pessac and Eyraud Q max window
+    drivers_rain_hours: float = 72.0       # rain sum window
+    drivers_piezo_max_age_hours: float = 48.0
+    drivers_rain_station_city: str = "Moulin-Lidoire"  # rainfall source=open-meteo
+    drivers_flow_key: str = "EYRAUD"
+    drivers_groundwater_key: str = "MOULIETS"
+    # Analogs: RMS of the percentile differences (points of percentile) on
+    # these axes; nothing is "close" above the threshold (prototype: 30)
+    analog_axes: list[str] = ["pessac", "eyraud_q", "rain_72h", "piezo"]
+    analog_distance_threshold: float = 30.0
+    analog_min_axes: int = 2
+    # Observations counted for a labelled episode: peak +/- this margin (the
+    # label peak is day-precision)
+    analog_observation_margin_hours: float = 36.0
+    # Radar frame PNG (GET /api/realtime/radar/frame.png): basin bbox plus
+    # this margin, resampled on a regular lon/lat grid of this pixel size
+    radar_frame_margin_km: float = 10.0
+    radar_frame_pixel_deg: float = 0.005
+
     @property
     def notifications_enabled(self) -> bool:
         return bool(self.ntfy_url.strip() and self.ntfy_topic.strip())
