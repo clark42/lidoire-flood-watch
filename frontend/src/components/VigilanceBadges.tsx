@@ -1,65 +1,19 @@
-import { useEffect, useState } from 'react'
-import { ExternalLink, ShieldAlert } from 'lucide-react'
-import { getVigilance } from '../api'
-import type { VigilanceDepartment, VigilanceLevel, VigilanceStatus } from '../types'
-import { formatParis } from '../utils/time'
+import { ExternalLink } from 'lucide-react'
+import type { RiskLevel, VigilanceDepartment, VigilanceLevel, VigilanceStatus } from '../types'
+import { useVigilance } from '../hooks/useSharedResource'
+import { formatParis, formatParisRelative } from '../utils/time'
+import LevelMeter from './ui/LevelMeter'
 
-const REFRESH_MS = 10 * 60 * 1000
+// Official levels 1-4 share the Vigicrues vocabulary of the LevelMeter
+const AS_LEVEL: Record<VigilanceLevel, RiskLevel> = { 1: 'green', 2: 'yellow', 3: 'orange', 4: 'red' }
+const WORD: Record<VigilanceLevel, string> = { 1: 'vert', 2: 'jaune', 3: 'orange', 4: 'rouge' }
 
-// Official colour semantics (Vigicrues and Meteo-France vigilance maps)
-const LEVELS: Record<VigilanceLevel, { label: string; bg: string; fg: string }> = {
-  1: { label: 'Vert', bg: '#31AA35', fg: '#ffffff' },
-  2: { label: 'Jaune', bg: '#FFF600', fg: '#1f2937' },
-  3: { label: 'Orange', bg: '#FFB82B', fg: '#1f2937' },
-  4: { label: 'Rouge', bg: '#CC0000', fg: '#ffffff' },
-}
-const UNKNOWN = { label: 'Inconnu', bg: '#e5e7eb', fg: '#4b5563' }
-
-function levelStyle(level: VigilanceLevel | null) {
-  return level ? LEVELS[level] : UNKNOWN
-}
-
-function maxLevel(levels: (VigilanceLevel | null)[]): VigilanceLevel | null {
+function maxVigilance(levels: (VigilanceLevel | null)[]): VigilanceLevel | null {
   const known = levels.filter((l): l is VigilanceLevel => l !== null)
   return known.length > 0 ? (Math.max(...known) as VigilanceLevel) : null
 }
 
-function Badge({
-  title,
-  level,
-  detail,
-  href,
-}: {
-  title: string
-  level: VigilanceLevel | null
-  detail?: string
-  href: string
-}) {
-  const style = levelStyle(level)
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs hover:bg-gray-50 min-w-0"
-      title={`${title} : vigilance ${style.label.toLowerCase()}${detail ? ` (${detail})` : ''}`}
-    >
-      <span
-        className="rounded px-1.5 py-0.5 font-semibold flex-shrink-0"
-        style={{ backgroundColor: style.bg, color: style.fg }}
-      >
-        {style.label}
-      </span>
-      <span className="text-gray-700 truncate">
-        {title}
-        {detail && <span className="text-gray-500"> · {detail}</span>}
-      </span>
-      <ExternalLink className="w-3 h-3 text-gray-400 flex-shrink-0" />
-    </a>
-  )
-}
-
-/** Phenomena above green today (with their first window), then tomorrow's raise. */
+/** Phenomena above green today (with their first window), then tomorrow's raises. */
 function departmentDetail(dept: VigilanceDepartment): string | undefined {
   const parts: string[] = []
   for (const p of dept.phenomena) {
@@ -71,87 +25,108 @@ function departmentDetail(dept: VigilanceDepartment): string | undefined {
           : p.label.toLowerCase(),
       )
     } else if (p.level_tomorrow && p.level_tomorrow >= 2) {
-      parts.push(`${p.label.toLowerCase()} demain (${LEVELS[p.level_tomorrow].label.toLowerCase()})`)
+      parts.push(`${p.label.toLowerCase()} demain (${WORD[p.level_tomorrow]})`)
     }
   }
   return parts.length > 0 ? parts.join(', ') : undefined
 }
 
+interface Row {
+  key: string
+  source: string
+  name: string
+  level: VigilanceLevel | null
+  detail?: string
+  href: string
+}
+
+function VigilanceRow({ row }: { row: Row }) {
+  return (
+    <li className="border-b border-line last:border-b-0">
+      <a
+        href={row.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="grid min-h-[44px] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 py-1.5 hover:bg-surface-2"
+      >
+        <span className="min-w-0">
+          <span className="block text-[12px] text-ink-3">{row.source}</span>
+          <span className="block text-sm text-ink">
+            {row.name}
+            {row.detail && <span className="text-ink-2"> · {row.detail}</span>}
+          </span>
+        </span>
+        <span className="inline-flex items-center gap-2">
+          {row.level ? (
+            <LevelMeter level={AS_LEVEL[row.level]} className="text-[12.5px]" />
+          ) : (
+            <span className="text-[12.5px] text-ink-3">inconnu</span>
+          )}
+          <ExternalLink className="h-3.5 w-3.5 flex-none text-ink-3" aria-hidden="true" />
+          <span className="sr-only">(ouvre le site officiel)</span>
+        </span>
+      </a>
+    </li>
+  )
+}
+
 /**
- * Official vigilance badges (Vigicrues troncons, Meteo-France departements),
- * read from GET /api/vigilance (backend cache, refreshed every 30 min).
- * Informative only: the colours do not enter the risk score.
+ * Official vigilances (Vigicrues sections, Meteo-France departments), as
+ * level pips + word (never the colour alone). Informative only: they do not
+ * enter the risk score.
  */
-export default function VigilanceBadges() {
-  const [data, setData] = useState<VigilanceStatus | null>(null)
-  const [failed, setFailed] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    const load = () => {
-      getVigilance()
-        .then((d) => {
-          if (!cancelled) {
-            setData(d)
-            setFailed(false)
-          }
-        })
-        .catch(() => {
-          if (!cancelled) setFailed(true)
-        })
-    }
-    load()
-    const timer = setInterval(load, REFRESH_MS)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
-  }, [])
-
+export function VigilancePanel({ data, failed = false, now = new Date() }: { data: VigilanceStatus | null; failed?: boolean; now?: Date }) {
   if (!data) {
     if (!failed) return null
     return (
-      <div className="bg-white rounded-lg shadow px-3 py-2 text-xs text-gray-500">
+      <p className="rounded-card border border-line bg-surface px-4 py-3 text-sm text-ink-2" role="status">
         Vigilance officielle indisponible.
-      </div>
+      </p>
     )
   }
-
   const { vigicrues, meteofrance } = data
+  const rows: Row[] = [
+    ...vigicrues.troncons.map((t) => ({
+      key: `vc-${t.code}`,
+      source: `Vigicrues · ${t.code}`,
+      name: t.name,
+      level: vigicrues.available ? t.level : null,
+      href: t.url || vigicrues.url,
+    })),
+    ...meteofrance.departments.map((d) => ({
+      key: `mf-${d.code}`,
+      source: `Météo-France · ${d.code}`,
+      name: d.name,
+      level: meteofrance.available ? maxVigilance(d.phenomena.map((p) => p.level)) : null,
+      detail: meteofrance.available ? departmentDetail(d) : undefined,
+      href: d.url || meteofrance.url,
+    })),
+  ]
+  const issued = vigicrues.issued_at ?? meteofrance.issued_at
   return (
-    <section className="bg-white rounded-lg shadow p-3" aria-label="Vigilance officielle">
-      <div className="flex items-center gap-2 mb-2">
-        <ShieldAlert className="w-4 h-4 text-gray-500" />
-        <span className="text-sm font-medium text-gray-700">Vigilance officielle</span>
-        <span className="text-xs text-gray-400 ml-auto">
-          {meteofrance.issued_at || vigicrues.issued_at
-            ? `maj ${formatParis((vigicrues.issued_at ?? meteofrance.issued_at) as string, 'dd/MM HH:mm')}`
-            : 'en attente de collecte'}
+    <section aria-labelledby="vigilance-title" className="rounded-card border border-line bg-surface p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 id="vigilance-title" className="font-display text-[19px] font-semibold tracking-[0.01em]">
+          Vigilances officielles
+        </h3>
+        <span className="font-mono text-[12px] text-ink-3">
+          {issued ? `émises ${formatParisRelative(issued, now)}` : 'en attente de collecte'}
         </span>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-        {vigicrues.troncons.map((t) => (
-          <Badge
-            key={t.code}
-            title={`Vigicrues ${t.name}`}
-            level={vigicrues.available ? t.level : null}
-            detail={t.code}
-            href={t.url || vigicrues.url}
-          />
+      <ul className="mt-1.5">
+        {rows.map((r) => (
+          <VigilanceRow key={r.key} row={r} />
         ))}
-        {meteofrance.departments.map((d) => (
-          <Badge
-            key={d.code}
-            title={`Météo-France ${d.name} (${d.code})`}
-            level={meteofrance.available ? maxLevel(d.phenomena.map((p) => p.level)) : null}
-            detail={meteofrance.available ? departmentDetail(d) : undefined}
-            href={d.url || meteofrance.url}
-          />
-        ))}
-      </div>
-      <p className="mt-2 text-[11px] text-gray-400">
-        Information officielle (crues, pluie-inondation, orages, vent) : elle n'entre pas dans le score de risque.
+      </ul>
+      <p className="mt-2 text-[12px] text-ink-3">
+        Crues, pluie-inondation, orages, vent : information officielle, hors score. Elle ne voit pas la Lidoire.
       </p>
     </section>
   )
+}
+
+/** Container (slot of the VerdictHero): GET /api/vigilance, shared, every 10 min. */
+export default function VigilanceBadges() {
+  const vigilance = useVigilance()
+  return <VigilancePanel data={vigilance.data} failed={!!vigilance.error && !vigilance.data} />
 }
