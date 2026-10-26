@@ -477,15 +477,14 @@ async def _query_daily_coverage(
     if not _SAFE_SOURCE_RE.match(source):
         raise ValueError(f"invalid rainfall source: {source!r}")
 
-    settings = get_settings()
     now = _utcnow()
     start = now - timedelta(days=7, hours=4)
     stop = now + timedelta(minutes=5)
     query = f'''
-    from(bucket: "{settings.influxdb_bucket}")
+    from(bucket: {influx_client._bucket()})
         |> range(start: {influx_client._flux_ts(start)}, stop: {influx_client._flux_ts(stop)})
         |> filter(fn: (r) => r._measurement == "rainfall")
-        |> filter(fn: (r) => r.source == "{source}")
+        |> filter(fn: (r) => r.source == {influx_client.flux_string(source)})
         |> filter(fn: (r) => r._field == "precipitation_mm_24h")
         |> keep(columns: ["_time", "city"])
     '''
@@ -494,6 +493,7 @@ async def _query_daily_coverage(
         for name in names:
             tag_to_city.setdefault(name, city)
     by_city: dict[str, list[datetime]] = {c: [] for c in cities}
+    # Non-blocking: the synchronous InfluxDB client runs in a worker thread
     tables = await influx_client._run_query(query)
     for table in tables:
         for record in table.records:

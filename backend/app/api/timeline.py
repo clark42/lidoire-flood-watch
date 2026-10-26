@@ -202,8 +202,12 @@ def resolve_time_range(
 def _netatmo_tag_variants(canonical_city: str) -> list[str]:
     """City tag values a canonical city may be stored under.
 
-    Realtime collection writes the Netatmo API city name, the historical
-    backfill writes an accent-stripped one ('Saint-Remy'): read both.
+    Live collection and the historical backfill now both write the
+    canonical config city (``netatmo.canonical_city``, accents kept). Older
+    backfilled points may carry an accent-stripped spelling ('Saint-Remy'),
+    so both are read. (Older live points tagged with a raw Netatmo API name
+    that differs from the config are only merged by the collector's own
+    readers, see ``netatmo._legacy_city_tags``.)
     """
     return list(dict.fromkeys([canonical_city, _strip_accents(canonical_city)]))
 
@@ -555,7 +559,10 @@ async def _ensure_risk_data(
 
     async def _job():
         from app.services.risk_v2 import backfill_risk_scores
-        return await backfill_risk_scores(s, backfill_end)
+        # Anonymous GET: only fill hours without a realtime score, and tag the
+        # points source=backfill (readers prefer realtime for a shared hour),
+        # so the two computations never alternate within the same hour.
+        return await backfill_risk_scores(s, backfill_end, skip_live_hours=True)
 
     return _schedule_backfill(key, "risk", _job, after=after)
 
