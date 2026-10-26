@@ -7,12 +7,20 @@ Analyzes camera feed to detect water level changes:
 """
 
 import asyncio
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 import io
 
 from app.config import get_settings
 from app.models.schemas import VideoAnalysis
+
+logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # Try to import OpenCV, gracefully handle if not available
 try:
@@ -150,7 +158,7 @@ async def capture_frame_from_stream(url: str) -> Optional[any]:
         cap = cv2.VideoCapture(url)
 
         if not cap.isOpened():
-            print(f"Could not open video stream: {url}")
+            logger.warning("Could not open video stream (check CAMERA_RTSP_URL)")
             return None
 
         # Read a frame
@@ -163,7 +171,7 @@ async def capture_frame_from_stream(url: str) -> Optional[any]:
         return frame
 
     except Exception as e:
-        print(f"Error capturing frame: {e}")
+        logger.warning("Error capturing frame: %s", e)
         return None
 
 
@@ -172,7 +180,7 @@ async def capture_and_analyze() -> VideoAnalysis:
     global _baseline_level, _last_analysis
 
     settings = get_settings()
-    now = datetime.utcnow()
+    now = _utcnow()
 
     if not settings.camera_rtsp_url:
         return VideoAnalysis(
@@ -263,7 +271,7 @@ def configure_analyzer(
 
 async def analyze_snapshot(image_data: bytes) -> VideoAnalysis:
     """Analyze a provided image snapshot."""
-    now = datetime.utcnow()
+    now = _utcnow()
 
     if not CV2_AVAILABLE:
         return VideoAnalysis(
@@ -293,7 +301,7 @@ async def analyze_snapshot(image_data: bytes) -> VideoAnalysis:
         )
 
     except Exception as e:
-        print(f"Error analyzing snapshot: {e}")
+        logger.warning("Error analyzing snapshot: %s", e)
         return VideoAnalysis(
             timestamp=now,
             water_level_index=50.0,

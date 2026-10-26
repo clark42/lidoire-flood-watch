@@ -4,6 +4,7 @@ Reconstructs the hydro-meteorological context around flood episodes
 for pattern extraction and model training.
 """
 
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -23,6 +24,8 @@ from app.services.data_store import (
     get_historical_rainfall,
 )
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 async def analyze_episode(
@@ -221,7 +224,7 @@ async def extract_patterns_from_episodes(episodes: list[FloodEpisode]) -> dict:
             )
             analyses.append(analysis)
         except Exception as e:
-            print(f"Error analyzing episode {ep.id}: {e}")
+            logger.warning("Error analyzing episode %s: %s", ep.id, e)
             continue
 
     if not analyses:

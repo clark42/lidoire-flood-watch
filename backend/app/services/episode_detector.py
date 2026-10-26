@@ -16,7 +16,7 @@ excluded. Episodes are merged if they're within 24h of each other.
 
 import logging
 import statistics
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dataclasses import dataclass, asdict
 
@@ -25,6 +25,11 @@ from app.services import influx_client
 from app.services.risk_core import score_to_level, to_utc_naive
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 @dataclass
@@ -504,12 +509,9 @@ async def run_episode_detection(
     if start_date is None:
         start_date = datetime(2022, 11, 1)
     if end_date is None:
-        end_date = datetime.utcnow()
+        end_date = _utcnow()
 
-    print(f"\n{'='*60}")
-    print(f"STARTING EPISODE DETECTION")
-    print(f"Period: {start_date.date()} -> {end_date.date()}")
-    print(f"{'='*60}")
+    logger.info("Starting episode detection: %s -> %s", start_date.date(), end_date.date())
 
     # Detect from risk scores
     risk_episodes = await detect_episodes_from_risk_scores(start_date, end_date, threshold=threshold)
@@ -524,14 +526,12 @@ async def run_episode_detection(
     # Sort by peak time
     merged.sort(key=lambda e: e.peak_time, reverse=True)
 
-    print(f"\n{'='*60}")
-    print(f"DETECTION COMPLETE")
-    print(f"Found {len(merged)} potential flood episodes")
-    print(f"{'='*60}")
-
+    logger.info("Episode detection complete: %d potential flood episodes", len(merged))
     for i, ep in enumerate(merged, 1):
-        print(f"\n{i}. {ep.peak_time.strftime('%Y-%m-%d %H:%M')} - Severity {ep.severity_estimate}/5")
-        print(f"   {ep.description}")
+        logger.info(
+            "%d. %s - severity %s/5 - %s",
+            i, ep.peak_time.strftime("%Y-%m-%d %H:%M"), ep.severity_estimate, ep.description,
+        )
 
     return {
         "period": {
