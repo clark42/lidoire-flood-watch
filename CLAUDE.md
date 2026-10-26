@@ -16,7 +16,7 @@ Faits hydrologiques a garder en tete :
 
 ### Lancement complet (Docker)
 ```bash
-cp .env.example .env                    # remplacer chaque "change-me"
+cp .env.example .env                    # remplir chaque secret vide (openssl rand -hex 32)
 docker compose up -d --build
 ```
 
@@ -306,7 +306,7 @@ Ports lies a `${BIND_ADDRESS:-127.0.0.1}`. Pour exposer les bases en local : `do
 
 ## Securite
 
-- `POST`/`PUT`/`PATCH`/`DELETE` sur `/api/*` : en-tete `X-API-Key` compare en temps constant a `API_KEY` (401 sinon). `GET` public. `API_KEY` vide = mode dev (avertissement au demarrage).
+- `POST`/`PUT`/`PATCH`/`DELETE` sur `/api/*` : en-tete `X-API-Key` compare en temps constant a `API_KEY` (401 sinon). `GET` public. `API_KEY` vide = mode dev (avertissement au demarrage). Le backend refuse de demarrer si un secret vaut un placeholder connu (`change-me`, ...).
 - Frontend : cle stockee dans localStorage `lfw_api_key`, envoyee par `fetchJson` sur les methodes d'ecriture.
 - `GET /api/auth/netatmo` exige `?api_key=` quand `API_KEY` est defini (navigation navigateur, pas d'en-tete possible).
 - CORS : liste explicite (`CORS_ORIGINS` + `FRONTEND_URL`), pas de joker, `X-Backfill-Pending` expose.
@@ -321,7 +321,7 @@ Ports lies a `${BIND_ADDRESS:-127.0.0.1}`. Pour exposer les bases en local : `do
 ## Variables d'environnement
 
 Fichier `.env` a la racine (voir `.env.example`) :
-- Obligatoires pour compose : `POSTGRES_PASSWORD`, `INFLUXDB_ADMIN_PASSWORD`, `INFLUXDB_ADMIN_TOKEN`, `REDIS_PASSWORD` (les `change-me` passent le controle : les remplacer)
+- Obligatoires pour compose : `POSTGRES_PASSWORD`, `INFLUXDB_ADMIN_PASSWORD`, `INFLUXDB_ADMIN_TOKEN`, `REDIS_PASSWORD` (vides dans `.env.example`, donc compose echoue tant qu'ils ne sont pas remplis)
 - `API_KEY` (`openssl rand -hex 32`), `BIND_ADDRESS`, `CORS_ORIGINS`, `FRONTEND_URL`
 - `INFLUXDB_TOKEN` (optionnel, sinon jeton admin), `INFLUXDB_READ_TOKEN` (optionnel), `INFLUXDB_ORG`, `INFLUXDB_BUCKET`
 - `DATABASE_URL`, `INFLUXDB_URL`, `REDIS_URL` : construits par compose, a definir seulement hors Docker

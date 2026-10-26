@@ -141,7 +141,7 @@ Distances a vol d'oiseau depuis le moulin (haversine sur les coordonnees du conf
 | Coutras | P846251001 | Dronne | 21 km | 3 h | 15% |
 | Riberac | P816251001 | Dronne | 49 km | 10 h | 5% |
 
-- Libourne (oscillation de maree d'environ 4 m) est affichee mais exclue du score.
+- Libourne (oscillation de maree d'environ 4 m) est affichee mais exclue du score ; l'alerte « Niveau Dordogne eleve » compare Pessac a son seuil orange.
 - Pessac est a environ 7 km en amont de la confluence : c'est la seule station proche du remous impose a la Lidoire.
 - Isle et Dronne confluent a Libourne, en aval de la Lidoire : ce sont des indicateurs de pluie regionale, pas des causes de crue au moulin.
 - Le champ `distance_km` du config (affichage uniquement) ne correspond pas a ces distances.
@@ -239,7 +239,7 @@ Jobs planifies (APScheduler) : rivieres et Netatmo toutes les 15 min, meteo tout
 ### Lancement avec Docker
 
 ```bash
-cp .env.example .env    # puis remplacer chaque "change-me" (openssl rand -hex 32)
+cp .env.example .env    # puis remplir chaque secret vide (openssl rand -hex 32)
 docker compose up -d --build
 ```
 
@@ -284,13 +284,13 @@ Les ports publies sont lies a `BIND_ADDRESS` (defaut `127.0.0.1`). Pour un acces
 ### Cle API
 
 - `POST`/`PUT`/`PATCH`/`DELETE` sur `/api/*` exigent l'en-tete `X-API-Key: <API_KEY>` (401 sinon). Les `GET` restent publics.
-- `API_KEY` vide = ecritures non protegees (dev uniquement, avertissement au demarrage). Un avertissement est aussi emis pour `change-me` ou une cle de moins de 16 caracteres.
+- `API_KEY` vide = ecritures non protegees (dev uniquement, avertissement au demarrage). Le backend refuse de demarrer si `API_KEY`, un token InfluxDB ou un mot de passe DB/Redis vaut un placeholder connu (`change-me`, ...).
 - Dans le dashboard, la cle se saisit dans Configuration et reste dans le navigateur (localStorage `lfw_api_key`).
 - La connexion Netatmo (`GET /api/auth/netatmo`) exige la cle en `?api_key=` quand `API_KEY` est defini.
 
 ### Variables d'environnement
 
-Obligatoires (docker compose echoue si elles sont vides) : `POSTGRES_PASSWORD`, `INFLUXDB_ADMIN_PASSWORD`, `INFLUXDB_ADMIN_TOKEN`, `REDIS_PASSWORD`. Les valeurs `change-me` de `.env.example` passent ce controle : les remplacer toutes.
+Obligatoires (docker compose echoue si elles sont vides) : `POSTGRES_PASSWORD`, `INFLUXDB_ADMIN_PASSWORD`, `INFLUXDB_ADMIN_TOKEN`, `REDIS_PASSWORD`. Elles sont vides dans `.env.example` : les generer (`openssl rand -hex 32`), en gardant pour une installation existante le mot de passe Postgres et le token InfluxDB deja utilises par les volumes.
 
 Recommandees : `API_KEY`, `INFLUXDB_TOKEN` (jeton limite au bucket, sinon le jeton admin est utilise), `INFLUXDB_READ_TOKEN` (jeton en lecture seule pour les requetes Flux, sinon `INFLUXDB_TOKEN`). Un jeton de lecture invalide casse toutes les lectures alors que les ecritures continuent.
 
