@@ -5,6 +5,7 @@ Periodically collects data from:
 - Hub'Eau (river levels)
 - Weather services
 - Netatmo, Infoclimat (rainfall; request paths only read their caches)
+- Official vigilance (Vigicrues troncons, Meteo-France departements)
 - Camera snapshots
 
 and computes + stores the realtime risk score every hour (the only writer
@@ -296,6 +297,10 @@ async def start_scheduler():
         next_run_time=now + RISK_JOB_FIRST_RUN_DELAY,
         replace_existing=True,
     )
+
+    # Official vigilance (Vigicrues, Meteo-France): every 30 minutes, informative only
+    from app.services.collectors.vigilance import schedule_vigilance
+    schedule_vigilance(_scheduler, first_run=now)
 
     # Notifications (ntfy), hourly after risk_scorer; no job when not configured
     from app.services.notifier import schedule_notifier

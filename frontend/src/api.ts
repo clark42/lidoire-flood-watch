@@ -17,6 +17,10 @@ import type {
   RiskSimulationResult,
   SystemStatus,
   SourcesDetail,
+  VigilanceStatus,
+  Observation,
+  ObservationInput,
+  EpisodeObservations,
   IndicatorsData,
 } from './types'
 
@@ -402,6 +406,62 @@ export async function confirmEpisode(
 // Reference labels of the annotated episodes (ground truth for evaluation)
 export async function getEpisodeLabels(): Promise<EpisodeLabelSet> {
   return fetchJson<EpisodeLabelSet>(`${API_BASE}/episodes/labels`)
+}
+
+// Official vigilance (Vigicrues troncons, Meteo-France departements)
+export async function getVigilance(): Promise<VigilanceStatus> {
+  return fetchJson<VigilanceStatus>(`${API_BASE}/vigilance`)
+}
+
+// Field observations
+export async function getObservations(start?: string, end?: string): Promise<Observation[]> {
+  const params = new URLSearchParams()
+  if (start) params.set('start', start)
+  if (end) params.set('end', end)
+  const query = params.toString()
+  return fetchJson<Observation[]>(`${API_BASE}/observations${query ? `?${query}` : ''}`)
+}
+
+/** Create an observation: JSON, or multipart when a photo is attached. */
+export async function createObservation(input: ObservationInput, photo?: File | null): Promise<Observation> {
+  if (!photo) {
+    return fetchJson<Observation>(`${API_BASE}/observations`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    })
+  }
+  const form = new FormData()
+  form.append('data', JSON.stringify(input))
+  form.append('photo', photo)
+  // No Content-Type header: the browser sets the multipart boundary
+  const response = await fetch(`${API_BASE}/observations`, {
+    method: 'POST',
+    cache: 'no-store',
+    headers: authHeaders('POST'),
+    body: form,
+  })
+  if (!response.ok) throw await buildApiError(response)
+  return response.json()
+}
+
+export async function deleteObservation(id: number): Promise<void> {
+  await fetchJson<unknown>(`${API_BASE}/observations/${id}`, { method: 'DELETE' })
+}
+
+/** Observation photo as a blob (private: sent with X-API-Key, never a plain <img src>). */
+export async function getObservationPhoto(photoUrl: string): Promise<Blob> {
+  if (!photoUrl.startsWith(`${API_BASE}/observations/`)) throw new Error('URL de photo invalide')
+  const key = getApiKey()
+  const response = await fetch(photoUrl, {
+    cache: 'no-store',
+    headers: key ? { 'X-API-Key': key } : {},
+  })
+  if (!response.ok) throw await buildApiError(response)
+  return response.blob()
+}
+
+export async function getEpisodeObservations(episodeId: number): Promise<EpisodeObservations> {
+  return fetchJson<EpisodeObservations>(`${API_BASE}/episodes/${episodeId}/observations`)
 }
 
 // Hydrological indicators (flows, groundwater, observed tide), outside the risk model

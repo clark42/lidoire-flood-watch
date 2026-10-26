@@ -578,6 +578,106 @@ export interface SourcesDetail {
   }
 }
 
+// Official vigilance (GET /api/vigilance): informative, not a model input.
+// Levels: 1 vert, 2 jaune, 3 orange, 4 rouge (null = unknown)
+export type VigilanceLevel = 1 | 2 | 3 | 4
+export type VigilanceColor = 'vert' | 'jaune' | 'orange' | 'rouge'
+
+export interface VigilanceWindow {
+  begin: string
+  end: string
+  level: VigilanceLevel
+}
+
+export interface VigilanceTroncon {
+  code: string
+  name: string
+  level: VigilanceLevel | null
+  color: VigilanceColor | null
+  url: string
+  station_url: string | null
+}
+
+export interface VigilancePhenomenon {
+  id: string
+  key: string
+  label: string
+  level: VigilanceLevel | null
+  color: VigilanceColor | null
+  level_tomorrow: VigilanceLevel | null
+  windows: VigilanceWindow[]
+}
+
+export interface VigilanceDepartment {
+  code: string
+  name: string
+  max_level: VigilanceLevel | null
+  phenomena: VigilancePhenomenon[]
+  url: string
+}
+
+export interface VigilanceStatus {
+  timestamp: string
+  vigicrues: {
+    available: boolean
+    issued_at: string | null
+    fetched_at: string | null
+    troncons: VigilanceTroncon[]
+    url: string
+  }
+  meteofrance: {
+    available: boolean
+    issued_at: string | null
+    fetched_at: string | null
+    valid_from: string | null
+    valid_to: string | null
+    departments: VigilanceDepartment[]
+    url: string
+  }
+  note: string
+}
+
+// Field observations at the mill (ground truth from the owner)
+export type ObservationKind = 'flooded' | 'water_rising' | 'near_miss' | 'normal'
+
+export interface ObservationInput {
+  observed_at?: string | null
+  kind: ObservationKind
+  water_height_cm?: number | null
+  reference?: string | null
+  note?: string | null
+  source?: string
+}
+
+export interface Observation {
+  id: number
+  observed_at: string
+  kind: ObservationKind
+  water_height_cm: number | null
+  reference: string | null
+  note: string | null
+  has_photo: boolean
+  photo_url: string | null
+  created_at: string
+  source: string
+}
+
+export interface OutcomeSuggestion {
+  outcome: EpisodeOutcome
+  observed_at: string
+  water_height_cm: number | null
+  observation_id: number
+  reason: string
+}
+
+export interface EpisodeObservations {
+  episode_id: number
+  window_start: string
+  window_end: string
+  observations: Observation[]
+  suggested_outcome: OutcomeSuggestion | null
+}
+
 // /api/indicators (stored series only, never a model input)
 export interface IndicatorThresholdStatus {
   exceeded: string[]

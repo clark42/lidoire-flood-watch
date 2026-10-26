@@ -372,6 +372,29 @@ class Settings(BaseSettings):
     notify_station_stale_hours: float = 3.0
     notify_score_stale_hours: float = 2.0
 
+    # Official vigilance (app/services/collectors/vigilance.py), informative
+    # only: never a model input. Vigicrues troncons covering the confluence
+    # (DO5 holds Pessac, DO22 holds Libourne), SPC territory 32.
+    vigilance_vigicrues_troncons: list[dict] = [
+        {"code": "DO5", "name": "Dordogne aval", "territory": "32", "station_id": "P555001001"},
+        {"code": "DO22", "name": "Confluence Garonne - Dordogne", "territory": "32", "station_id": "P577001001"},
+    ]
+    # Meteo-France departements (code -> page slug on vigilance.meteofrance.fr)
+    vigilance_meteofrance_departments: list[dict] = [
+        {"code": "33", "name": "Gironde", "slug": "gironde"},
+        {"code": "24", "name": "Dordogne", "slug": "dordogne"},
+    ]
+    # Phenomenon ids of the Meteo-France vigilance map kept by the collector
+    vigilance_meteofrance_phenomena: list[str] = ["2", "4", "3", "1"]
+
+    # Field observations (app/api/observations.py): photos on the backend
+    # data volume (PVC /app/data), never served by nginx.
+    observations_photo_dir: str = "/app/data/observations"
+    observation_photo_max_bytes: int = 8 * 1024 * 1024
+    # An observation belongs to an episode when observed_at is inside
+    # [start - margin, (end or peak or start) + margin]
+    observation_episode_margin_hours: float = 12.0
+
     @property
     def notifications_enabled(self) -> bool:
         return bool(self.ntfy_url.strip() and self.ntfy_topic.strip())

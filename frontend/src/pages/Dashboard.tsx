@@ -44,6 +44,8 @@ import MetricSparkline from '../components/MetricSparkline'
 import TimeMachineBanner from '../components/TimeMachineBanner'
 import SoilConditionsPanel from '../components/SoilConditionsPanel'
 import NowcastRainChart from '../components/NowcastRainChart'
+import VigilanceBadges from '../components/VigilanceBadges'
+import ObservationQuickForm from '../components/ObservationQuickForm'
 import IndicatorsPanel from '../components/IndicatorsPanel'
 import InfoTooltip from '../components/InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
@@ -500,6 +502,7 @@ export default function Dashboard() {
         now={now}
         loading={loading}
       />
+      <VigilanceBadges />
 
       {/* Alerts */}
       {data.alerts.length > 0 && (
@@ -543,6 +546,8 @@ export default function Dashboard() {
           />
         </div>
       </div>
+
+      {!timeMachineActive && <ObservationQuickForm />}
 
       {/* Risk Breakdown Panel */}
       <RiskBreakdownPanel risk={data.risk} defaultExpanded={breakdownExpanded} />

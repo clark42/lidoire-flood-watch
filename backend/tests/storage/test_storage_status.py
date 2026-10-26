@@ -130,9 +130,10 @@ async def test_status_sources_fresh_keep_contract(frozen_ages):
     assert body["status"] == "healthy"
     core = {"river_primary", "rain_openmeteo", "infoclimat", "netatmo", "tide", "soil", "risk_score"}
     assert core <= set(body["sources"])
-    # Only informative hydrological indicators are added (tests/indicators)
+    # Only informative sources are added: vigilance and hydrological indicators (tests/indicators)
     extra = set(body["sources"]) - core
-    assert all(k.startswith("indicator_") for k in extra)
+    assert "vigilance" in extra
+    assert all(k == "vigilance" or k.startswith("indicator_") for k in extra)
     assert not any(body["sources"][k]["critical"] for k in extra)
     river = body["sources"]["river_primary"]
     assert river["status"] == "ok" and river["critical"] is True

@@ -69,6 +69,8 @@ app/
 │   ├── episodes.py      # /api/episodes : CRUD, labels, confirm, analyse, backfill, detection
 │   ├── risk.py          # /api/risk : score, previsions, simulation
 │   ├── notify.py        # /api/notify/test (message de test, X-API-Key)
+│   ├── vigilance.py     # /api/vigilance (couleurs officielles, lecture du cache)
+│   ├── observations.py  # /api/observations (+ photo), /api/episodes/{id}/observations
 │   ├── indicators.py    # /api/indicators (indicateurs hydrologiques hors modele)
 │   └── auth.py          # /api/auth/netatmo (OAuth2)
 ├── data/
@@ -90,6 +92,8 @@ app/
     ├── data_store.py    # Acces InfluxDB/PostgreSQL de plus haut niveau
     ├── scheduler.py     # APScheduler (collectes + score horaire)
     ├── notifier.py      # Notifications ntfy (niveau, prevision, donnees perimees)
+    ├── observations.py  # Observations terrain : PostgreSQL, fichiers photo, lien episodes
+    ├── photo_safety.py  # Octets magiques, retrait GPS (JPEG/PNG/WebP), sans lib image
     ├── video_analyzer.py    # Detection niveau d'eau via camera
     ├── models_experimental.py  # Modeles candidats, importes par AUCUN code de production
     ├── indicators.py    # Catalogue des series indicateurs, lectures Influx, payload /api/indicators
@@ -102,6 +106,7 @@ app/
         ├── netatmo.py       # Netatmo (stations citoyennes du bassin)
         ├── infoclimat.py    # Infoclimat StatIC
         ├── meteo_agricole.py # Meteo Agricole (bilan hydrique, nowcast)
+        ├── vigilance.py     # Vigilance Vigicrues (DO5, DO22) + Meteo-France (33, 24)
         └── hydro_indicators.py # Debits, piezometre, maree observee (hors modele)
 ```
 
@@ -120,6 +125,8 @@ scripts/eval/            # Harnais d'evaluation (python -m scripts.eval build|re
 └── candidates.py        # Comparaison des modeles candidats (LOEO bloque)
 tests/
 ├── risk/  storage/  security/  collectors/
+├── groundtruth/  evaluation/  models/  followups/  notifier/
+├── vigilance/ (fixtures/ : reponses enregistrees)  observations/
 ├── groundtruth/  evaluation/  models/  followups/  notifier/  indicators/ (fixtures/ JSON enregistres)
 ```
 
@@ -134,6 +141,7 @@ src/
 ├── types.ts             # Types TypeScript (miroir des schemas backend)
 ├── utils/time.ts        # parseApiDate (UTC) + formatParis : tout l'affichage en Europe/Paris
 ├── utils/format.ts      # Libelles FR des niveaux de risque, formatDistanceKm
+├── utils/observations.ts # Libelles et couleurs des types d'observation
 ├── tooltipContent.ts    # Dictionnaire centralise des textes de tooltips
 ├── pages/
 │   ├── Dashboard.tsx    # Vue temps reel avec score de risque + TimeMachine ; fraicheur = station primaire (Pessac), HydroMap (leaflet) en lazy
@@ -146,6 +154,8 @@ src/
     ├── HydroMap.tsx, MetricSparkline.tsx, TimeMachineBanner.tsx, TimelineSourceSelector.tsx
     ├── InfoTooltip.tsx, DataCard.tsx, DataSourcesStatus.tsx (bandeau des sources = `/api/status.sources`)
     ├── IndicatorsPanel.tsx  # Indicateurs hydrologiques (Dashboard, autonome, /api/indicators)
+    ├── VigilanceBadges.tsx, ObservationQuickForm.tsx (Dashboard)
+    ├── ObservationList.tsx, EpisodeObservationsPanel.tsx (Episodes)
     └── ApiKeyPanel.tsx  # Saisie de la cle API (localStorage)
 ```
 
@@ -232,11 +242,12 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 - **Meteo locale** : Netatmo (stations citoyennes du bassin Lidoire), Infoclimat StatIC
 - **Sol** : Open-Meteo (humidite, temperature, ET0) + Meteo Agricole (bilan hydrique). Deux modeles distincts en "best match" : le temps reel (`/api/realtime` `soil`, entree du modele) lit les couches 0-1/1-3/3-9 cm et 9-27/27-81 cm servies par DWD ICON ; la Timeline (`soil_timeline`) lit 0-7/7-28/28-100 cm servies par ECMWF IFS (ERA5 en archive), nettement plus humides (ex. 0.195 vs 0.311 m3/m3 a la meme heure). Les series Timeline ne melangent jamais les deux (seul ET0 peut venir du temps reel).
 - **Camera** : Flux RTSP configurable via `CAMERA_RTSP_URL`
+- **Vigilance officielle** (`collectors/vigilance.py`, informative, PAS une entree du modele) : Vigicrues `services/1/InfoVigiCru.geojson` (~2.2 Mo, sans filtre ni gzip, `NivInfViCr` 1-4 par `CdEntCru`) pour les troncons DO5 "Dordogne aval" (Pessac) et DO22 "Confluence Garonne - Dordogne" (Libourne), SPC 32 ; Meteo-France via le miroir data.gouv `files.data.gouv.fr/meteofrance/data/vigilance/metropole/{AAAA}/{MM}/{JJ}/{HHMMSS}/CDP_CARTE_EXTERNE.json` (pas d'alias latest : index du jour, runs du plus recent au plus ancien, les runs texte seuls n'ont pas de carte), departements 33 et 24, phenomenes 2 pluie-inondation, 4 crues, 3 orages, 1 vent, periodes J/J1. Couleurs 1 vert, 2 jaune, 3 orange, 4 rouge. Aucun historique cote API : mesure Influx `vigilance` (tags `source` vigicrues|meteofrance, `zone` DO5|DO22|33|24, `phenomenon`, champ `level`) ecrite a chaque changement, au premier passage apres demarrage et toutes les 6 h (keepalive). `GET /api/vigilance` lit le cache (`peek_vigilance`, perime a 2 h), liens vers vigicrues.gouv.fr/territoire/32, /station/<code> et vigilance.meteofrance.fr/fr/<departement>.
 
-Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), indicateurs (debits et maree observee 15 min, piezometre 3 h), camera si configuree.
+Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), indicateurs (debits et maree observee 15 min, piezometre 3 h), `vigilance_collector` 30 min, camera si configuree.
 
 APIs externes hors du chemin des requetes :
-- Netatmo, Infoclimat, Meteo Agricole et nowcast ne sont jamais appeles par une route ni par `gather_realtime_inputs` : lecture seule des caches remplis par les jobs (`peek_*`, perimes au-dela de 1 h pour Netatmo/Infoclimat, 15 min pour le nowcast, 12 h pour Meteo Agricole ; au-dela => indisponible, comme un echec).
+- Netatmo, Infoclimat, Meteo Agricole, nowcast et vigilance ne sont jamais appeles par une route ni par `gather_realtime_inputs` : lecture seule des caches remplis par les jobs (`peek_*`, perimes au-dela de 1 h pour Netatmo/Infoclimat, 15 min pour le nowcast, 12 h pour Meteo Agricole ; au-dela => indisponible, comme un echec).
 - Hub'Eau, Open-Meteo, marees et Vigicrues restent en cache-through, timeout 10 s (`EXTERNAL_TIMEOUT_S`) ; les backfills historiques gardent 30-60 s.
 - `CircuitBreaker` (`cache.py`) : apres un timeout / erreur de connexion / 5xx, l'API est sautee 15 min (Hub'Eau 5 min, sur un tour sans aucune station), un seul WARNING avec le `repr` de l'exception. Les 4xx n'ouvrent pas le disjoncteur.
 
@@ -284,6 +295,14 @@ POST /api/episodes/detect?start_date=2022-11-01&end_date=2026-10-26&threshold=45
 ```
 
 Tous les POST/PUT/DELETE ci-dessus exigent `X-API-Key` quand `API_KEY` est defini.
+
+### Observations terrain
+
+Table PostgreSQL `observations` (creee par `init_db`) : `observed_at` (UTC), `kind` (`flooded` | `water_rising` | `near_miss` | `normal`), `water_height_cm` (nullable, relatif a `reference` en texte : terrasse, plancher, seuil du moulin), `note`, `photo_path`, `created_at`, `source`. Formulaire `ObservationQuickForm` sur le Dashboard (Inonde / L'eau monte / RAS, lien "Presque inonde"), liste sur la page Episodes.
+
+- `POST /api/observations` (X-API-Key) : JSON `ObservationCreate`, ou multipart avec ce JSON dans le champ `data` et une `photo` optionnelle. `GET /api/observations?start&end` (public, plus recent d'abord, 500 max). `DELETE /api/observations/{id}` (ligne + fichier).
+- Photo : format par octets magiques uniquement (JPEG, PNG, WebP, HEIC/HEIF ; content-type contradictoire = 415), 8 Mo max (413), nom serveur `<uuid hex>.<ext>` (0600) dans `observations_photo_dir` (`/app/data/observations`, PVC). GPS retire sans re-encodage : JPEG = IFD GPS efface et delie (orientation gardee) + XMP supprime, PNG = eXIf/tEXt/zTXt/iTXt supprimes, WebP = chunks EXIF/XMP supprimes ; HEIC garde ses metadonnees (GPS compris). `GET /api/observations/{id}/photo` exige X-API-Key meme en lecture (`deps.require_api_key`, le frontend la charge en blob), `nosniff`, `no-store`, nom stocke revalide (regex + repertoire) contre la traversee.
+- `GET /api/episodes/{id}/observations` : observations dans [debut - 12 h, (fin ou pic ou debut) + 12 h] (`observation_episode_margin_hours`) et, si l'episode n'a pas d'issue, `suggested_outcome` (flooded avant near_miss) jamais applique : le bouton du detail appelle `POST /api/episodes/confirm/{id}` avec `source=observation`.
 
 ## Evaluation (`backend/scripts/eval/`)
 
@@ -357,6 +376,7 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 - `POST`/`PUT`/`PATCH`/`DELETE` sur `/api/*` : en-tete `X-API-Key` compare en temps constant a `API_KEY` (401 sinon). `GET` public. `API_KEY` vide = mode dev (avertissement au demarrage). Le backend refuse de demarrer si un secret vaut un placeholder connu (`change-me`, ...).
 - Frontend : cle stockee dans localStorage `lfw_api_key`, envoyee par `fetchJson` sur les methodes d'ecriture.
 - `GET /api/auth/netatmo` exige `?api_key=` quand `API_KEY` est defini (navigation navigateur, pas d'en-tete possible).
+- Photos d'observation privees : X-API-Key exige aussi en GET. nginx limite les corps a 1 Mo sauf `location = /api/observations` (9 Mo) ; un Ingress nginx eventuel aurait besoin de `proxy-body-size: 9m`.
 - CORS : liste explicite (`CORS_ORIGINS` + `FRONTEND_URL`), pas de joker, `X-Backfill-Pending` expose.
 - InfluxDB : `INFLUXDB_TOKEN` limite au bucket recommande, `INFLUXDB_READ_TOKEN` en lecture seule pour les requetes.
 
@@ -366,7 +386,7 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 - Netatmo : `/api/realtime/basin-rainfall` expose `available`/`stations_count` (moyennes 0.0 = valeurs de remplissage si `available=false`) ; `/api/timeline/sources` marque les stations Netatmo `available=false` tant que Netatmo n'est pas autorise. La Timeline part par defaut sur Open-Meteo (Moulin) + Infoclimat.
 
 - `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`.
-- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives (dont `indicator_*` : debits 3-12 h, piezometre 36 h, maree observee 3 h). `services.collectors` reste une declaration statique (compatibilite). Le bandeau du Dashboard lit `sources` (seule source de verite, `/api/realtime/sources` n'est plus utilise par le frontend) ; pour la maree il affiche le temps jusqu'a la prochaine PM, jamais un age negatif.
+- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score, vigilance}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, vigilance 7 h (keepalive 6 h, informative), maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives (dont `indicator_*` : debits 3-12 h, piezometre 36 h, maree observee 3 h). `services.collectors` reste une declaration statique (compatibilite). Le bandeau du Dashboard lit `sources` (seule source de verite, `/api/realtime/sources` n'est plus utilise par le frontend) ; pour la maree il affiche le temps jusqu'a la prochaine PM, jamais un age negatif.
 - `/api/episodes/confirm/{id}` : `outcome` (`flooded`, `false_positive`, `near_miss`, `unknown`) ou ancien `was_flooded` ; remplace l'issue precedente.
 
 ## Variables d'environnement
@@ -389,3 +409,4 @@ Installation existante : conserver l'ancien mot de passe Postgres et l'ancien je
 - Pluie radar (COMEPHORE, ANTILOPE) comme entree d'un modele pluie-debit.
 - Gate de remous sur v3.4 en mode shadow pendant une saison : en place (serie `risk_score_shadow`, version `3.4-gate`, voir Stockage) ; comparer les deux courbes et labelliser les periodes ci-dessus avant toute bascule.
 - Regression logistique / GR4H seulement quand davantage d'episodes seront labellises.
+- Vigilance officielle (Vigicrues DO5, Meteo-France pluie-inondation/crues >= orange) comme feature candidate, une fois la serie `vigilance` accumulee ; observations terrain comme labels supplementaires.
