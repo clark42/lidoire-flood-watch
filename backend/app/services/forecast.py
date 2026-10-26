@@ -370,14 +370,25 @@ def _display_hours_to_high(fi: ForecastInputs, t_h: datetime, value: Optional[fl
     return 0.0
 
 
-def build_forecast(fi: ForecastInputs, hours: int) -> list[dict]:
-    """Hourly forecast entries for H+0..H+hours (pure)."""
+def build_forecast(
+    fi: ForecastInputs,
+    hours: int,
+    breakdowns: Optional[list] = None,
+) -> list[dict]:
+    """Hourly forecast entries for H+0..H+hours (pure).
+
+    When ``breakdowns`` is a list, the RiskBreakdown of each hour is appended
+    to it (same order as the entries): the outlook explains its max hours
+    from them.
+    """
     params = risk_core.get_model_params()
     base = floor_hour(fi.t0)
     out = []
     for h in range(0, hours + 1):
         features, primary_level = build_forecast_features(fi, h)
         bd = compute_risk(features, params)
+        if breakdowns is not None:
+            breakdowns.append(bd)
         out.append({
             "timestamp": _iso_utc(features.timestamp),
             "hours_ahead": h,
@@ -395,6 +406,48 @@ def build_forecast(fi: ForecastInputs, hours: int) -> list[dict]:
             "stability_dampener": round(bd.stability_dampener, 2),
         })
     return out
+
+
+def upcoming_high_tides(fi: ForecastInputs, hours: float) -> list[dict]:
+    """High waters estimated at the confluence in (t0, t0 + hours] (pure)."""
+    end = fi.t0 + timedelta(hours=hours)
+    return [
+        {"timestamp": _iso_utc(ts), "coefficient": coef, "estimated": not fi.tide_reliable}
+        for ts, coef in sorted(fi.tide_highs)
+        if fi.t0 < ts <= end
+    ]
+
+
+def forecast_inputs_summary(
+    fi: ForecastInputs,
+    forecasts: list[dict],
+    breakdowns: Sequence,
+    horizon_hours: int = 72,
+) -> dict:
+    """Key inputs of a run (pure): what the archive keeps next to the scores.
+
+    Rain totals are the forecast rain falling after t0; the Pessac max is the
+    projected primary level over H+0..H+horizon; the tide gate and backwater
+    level are those of H+0.
+    """
+    base = floor_hour(fi.t0)
+    window = [f for f in forecasts if f["hours_ahead"] <= horizon_hours]
+    levels = [f["projected_level_m"] for f in window if f.get("projected_level_m") is not None]
+    has_primary = any(s.station_id == fi.primary_station_id for s in fi.stations)
+    bd0 = breakdowns[0] if breakdowns else None
+    return {
+        "horizon_hours": horizon_hours,
+        "rain_forecast_24h_mm": round(_rain_after_t0(fi.rain_hourly, base, 1, 24), 1),
+        "rain_forecast_72h_mm": round(_rain_after_t0(fi.rain_hourly, base, 1, 72), 1),
+        "pessac_projected_max_m": round(max(levels), 2) if levels and has_primary else None,
+        "tide_gate": round(bd0.tide_gate, 3) if bd0 is not None else None,
+        "backwater_level_m": (
+            round(bd0.backwater_level_m, 2)
+            if bd0 is not None and bd0.backwater_level_m is not None else None
+        ),
+        "tide_reliable": fi.tide_reliable,
+        "unavailable": list(bd0.unavailable) if bd0 is not None else [],
+    }
 
 
 def summarize_forecast(forecasts: list[dict], hours: int, data_sources: dict) -> dict:
@@ -484,18 +537,24 @@ async def _fetch_tide_highs_from_influx(port: str, start: datetime, end: datetim
     return result
 
 
-async def get_risk_forecast_v2(hours: int = 168) -> dict:
+async def get_risk_forecast_v2(hours: int = 168, use_cache: bool = True) -> dict:
     """
     Generate detailed risk forecast for the next hours (default: 7 days).
 
+    ``use_cache=False`` (forecast archive job) always recomputes; the fresh
+    result still refreshes the cache.
+
     Returns:
         dict with generated_at, hours_ahead, forecasts (hourly), max_risk,
-        max_level, critical_periods, summary, data_sources, model_version.
+        max_level, critical_periods, summary, data_sources, model_version,
+        horizons (6/24/72 h max and why, see outlook.py), high_tides and
+        inputs_summary.
     """
-    cached = await _get_cached_forecast(hours)
-    if cached:
-        logger.info("forecast: from Redis cache")
-        return cached
+    if use_cache:
+        cached = await _get_cached_forecast(hours)
+        if cached and "horizons" in cached:
+            logger.info("forecast: from Redis cache")
+            return cached
 
     from app.services.collectors.weather import fetch_open_meteo_forecast
     from app.services.risk_v2 import (
@@ -599,7 +658,10 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
         primary_levels=inputs.primary_levels if inputs else (),
     )
 
-    forecasts = build_forecast(fi, hours)
+    from app.services.outlook import summarize_horizons
+
+    breakdowns: list = []
+    forecasts = build_forecast(fi, hours, breakdowns)
     result = {
         "generated_at": _iso_utc(now),
         "hours_ahead": hours,
@@ -607,6 +669,9 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
         "data_sources": data_sources,
         "model_version": MODEL_VERSION,
         **summarize_forecast(forecasts, hours, data_sources),
+        "horizons": summarize_horizons(forecasts, breakdowns),
+        "high_tides": upcoming_high_tides(fi, min(hours, 72) + 13),
+        "inputs_summary": forecast_inputs_summary(fi, forecasts, breakdowns),
     }
 
     await _set_cached_forecast(hours, result)

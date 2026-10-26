@@ -539,3 +539,110 @@ class AvailableSources(BaseModel):
     has_infoclimat: bool = True
     has_wind: bool = True
     has_soil: bool = True
+
+
+# Outlook (GET /api/risk/outlook): "do I need to act, and when?"
+class OutlookDriver(BaseModel):
+    """One contributing factor of a horizon's max hour (points of the score)."""
+    factor: str
+    label: str
+    points: float
+    text: str
+
+
+class OutlookHorizon(BaseModel):
+    """Max of the forecast over H+0..H+hours, and why."""
+    hours: int
+    label: str
+    max_score: float
+    level: RiskLevel
+    max_at: UtcDatetime
+    max_hours_ahead: int
+    # First hour at or above ``level`` (when to be ready)
+    first_at_level: UtcDatetime
+    drivers: list[OutlookDriver] = []
+    modifiers: list[str] = []
+    unavailable: list[str] = []
+    summary: str
+
+
+class OutlookHighTide(BaseModel):
+    """Next high water estimated at the Lidoire confluence."""
+    timestamp: UtcDatetime
+    coefficient: Optional[int] = None
+    estimated: bool = False
+    hours_from_now: float
+
+
+class OutlookConfidence(BaseModel):
+    """Data confidence: "good" | "reduced" | "low", with plain French notes."""
+    level: str
+    notes: list[str] = []
+    unavailable_factors: list[str] = []
+    tide_estimated: bool = False
+    stale_sources: list[str] = []
+
+
+class OutlookChecklist(BaseModel):
+    """Owner actions of the highest level (app/data/action_plan.json)."""
+    level: RiskLevel
+    title: str
+    actions: list[str] = []
+    act_before: Optional[UtcDatetime] = None
+
+
+class RiskOutlook(BaseModel):
+    """Outlook over 6 / 24 / 72 h from the hourly v3.4 forecast."""
+    generated_at: UtcDatetime
+    forecast_generated_at: UtcDatetime
+    model_version: Optional[str] = None
+    horizons: list[OutlookHorizon]
+    highest_level: RiskLevel
+    next_high_tide: Optional[OutlookHighTide] = None
+    confidence: OutlookConfidence
+    checklist: OutlookChecklist
+    inputs_summary: dict = {}
+
+    model_config = {"protected_namespaces": ()}
+
+
+# Forecast skill (GET /api/risk/forecast-skill): archived forecast vs stored realtime
+class ForecastSkillPair(BaseModel):
+    run_at: UtcDatetime
+    lead_hours: int
+    valid_at: UtcDatetime
+    forecast_score: float
+    actual_score: float
+    actual_at: UtcDatetime
+
+
+class ForecastSkillLead(BaseModel):
+    lead_hours: int
+    n: int
+    mae: Optional[float] = None
+    bias: Optional[float] = None
+    hits: int = 0
+    misses: int = 0
+    false_alarms: int = 0
+    correct_negatives: int = 0
+    pod: Optional[float] = None
+    far: Optional[float] = None
+    csi: Optional[float] = None
+
+
+class ForecastSkill(BaseModel):
+    generated_at: UtcDatetime
+    model_version: str
+    threshold: float
+    threshold_level: str
+    days: int
+    lead_hours: list[int]
+    tolerance_minutes: int
+    n_runs: int
+    first_run_at: Optional[UtcDatetime] = None
+    last_run_at: Optional[UtcDatetime] = None
+    by_lead: list[ForecastSkillLead]
+    pairs: list[ForecastSkillPair]
+    notes: list[str] = []
+
+    model_config = {"protected_namespaces": ()}

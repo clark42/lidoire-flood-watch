@@ -238,6 +238,10 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # Forecast archive (forecast_runs), hourly right after risk_scorer
+    from app.services.forecast_archive import schedule_forecast_archive
+    schedule_forecast_archive(_scheduler, first_run=now + RISK_JOB_FIRST_RUN_DELAY)
+
     # Notifications (ntfy), hourly after risk_scorer; no job when not configured
     from app.services.notifier import schedule_notifier
     schedule_notifier(_scheduler, first_run=now + RISK_JOB_FIRST_RUN_DELAY)
