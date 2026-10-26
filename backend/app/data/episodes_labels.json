@@ -12,7 +12,7 @@
     "severity is a 1-5 field required for every episode: for floods it describes damage, for non-floods it is the estimated hazard level of the detection. Do not compare severities across outcomes. The 2026-02-12 severity is a placeholder (not stated by the owner).",
     "outcome near_miss of 2024-03-30 and 2025-11-25 is an interpretation of the owner's notes ('bien monte', 'haut'); the 2023-12-11 near_miss is the owner's own word ('c'etait presque mais non', 2026-10-26).",
     "legacy_stored_score is the risk score stored at peak by an older model (validate_model.py 'old'), kept only for regression comparisons; it is not ground truth.",
-    "Production database ids differ from legacy_db_id: find an episode by its date with GET /api/episodes before confirming it."
+    "Production database ids may differ from legacy_db_id: find an episode by its date with GET /api/episodes before confirming it."
   ],
   "inconsistencies": [
     "EP14 is the 2023-11-30 night flood (25 cm inside) in validate_model.py / analyze_episodes.py and in the risk_v2 momentum comment (5 rising, river=0.602), but risk_v2 v3.2 docstring and conjunction comment call 'EP14 April 23' (Pessac 0.62, Abzac 0.93, Coutras 0.87) the April 2025 flood, which is id=1 in the scripts and 'episode avril 2025 (id=1)' in the v2.2 docstring. Resolved by date keys; the April 2025 flood is keyed 2025-04-21 since 2026-10-26.",

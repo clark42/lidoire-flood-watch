@@ -51,6 +51,8 @@ python -m scripts.eval replay --offline # scores horaires v3.4 + baselines
 python -m scripts.eval report --offline # metriques -> data/eval_out/
 python -m scripts.eval.candidates --offline   # modeles candidats (data/eval_out/candidates/)
 python -m scripts.eval.climatology [--offline] # seuils a priori v4-alpha (climatologie <= 2022-09)
+python -m scripts.eval.budget --offline       # points de fonctionnement / budget d'alertes (data/eval_out/budget/)
+python -m scripts.eval.added_value --offline  # apport de Pessac a Eyraud + pluie (data/eval_out/added_value/)
 ```
 
 ## Architecture
@@ -138,7 +140,9 @@ scripts/eval/            # Harnais d'evaluation (python -m scripts.eval build|re
 ├── models.py            # Protocole Model, V33Model, PessacLevelModel, Rain72hModel
 ├── loeo.py              # Leave-one-event-out
 ├── report.py            # summary.md, metrics.json, CSV
-└── candidates.py        # Comparaison des modeles candidats (LOEO bloque)
+├── candidates.py        # Comparaison des modeles candidats (LOEO bloque)
+├── budget.py            # Points de fonctionnement sous budget d'alertes, simulation du notifier
+└── added_value.py       # Apport de Pessac a Eyraud + pluie (regressions emboitees, LOEO bloque)
 tests/
 ├── risk/  storage/  security/  collectors/
 ├── groundtruth/  evaluation/  models/  followups/  notifier/  indicators/ (fixtures/ JSON enregistres)  outlook/
@@ -300,7 +304,9 @@ https://hubeau.eaufrance.fr/api/v2/hydrometrie/obs_elab?code_entite=P577001001&g
 
 ## Episodes d'inondation
 
-Verite terrain : `backend/app/data/episodes_labels.json` (servie par `GET /api/episodes/labels`, chargee par `services/labels.py`), indexee par date de pic. 14 episodes annotes (periode 2022-11-01 - 2026-01-31) : 5 `flooded`, 6 `false_positive`, 2 `near_miss`, 1 `unknown`. Labels non exhaustifs (les negatifs sont tous des detections du modele).
+Verite terrain : `backend/app/data/episodes_labels.json` (version 2, servie par `GET /api/episodes/labels`, chargee par `services/labels.py`), indexee par date de pic (UTC). 15 episodes annotes (periode 2022-11-01 - 2026-02-28) : 5 `flooded` (2023-03-11 infiltration, 2023-11-30, 2024-02-26, 2025-04-21, 2026-02-12), 6 `false_positive`, 3 `near_miss` (2023-12-11, 2024-03-30, 2025-11-25), 1 `unknown` (2026-01-28). Labels non exhaustifs (les negatifs sont tous des detections du modele ; 2026-02-12 est le seul ajoute de memoire).
+
+Reponses du proprietaire du 2026-10-26 (heures locales Europe/Paris converties en UTC naif) : crue du 30/11 au 01/12/2023 vers 23:00-23:30 CET => `2023-11-30T22:15` +/- 0.5 h (ancienne cle 2023-12-01T06:00) ; 2023-12-11 "presque mais non" => `near_miss` (etait `flooded`) ; 2024-02-26 a 12:00 CET => 11:00 UTC +/- 1 h ; avril 2025 le 21/04 vers 03:00-04:00 CEST => `2025-04-21T01:30` +/- 1 h (ancienne cle 2025-04-23T16:00, fausse) ; 12/02/2026 en fin d'apres-midi => `2026-02-12T16:00` +/- 2 h, hauteur inconnue (severite 3 par defaut). Champs optionnels de `EpisodeLabel` : `peak_time_precision_hours` (+/- h ; 12 = precision au jour des labels jamais revus) et `statements` (date, source, texte, heure locale declaree). L'evaluation rattache un pic avec minutes a la ligne de son heure (`EvalDataset.hour_index`). En prod, les ids d'episodes peuvent differer de `legacy_db_id` : retrouver l'episode par sa date (`GET /api/episodes`).
 
 En base, l'issue est un champ structure (`outcome`, `observed_at`, `water_height_cm`, `outcome_source`) ; les anciens prefixes `[CONFIRMED: ...]` dans `notes` sont migres au demarrage.
 
@@ -350,29 +356,32 @@ Replay horaire causal (points <= t uniquement) de v3.4 (via `compute_risk`) et d
 Definitions (`contingency.py`, `hourly.py`) :
 - Alerte = suite d'heures consecutives avec score >= seuil. Elle detecte une crue si elle demarre entre pic - 72 h et pic + 6 h (ou est deja en cours a l'ouverture de la fenetre).
 - POD = detections / crues ; FAR brut = (negatives labellisees + non labellisees) / alertes jugees ; FAR labellise = negatives labellisees seulement ; CSI = detections / (detections + manques + fausses alertes) ; avance = pic - debut d'alerte.
-- AUC horaire : cible "crue dans les 24 h" (125 heures positives, 28 170 negatives).
+- AUC horaire : cible "crue dans les 24 h" (123 heures positives, 28 844 negatives, labels v2).
+- Avance mesuree contre les pics a l'heure pres du proprietaire (sauf 2023-03-11, au jour) : une avance negative = alerte apres l'inondation au moulin.
 
 Interface d'un modele candidat : `name`, `score(row: FeatureRow) -> float | None`, optionnellement `kind` (`score` | `probability`), `thresholds`, `reset()`. Voir la docstring de `scripts/eval/__init__.py`.
 
-Resultats (2022-11-01 a 2026-10-25, 5 crues, alertes non fusionnees, phase maree a +6 h ; reference v3.3 a phase 0 h : 241 alertes orange, 57 fusionnees, CSI 0.09, AUC 0.952) :
+Resultats (2022-11-01 a 2026-10-25, labels v2 du 2026-10-26 jusqu'au 2026-02-28 : 5 crues, 9 negatives labellisees, alertes non fusionnees, phase maree a +6 h ; AUC [IC 90% bootstrap par blocs] ; reference v3.3 a phase 0 h avec les labels v1 : 241 alertes orange, 57 fusionnees, CSI 0.09, AUC 0.952) :
 
 | Modele | Protocole | Niveau | Crues | Alertes | FA brutes (lab.+non lab.) | FAR brut / lab. | CSI | Avance med./min (h) | Alertes/an | AUC |
 |--------|-----------|--------|-------|---------|------|------|-----|------|------|-----|
-| v3.4 | in-sample (~45 constantes) | orange | 5/5 | 154 | 140 (18+122) | 97% / 78% | 0.03 | 25 / 7 | 44.9 | 0.942 [0.86-0.99] |
-| v3.4 | in-sample | rouge | 5/5 | 79 | 61 (11+50) | 92% / 69% | 0.08 | 20 / 1 | 23.6 | |
-| pessac_level | sans label | orange | 4/5 | 20 | 16 (3+13) | 80% / 43% | 0.19 | 37 / -2 | 5.8 | 0.894 [0.78-0.97] |
-| pessac_level | sans label | rouge | 3/5 | 9 | | 67% / 25% | 0.27 | 3 / -4 | 3.0 | |
-| rain_72h | sans label | orange | 1/5 | 1 | | | 0.20 | | | 0.912 |
-| v3.4 + gate remous | sans label, 0 param. | orange | 4/5 | 81 | 71 (13+58) | 95% / 76% | 0.05 | 46 / 20 | 25.4 | 0.938 [0.85-0.99] |
-| v3.4 + gate remous | sans label | rouge | 4/5 | 66 | | | 0.07 | 43 / 11 | | |
-| bw_rule_api_cv | LOEO bloque, 2 param. | orange | 3/5 | 8 | 5 (1+4) | 62% / 25% | 0.30 | 12 / 4 | 2.5 | 0.928 [0.86-0.98] |
-| lr_gr4h_haval_cv | LOEO bloque, 3 param. | orange | 4/5 | 15 | 10 (2+8) | 71% / 33% | 0.27 | 3 / -2 | 4.0 | 0.909 [0.81-0.98] |
+| v3.4 | in-sample (~45 constantes) | orange | 5/5 | 174 | 165 (24+141) | 97% / 83% | 0.03 | 24 / 7 | 44.9 | 0.938 [0.87-0.99] |
+| v3.4 | in-sample | rouge | 5/5 | 94 | 87 (21+66) | 95% / 81% | 0.05 | 18 / 1 | 23.6 | |
+| pessac_level | sans label | orange | 4/5 | 23 | 19 (4+15) | 83% / 50% | 0.17 | 2 / -3 | 5.8 | 0.847 [0.78-0.91] |
+| pessac_level | sans label | rouge | 2/5 | 12 | 10 (2+8) | 83% / 50% | 0.13 | 18 / -2 | 3.0 | |
+| rain_72h | sans label | orange | 1/5 | 1 | 0 | 0% / 0% | 0.20 | 8 / 8 | 0.3 | 0.924 [0.87-0.97] |
+| v3.4 + gate remous | sans label, 0 param. | orange | 4/5 | 101 | 96 (19+77) | 96% / 83% | 0.04 | 17 / 12 | 25.4 | 0.924 [0.86-0.98] |
+| v3.4 + gate remous | sans label | rouge | 4/5 | 78 | 72 (18+54) | 95% / 82% | 0.05 | 12 / 3 | 19.6 | |
+| bw_rule_api_cv | LOEO bloque, 2 param. | orange | 2/5 | 10 | 8 (2+6) | 80% / 50% | 0.15 | 1 / -3 | 2.5 | 0.885 [0.85-0.92] |
+| lr_gr4h_haval_cv | LOEO bloque, 3 param. | orange | 3/5 | 13 | 10 (4+6) | 77% / 57% | 0.20 | 10 / -6 | 3.3 | 0.894 [0.82-0.97] |
 
-Alertes fusionnees a 12 h (orange) : v3.4 44 alertes / CSI 0.12 / 11.8 par an, POD 5/5 (rouge : 22 / CSI 0.23) ; v3.4 + gate remous 19 / CSI 0.20 / 5.0 par an, POD 4/5 ; pessac_level 13 / CSI 0.29 ; bw_rule_api_cv 8 / CSI 0.30 ; lr_gr4h_haval_cv 13 / CSI 0.29.
+Alertes fusionnees a 12 h (orange) : v3.4 45 alertes / CSI 0.11 / 11.8 par an, POD 5/5 (rouge : 25 / CSI 0.20 / 6.3 par an) ; v3.4 + gate remous 20 / CSI 0.19 / 5.0 par an, POD 4/5 ; pessac_level 15 / CSI 0.25 ; bw_rule_api_cv 10 / CSI 0.15 ; lr_gr4h_haval_cv 12 / CSI 0.21.
 
-Precautions : 5 crues (une crue = 20 points de POD, IC 95% de 3/5 = 15-95%, aucun ecart hors echantillon significatif) ; labels non exhaustifs (FAR brut pessimiste) ; v3.4 est in-sample (constantes v3.2) donc optimiste. v3.3 avait ete calibre avec la phase non decalee (PM embouchure ~ BM a Libourne), qui compensait l'oscillation tidale de Pessac (PM a +7 h) : a +6 h sans gate, les alertes orange passent de 241 a 411 (122 avec `--no-tide`) ; le gate maree les ramene a 154. Le gate coute de l'avance (min 11 -> 7 h, mediane 63 -> 25 h). 2023-03-11 est une crue par infiltration (colmatee depuis).
+Avance par crue contre les pics precis (v3.4 orange / rouge, h) : 2023-03-11 7 / 1 (pic au jour, +/- 12 h), 2023-11-30 13 / 12, 2024-02-26 24 / 19, 2025-04-21 26 / 18, 2026-02-12 53 / 51.
 
-Periodes d'alerte v3.3 non labellisees a faire annoter : 2023-11-02 -> 11-06, 2023-11-09 -> 11-15, 2024-01-18 -> 01-19, 2024-02-10 -> 02-13, 2024-03-02 -> 03-04, 2024-05-14 -> 05-16, 2024-05-20 -> 05-23, 2024-11-21 -> 11-22, 2025-01-27 -> 01-29 (liste complete : `unlabelled_alerts.csv`).
+Precautions : 5 crues (une crue = 20 points de POD, IC 95% de 4/5 = 28-99%, aucun ecart hors echantillon significatif) ; labels non exhaustifs (FAR brut pessimiste) ; v3.4 est in-sample (constantes v3.2, calees avec les anciens labels dont 2023-12-11 en crue) donc optimiste. Le passage aux labels v2 change surtout les avances (pics a l'heure) et les modeles a seuil ajuste (LOEO) : bw_rule_api_cv tombe de 3/5 a 2/5, pessac_level de 37 h a 2 h d'avance mediane. v3.3 avait ete calibre avec la phase non decalee (PM embouchure ~ BM a Libourne), qui compensait l'oscillation tidale de Pessac (PM a +7 h) : a +6 h sans gate, les alertes orange passaient de 241 a 411 (122 avec `--no-tide`), le gate maree les ramenait a 154 (labels v1, periode jugee jusqu'au 2026-01-31). Le gate coute de l'avance (labels v1 : min 11 -> 7 h, mediane 63 -> 25 h). 2023-03-11 est une crue par infiltration (colmatee depuis).
+
+Periodes d'alerte v3.4 orange non labellisees (fusion 12 h, >= 10 h) a faire annoter : 2023-11-02 -> 11-06 (Ciaran), 2023-11-09 -> 11-18, 2024-01-18 -> 01-19, 2024-02-12 -> 02-13, 2024-03-02 -> 03-04, 2024-03-08 -> 03-13, 2024-05-02 -> 05-03, 2024-05-14 -> 05-15, 2024-05-21 -> 05-22, 2024-11-21 -> 11-22, 2025-01-28 -> 01-29, 2025-05-19 -> 05-20, 2026-01-30 -> 02-08 (liste complete : `unlabelled_alerts.csv`).
 
 ### Candidat v4-alpha (`app/services/risk_v4.py`, pre-enregistre le 2026-10-26)
 
@@ -380,21 +389,49 @@ Score = max(min(remous, ruissellement), debordement direct [, nappe]), chaque me
 
 | Modele | Protocole | Niveau | Crues | Alertes | FA brutes (lab.+non lab.) | FAR brut / lab. | CSI | Avance med./min (h) | Alertes/an | AUC |
 |--------|-----------|--------|-------|---------|------|------|-----|------|------|-----|
-| v4a_joint (Eyraud) | pre-enregistre, 0 param. | orange | 4/5 | 9 | 4 (1+3) | 50% / 20% | 0.44 | 37 / -2 | 3.3 | 0.912 [0.80-0.97] |
-| v4a_joint | pre-enregistre | rouge | 3/5 | 6 | 3 (0+3) | 50% / 0% | 0.38 | -4 / -5 | 2.5 | |
-| v4a_joint_zc (Z_c) | pre-enregistre | orange | 4/5 | 9 | 4 (1+3) | 50% / 20% | 0.44 | 36 / 2 | 3.3 | 0.911 |
-| v4a_caudeau | pre-enregistre | orange | 4/5 | 10 | 6 (3+3) | 60% / 43% | 0.36 | 32 / -2 | 3.0 | 0.869 |
-| v4a_gr4h | pre-enregistre | orange | 1/5 | 2 | 1 (0+1) | 50% / 0% | 0.17 | 68 / 68 | 1.3 | 0.897 |
-| v4a_glofas | pre-enregistre | orange | 2/5 | 10 | 8 (0+8) | 80% / 0% | 0.15 | 38 / 36 | 3.3 | 0.879 |
-| v4a_joint+gw (nappe) | pre-enregistre | orange | 4/5 | 19 | 15 (4+11) | 79% / 50% | 0.20 | 37 / 0 | 4.8 | 0.834 |
-| bw_rule_eyraud_cv | LOEO bloque, 2 param. | orange | 3/5 | 7 | 4 (0+4) | 57% / 0% | 0.33 | 69 / 12 | 2.3 | 0.902 |
-| lr_eyraud_haval_cv | LOEO bloque, 3 param. | orange | 5/5 | 15 | 9 (3+6) | 64% / 38% | 0.36 | 15 / -1 | 4.8 | 0.835 [0.56-0.97] |
+| v4a_joint (Eyraud) | pre-enregistre, 0 param. | orange | 4/5 | 13 | 9 (3+6) | 69% / 43% | 0.29 | 2 / -3 | 3.3 | 0.883 [0.81-0.94] |
+| v4a_joint | pre-enregistre | rouge | 2/5 | 10 | 7 (1+6) | 78% / 33% | 0.17 | 18 / -2 | 2.5 | |
+| v4a_joint_zc (Z_c) | pre-enregistre | orange | 4/5 | 13 | 9 (3+6) | 69% / 43% | 0.29 | 2 / -1 | 3.3 | 0.886 |
+| v4a_caudeau | pre-enregistre | orange | 4/5 | 12 | 8 (4+4) | 67% / 50% | 0.31 | -2 / -6 | 3.0 | 0.807 |
+| v4a_gr4h | pre-enregistre | orange | 2/5 | 5 | 3 (0+3) | 60% / 0% | 0.25 | 5 / 5 | 1.3 | 0.877 |
+| v4a_glofas | pre-enregistre | orange | 1/5 | 13 | 12 (1+11) | 92% / 50% | 0.06 | 72 / 72 | 3.3 | 0.802 |
+| v4a_joint+gw (nappe) | pre-enregistre | orange | 4/5 | 19 | 15 (4+11) | 79% / 50% | 0.20 | 2 / -2 | 4.8 | 0.761 |
+| bw_rule_eyraud_cv | LOEO bloque, 2 param. | orange | 2/5 | 4 | 1 (0+1) | 33% / 0% | 0.33 | 23 / 6 | 1.0 | 0.881 |
+| lr_eyraud_haval_cv | LOEO bloque, 3 param. | orange | 5/5 | 16 | 10 (4+6) | 67% / 44% | 0.33 | 14 / 0 | 4.0 | 0.809 [0.59-0.98] |
 
-Fusion a 12 h : v4a_joint 9 alertes orange / CSI 0.44 / 2.8 par an (rouge 5 / CSI 0.43). Ablation sans debordement : identique en orange (le debordement n'atteint l'orange qu'en 2026-02, hors periode labellisee). Eyraud sans latence (borne optimiste, fusion 12 h) : 8 alertes orange, 0 FA labellisee, AUC 0.935.
+Fusion a 12 h : v4a_joint 11 alertes orange / CSI 0.33 / 2.8 par an (rouge 8 / CSI 0.18). Ablation sans debordement : 12 alertes non fusionnees au lieu de 13, memes crues detectees. Eyraud sans latence (borne optimiste, fusion 12 h) : 11 alertes orange, 2 FA labellisees, AUC 0.920.
 
-Lecture par episode (v4a_joint) : rate 2023-03-11 (infiltration, H_aval 2.8 m, alerte le 12/03 a +16 h, comptee non labellisee) ; 2024-02-26 detectee 2 h apres le pic labellise (precision au jour) ; 2024-03-30 (near miss) sans alerte, Eyraud 20.5 m3/s mais remous bas (3.1 m) ; 2024-05-09 sans alerte, remous 5.4 m mais Eyraud 10 m3/s ; 2025-01-12 sans alerte ; seule FA labellisee = 2025-11-25 (near miss "haut", alerte orange de 7 h) ; 3 alertes non labellisees, toutes dans les periodes a annoter (2023-03-12, 2023-11-04 -> 11-06 Ciaran, 2023-11-12). 2026-02 : joint 98 des le 10/02 21 h (Eyraud 31 m3/s le 12/02 avec Pessac 6-6.6 m) puis debordement 100 (Pessac 7.85 m le 14/02 10 h) : les deux mecanismes, seule une heure d'inondation labellisee les departagera. Avril 2025 : pluie 19-20/04, pic Eyraud 31.1 m3/s le 21/04 00 h UTC, Pessac max 4.79 m le 22/04 14 h, Eyraud 2.5 m3/s a l'heure labellisee (23/04 16 h) : le pic au moulin est plus probablement le 21-22/04 (label non modifie, a confirmer).
+Lecture par episode (v4a_joint, pics precis) : rate 2023-03-11 (infiltration, H_aval 2.8 m) ; 2023-11-30 et 2024-02-26 detectees 2 et 3 h APRES l'inondation (le terme remous, Pessac encore a 3.5-3.7 m, limite le min ; Eyraud publie 7 h plus tard) ; 2025-04-21 6 h d'avance ; 2026-02-12 43 h (joint 98 des le 10/02 21 h). Labellisees sans alerte : 2024-03-30, 2024-05-09, 2025-01-12 ; FA labellisees : 2023-12-11 (rouge 69 h avant le pic), 2025-11-25 (orange 6 h apres). 2026-02 : inondation le 12/02 16 h UTC, au pic de l'Eyraud (31 m3/s) avec Pessac 6.53 m (9.86 m NGF, 2.1 m sous le sol du moulin) ; le debordement 100 (Pessac 7.85 m le 14/02 10 h) arrive 42 h apres : la crue de 2026-02 est une crue de ruissellement, pas de debordement. Avril 2025 : inondation le 21/04 01:30 UTC, pic de l'Eyraud 31.1 m3/s le 21/04 00 h, Pessac 4.41 m (max 4.79 m le 22/04 14 h).
 
-Precautions v4 : 5 crues (IC 95% de 4/5 = 28-99%, l'ecart avec v3.4 n'est pas significatif) ; la structure (remous ET ruissellement) et le choix de l'Eyraud viennent d'analyses faites sur ces memes 14 episodes (biais de selection : la Caudeau, 2e analogue, fait moins bien) ; seuils a priori mais pas hors echantillon au sens strict ; debordement non teste par les labels.
+Precautions v4 : 5 crues (IC 95% de 4/5 = 28-99%, l'ecart avec v3.4 n'est pas significatif) ; la structure (remous ET ruissellement) et le choix de l'Eyraud viennent d'analyses faites sur les labels v1 (biais de selection : la Caudeau, 2e analogue, fait moins bien) ; seuils a priori mais pas hors echantillon au sens strict. Avec les pics a l'heure, v4a_joint orange est en retard sur 2 crues sur 4 : la structure ET est contredite par la physique et par les donnees (ci-dessous).
+
+### Budget d'alertes (`scripts/eval/budget.py`)
+
+Le proprietaire accepte ~5-10 alertes par an (fusion 12 h) et prefere les fausses alertes aux manques. Replay horaire, 3.98 ans ; alertes ntfy = montees simulees du notifier vers le niveau declencheur (`simulate_notifier`, miroir de `notifier.level_event`), avec `NOTIFY_DOWNGRADE_HOLD_HOURS` 3 h (actuel) ou 12 h. Choisir la meilleure ligne sur 5 crues est in-sample.
+
+| Point de fonctionnement | Alertes/an (fusion 12 h) | ntfy/an (hold 3 h / 12 h) | POD [IC 95%] | FA lab. / brutes | FAR lab. | Avance med./min (h) | 2023-03-11 / 11-30 / 2024-02-26 / 2025-04-21 / 2026-02-12 |
+|---|---|---|---|---|---|---|---|
+| v3.4 >= 35 (orange, actuel) | 11.8 | 33.4 / 11.8 | 5/5 [48-100] | 7 / 39 | 58% | 24 / 7 | 7 / 13 / 24 / 26 / 53 |
+| v3.4 >= 45 | 7.8 | 19.3 / 7.8 | 5/5 [48-100] | 7 / 26 | 58% | 19 / 5 | 5 / 13 / 19 / 22 / 51 |
+| v3.4 >= 55 (rouge) | 6.3 | 16.3 / 6.3 | 5/5 [48-100] | 6 / 20 | 55% | 18 / 1 | 1 / 12 / 19 / 18 / 51 |
+| v3.4 >= 65 | 5.8 | 12.8 / 5.8 | 5/5 [48-100] | 8 / 18 | 62% | 18 / 0 | 0 / 11 / 18 / 18 / 51 |
+| v3.4 >= 75 | 4.3 | 10.0 / 4.3 | 4/5 [28-99] | 5 / 13 | 56% | 15 / 3 | - / 3 / 16 / 14 / 50 |
+| 3.4-gate >= 35 (shadow) | 5.0 | 18.8 / 5.0 | 4/5 [28-99] | 6 / 16 | 60% | 17 / 12 | - / 12 / 19 / 16 / 53 |
+| 3.4-gate >= 55 | 4.5 | 12.6 / 4.5 | 4/5 [28-99] | 3 / 14 | 43% | 12 / 3 | - / 3 / 14 / 10 / 51 |
+| v4a_joint >= 15 (jaune) | 4.0 | 4.0 / 4.0 | 4/5 [28-99] | 5 / 12 | 56% | 14 / 10 | - / 13 / 15 / 10 / 45 |
+| v4a_joint >= 35 | 2.8 | 3.0 / 2.8 | 4/5 [28-99] | 3 / 7 | 43% | 2 / -3 | - / -2 / -3 / 6 / 43 |
+| v4a_joint >= 55 | 2.0 | 2.5 / 2.0 | 2/5 [5-85] | 1 / 6 | 33% | 18 / -2 | - / - / - / -2 / 38 |
+| v3.4 >= 55 OU v4a >= 35 | 6.3 | 14.1 / 6.3 | 5/5 [48-100] | 6 / 20 | 55% | 18 / 1 | 1 / 12 / 19 / 18 / 51 |
+| v3.4 >= 65 OU v4a >= 35 | 5.5 | 11.3 / 5.5 | 5/5 [48-100] | 8 / 17 | 62% | 18 / 0 | 0 / 11 / 18 / 18 / 51 |
+| v3.4 >= 35 ET v4a >= 15 | 4.0 | 6.3 / 4.0 | 4/5 [28-99] | 5 / 12 | 56% | 14 / 10 | - / 13 / 15 / 10 / 45 |
+
+Lecture : les alertes v4a orange sont incluses dans celles de v3.4 rouge et plus tardives (les combinaisons OU n'apportent rien) ; avec le hold de 3 h, les oscillations du score autour du seuil (maree) multiplient les messages par 2.5-3. Recommandation : declencher ntfy sur le score v3.4 temps reel stocke a partir du rouge (>= 55), `NOTIFY_DOWNGRADE_HOLD_HOURS=12`, `NOTIFY_YELLOW=false` : ~6.3 alertes/an, 5/5 crues, avance >= 12 h sur les 4 crues hors infiltration. Necessite un reglage `NOTIFY_MIN_LEVEL` (orange par defaut) lu par `_notifiable` et par `forecast_event` (seuil `_ORANGE` code en dur), non implemente ; a defaut, hold 12 h seul : 11.8 alertes/an. Le heads-up de prevision n'est pas evalue (pas d'archive de previsions sur la periode).
+
+### Controle physique du remous
+
+Profil RGE ALTI (API altimetrie IGN, sans cle, min de 5 points sur +/- 20 m tous les 25 m) le long de la BD TOPAGE "la Lidoire" : moulin a 5.83 km de la confluence (4 m de la ligne), sol ~12.0 m NGF ; confluence 2.4 m NGF ; deux ressauts (seuils ou ouvrages a verifier) a 3.1 km (6.5 -> 9.0 m) et 5.3 km (10.5-11.0 -> 11.9 m, aval du moulin). Approximation plan d'eau horizontal, niveau Dordogne = Pessac (+3.33 m NGF, borne haute) ou Z_c : au pic de chaque crue, Pessac 2.73-4.41 m (6.1-7.7 m NGF) pour 2023-03 -> 2025-04 => remous jusqu'a ~3.1 km seulement, 4.3-5.9 m sous le sol du moulin ; 2026-02-12 : 6.53 m (9.86 m NGF) => 3.1-4.2 km, 2.1 m sous le sol ; record 2026-02-14 (7.88 m, 11.21 m NGF) => 5.3 km (pied du seuil aval du moulin), encore 0.8 m sous le sol. Le remous seul n'atteint le moulin qu'a Pessac >= ~8.7 m (jamais observe). Chronologie : l'inondation tombe au pic de l'Eyraud (-1.5 a +5 h, median +2 h) et 25-42 h AVANT le pic de Pessac, encore sous l'orange (3.8 m) pour 3 crues sur 5.
+
+Apport de Pessac (`scripts/eval/added_value.py`, regressions L2 emboitees, LOEO bloque) : Eyraud + pluie 72 h AUC 0.902, pAUC (FPR <= 5%) 0.536 ; + H_aval 0.902 / 0.510 (IC 90% de la difference d'AUC -0.003 a +0.001) ; + Z_c, + API lente, + piezo : idem. Sans 2023-03-11 : 0.973 -> 0.972, pAUC 0.661 -> 0.629. Sans Eyraud, H_aval aide (pluie 72 h 0.908 -> 0.927) : Pessac est un indicateur d'humidite regionale, redondant avec le debit de l'Eyraud. Par episode, le max de l'Eyraud (sans latence) separe seul les crues (>= 25.9 m3/s) des negatives labellisees (<= 25.3 m3/s, 2023-12-11), marge tres faible ; H_aval ne les separe pas (2024-05-09 a 5.4 m sans crue). Consequence pour v4 : un mecanisme ruissellement (debit Lidoire/Eyraud, pluie observee et prevue pour l'avance) en tete, Pessac au plus comme modulateur aux tres hautes eaux (>= ~5.7 m, noyage du seuil a 3.1 km) ; pas de ET remous / ruissellement. A pre-enregistrer avant toute metrique (v4-beta).
 
 `app/services/models_experimental.py` (gate remous, regles backwater, regression logistique, GR4H, wrapper v4-alpha) n'est importe par aucun code de production, `risk_v4.py` non plus (seul le wrapper l'importe) : un test (`test_models_experimental_not_imported_by_production`) l'impose.
 
@@ -476,4 +513,6 @@ Installation existante : conserver l'ancien mot de passe Postgres et l'ancien je
 - Regression logistique / GR4H seulement quand davantage d'episodes seront labellises.
 - Archiver aussi le shadow `3.4-gate` dans `forecast_runs` (une ligne par version) et ajouter les scores evenementiels (POD/FAR par episode) a `forecast-skill`.
 - Vigilance officielle (Vigicrues DO5, Meteo-France pluie-inondation/crues >= orange) comme feature candidate, une fois la serie `vigilance` accumulee ; observations terrain comme labels supplementaires.
-- v4-alpha en shadow `4.0a` (variante `v4a_joint`) des que les collecteurs Q Eyraud temps reel existent ; labelliser 2026-02 avec l'heure et confirmer l'heure d'avril 2025.
+- v4-alpha en shadow `4.0a` (variante `v4a_joint`) des que les collecteurs Q Eyraud temps reel existent (fait : labels 2026-02 et avril 2025 a l'heure, 2026-10-26). Avec ces pics, v4a orange est en retard : pre-enregistrer un v4-beta centre ruissellement (voir Controle physique du remous).
+- Notifier : reglage `NOTIFY_MIN_LEVEL` (orange | red) pour n'alerter qu'au rouge v3.4 avec `NOTIFY_DOWNGRADE_HOLD_HOURS=12` (budget d'alertes ci-dessus).
+- Verifier sur place les deux ressauts du profil de la Lidoire (3.1 km et 5.3 km de la confluence) et le niveau du plancher du moulin.
