@@ -515,7 +515,9 @@ class UnifiedTimelineData(BaseModel):
     """Unified timeline data combining river levels and rainfall."""
     start: UtcDatetime
     end: UtcDatetime
+    # Served resolution: coarser than requested on long ranges (point cap)
     resolution: str
+    requested_resolution: Optional[str] = None
     series: dict[str, TimelineSeries] = {}  # key: source_id
 
 

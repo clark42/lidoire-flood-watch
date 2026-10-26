@@ -302,7 +302,7 @@ async def test_unified_does_not_block_on_slow_backfill(app_client, monkeypatch):
     monkeypatch.setattr(tide_mod, "fetch_and_store_tides_range", slow_fetch)
     monkeypatch.setattr(timeline, "query_coverage", _Counter({}))
 
-    async def fake_tides(start, end, port, resolution):
+    async def fake_tides(start, end, port, resolution, agg_fn="mean"):
         return [{"timestamp": datetime(2024, 2, 15, 10), "value": 3.2},
                 {"timestamp": datetime(2024, 2, 15, 11), "value": None}]
 
@@ -349,4 +349,7 @@ async def test_unified_rainfall_coarse_resolution_and_cumul(app_client, monkeypa
     assert series["rainfall:netatmo-lidoire:Flaujagues"]["unit"] == "mm"
     assert (("netatmo-lidoire",), "6h", "sum") in seen
     assert (("netatmo-lidoire",), "1h", "sum") in seen  # cumul from hourly totals
-    assert [p["value"] for p in series["rainfall_cumul"]["data"]] == [1.0, 2.0, 3.0]
+    # Running total at the end of each 6 h window (06:00 closes its window)
+    cumul = series["rainfall_cumul"]["data"]
+    assert [p["value"] for p in cumul] == [1.0, 3.0]
+    assert [p["timestamp"] for p in cumul] == ["2024-02-15T06:00:00Z", "2024-02-15T12:00:00Z"]

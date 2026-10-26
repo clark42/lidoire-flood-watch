@@ -10,6 +10,7 @@ analyzer behind every /api/episodes analysis route):
   without tide data the coefficient is unknown (None), never invented
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -25,7 +26,12 @@ from app.models.schemas import (
     TideType,
     RainfallObservation,
 )
-from app.services.collectors.hubeau import fetch_episode_context, fetch_historical_data
+from app.services.cache import TTLCache
+from app.services.collectors.hubeau import (
+    MAX_CONCURRENT_REQUESTS,
+    fetch_episode_context,
+    fetch_historical_data,
+)
 from app.services.risk_core import to_utc_naive
 
 logger = logging.getLogger(__name__)
@@ -412,6 +418,11 @@ def _identify_flood_criteria(
     return criteria
 
 
+# Station extremes: whole days, cached (daily maxima of the past barely change)
+STATION_EXTREMES_TTL_S = 6 * 3600
+_station_extremes_cache = TTLCache(STATION_EXTREMES_TTL_S, max_entries=64)
+
+
 async def get_station_max_levels(
     start_date: datetime,
     end_date: datetime,
@@ -420,22 +431,29 @@ async def get_station_max_levels(
     Get maximum recorded levels for each station over a period.
 
     Useful for identifying extreme events and calibrating thresholds.
+    Daily maxima from Hub'Eau, stations fetched concurrently (at most
+    MAX_CONCURRENT_REQUESTS at a time); the result is cached per (start day,
+    end day) for STATION_EXTREMES_TTL_S. The caller bounds the period.
     """
     settings = get_settings()
+    key = (to_utc_naive(start_date).date(), to_utc_naive(end_date).date())
+    cached = _station_extremes_cache.get(key)
+    if cached is not None:
+        return cached
+
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+    async def _one(station: dict):
+        async with semaphore:
+            return station, await fetch_historical_data(
+                station["id"], start_date, end_date, granularity="daily_max",
+            )
+
     results = {}
-
-    for station in settings.hubeau_stations:
-        station_id = station["id"]
-        levels = await fetch_historical_data(
-            station_id,
-            start_date,
-            end_date,
-            granularity="daily_max",
-        )
-
+    for station, levels in await asyncio.gather(*(_one(s) for s in settings.hubeau_stations)):
         if levels:
             max_level = max(levels, key=lambda x: x.height_m)
-            results[station_id] = {
+            results[station["id"]] = {
                 "station_name": station["name"],
                 "river": station["river"],
                 "max_height_m": max_level.height_m,
@@ -443,6 +461,8 @@ async def get_station_max_levels(
                 "count": len(levels),
             }
 
+    if results:
+        _station_extremes_cache.set(key, results)
     return results
 
 

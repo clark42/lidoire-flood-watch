@@ -32,6 +32,7 @@ from app.services.episode_analyzer_v2 import (
 from app.services.backfill import run_full_backfill
 from app.services.episode_detector import run_episode_detection
 from app.services.labels import load_label_set, strip_legacy_prefixes
+from app.services.risk_core import to_utc_naive
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,9 @@ _backfill_status: dict = {
 }
 
 router = APIRouter()
+
+# Longest period of the public station-extremes GET (Hub'Eau daily maxima)
+STATION_EXTREMES_MAX_DAYS = 3660
 
 
 async def _with_status(episodes: list[FloodEpisode]) -> list[FloodEpisode]:
@@ -346,8 +350,20 @@ async def get_station_extremes(
     - Calibrating threshold values
     - Understanding historical ranges
 
+    The period must satisfy start < end and span at most
+    STATION_EXTREMES_MAX_DAYS (422 otherwise): it is a public GET that fans
+    out to Hub'Eau. Results are cached per day pair.
+
     Example: GET /api/episodes/station-extremes?start_date=2020-01-01&end_date=2024-12-31
     """
+    start_date, end_date = to_utc_naive(start_date), to_utc_naive(end_date)
+    if start_date >= end_date:
+        raise HTTPException(status_code=422, detail="start_date must be before end_date")
+    if (end_date - start_date).days > STATION_EXTREMES_MAX_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"period longer than {STATION_EXTREMES_MAX_DAYS} days",
+        )
     max_levels = await get_station_max_levels(start_date, end_date)
 
     return {

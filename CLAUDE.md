@@ -258,7 +258,7 @@ POST /api/episodes/analyze-v2?date=2024-02-15T14:00:00&severity=5
 # Comparer plusieurs episodes
 POST /api/episodes/compare?dates=2024-02-15T14:00&dates=2023-12-10T08:00
 
-# Niveaux max par station sur une periode
+# Niveaux max par station sur une periode (<= 3660 jours)
 GET /api/episodes/station-extremes?start_date=2020-01-01&end_date=2024-12-31
 
 # Backfill historique (tache asynchrone, suivi : GET /api/episodes/backfill/status)
@@ -354,7 +354,8 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 - Dates : tous les `datetime` des schemas Pydantic (`UtcDatetime`) sortent en ISO 8601 UTC avec `Z` (naifs = UTC en interne). Quelques payloads dict anciens restent naifs : le frontend les lit en UTC (`parseApiDate`) et affiche tout en Europe/Paris (`formatParis`). Vigicrues est en UTC (`+00:00`) et sur le meme zero que Hub'Eau.
 - Netatmo : `/api/realtime/basin-rainfall` expose `available`/`stations_count` (moyennes 0.0 = valeurs de remplissage si `available=false`) ; `/api/timeline/sources` marque les stations Netatmo `available=false` tant que Netatmo n'est pas autorise. La Timeline part par defaut sur Open-Meteo (Moulin) + Infoclimat.
 
-- `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`.
+- `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`. Sous-echantillonnage serveur : resolution servie = la plus fine >= la demandee gardant <= 3000 points par serie (`MAX_POINTS_PER_SERIES`, ex. 400 j en 15m -> 6h), renvoyee dans `resolution` (demandee dans `requested_resolution`) ; en 6h/12h/1d niveaux, maree et scores = max de la fenetre, pluie = somme, `rainfall_cumul` = total en fin de fenetre.
+- `/api/episodes/station-extremes` : 422 si `start_date >= end_date` ou periode > 3660 jours ; stations en parallele (4 max), cache 6 h par paire de jours.
 - `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives. `services.collectors` reste une declaration statique (compatibilite).
 - `/api/episodes/confirm/{id}` : `outcome` (`flooded`, `false_positive`, `near_miss`, `unknown`) ou ancien `was_flooded` ; remplace l'issue precedente.
 
