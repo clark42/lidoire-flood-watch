@@ -120,7 +120,7 @@ def source_specs() -> dict[str, dict]:
     primary_name = next(
         (s["name"] for s in settings.hubeau_stations if s["id"] == primary), primary,
     )
-    return {
+    specs = {
         "river_primary": {
             "label": f"Niveau {primary_name} (Hub'Eau)",
             "measurement": "river_level",
@@ -172,6 +172,11 @@ def source_specs() -> dict[str, dict]:
             "critical": True,
         },
     }
+    # Hydrological indicators (outside the model): informative, never critical
+    from app.services.indicators import status_specs as indicator_status_specs
+
+    specs.update(indicator_status_specs())
+    return specs
 
 
 def _freshness_entry(spec: dict, now: datetime, last: Optional[datetime], error: Optional[str]) -> dict:
