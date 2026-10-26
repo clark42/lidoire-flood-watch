@@ -96,7 +96,10 @@ def test_groundtruth_labels_route_reachable(client):
     resp = client.get("/api/episodes/labels")
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body["episodes"]) == 14
+    assert len(body["episodes"]) == 15
+    by_key = {e["key"]: e for e in body["episodes"]}
+    assert by_key["2023-11-30"]["peak_time_precision_hours"] == 0.5
+    assert by_key["2023-11-30"]["statements"][0]["date"] == "2026-10-26"
     assert body["exhaustive"] is False
     assert {"flooded", "false_positive", "near_miss", "unknown"} >= {
         e["outcome"] for e in body["episodes"]

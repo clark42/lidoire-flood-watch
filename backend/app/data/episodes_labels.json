@@ -1,31 +1,33 @@
 {
-  "version": 1,
-  "updated_at": "2026-10-25",
-  "description": "Reference ground truth for the annotated episodes at the Lidoire mill. Keyed by peak date (YYYY-MM-DD), not by the historical EP numbers, which are inconsistent across code and docstrings. Extracted from backend/validate_model.py, backend/analyze_episodes.py and the docstrings of backend/app/services/risk_v2.py.",
+  "version": 2,
+  "updated_at": "2026-10-26",
+  "description": "Reference ground truth for the annotated episodes at the Lidoire mill. Keyed by peak date (YYYY-MM-DD, UTC), not by the historical EP numbers, which are inconsistent across code and docstrings. Extracted from backend/validate_model.py, backend/analyze_episodes.py and the docstrings of backend/app/services/risk_v2.py, then revised on 2026-10-26 from the owner's answers (see each episode's statements).",
   "exhaustive": false,
   "period_start": "2022-11-01",
-  "period_end": "2026-01-31",
+  "period_end": "2026-02-28",
   "caveats": [
-    "Not exhaustive: every negative is a model detection (risk score or river threshold); floods the model missed were never labelled, so POD/miss rate cannot be computed from this set alone.",
-    "peak_time values are approximate (mostly 06:00 or 12:00, i.e. day-level precision) and naive; UTC is assumed, as in InfluxDB.",
-    "severity is a 1-5 field required for every episode: for floods it describes damage, for non-floods it is the estimated hazard level of the detection. Do not compare severities across outcomes.",
-    "outcome near_miss is an interpretation of the owner's notes ('bien monte', 'haut'); both scripts treated these as flood=False.",
-    "legacy_stored_score is the risk score stored at peak by an older model (validate_model.py 'old'), kept only for regression comparisons; it is not ground truth."
+    "Not exhaustive: every negative is a model detection (risk score or river threshold); floods the model missed were never labelled, so POD/miss rate cannot be computed from this set alone. The 2026-02-12 flood is the only label added from the owner's memory rather than from a detection.",
+    "peak_time is naive UTC, as in InfluxDB. The owner states times in Europe/Paris local time (CET = UTC+1 in winter, CEST = UTC+2 in summer); each statement keeps the local time as stated and peak_time holds the converted UTC value.",
+    "peak_time_precision_hours is the +/- half-width of the peak time uncertainty. Labels never revisited by the owner keep day-level precision (12 h): their 06:00 or 12:00 times are conventions, not observations.",
+    "severity is a 1-5 field required for every episode: for floods it describes damage, for non-floods it is the estimated hazard level of the detection. Do not compare severities across outcomes. The 2026-02-12 severity is a placeholder (not stated by the owner).",
+    "outcome near_miss of 2024-03-30 and 2025-11-25 is an interpretation of the owner's notes ('bien monte', 'haut'); the 2023-12-11 near_miss is the owner's own word ('c'etait presque mais non', 2026-10-26).",
+    "legacy_stored_score is the risk score stored at peak by an older model (validate_model.py 'old'), kept only for regression comparisons; it is not ground truth.",
+    "Production database ids may differ from legacy_db_id: find an episode by its date with GET /api/episodes before confirming it."
   ],
   "inconsistencies": [
-    "EP14 is 2023-12-01 (25 cm inside) in validate_model.py / analyze_episodes.py and in the risk_v2 momentum comment (5 rising, river=0.602), but risk_v2 v3.2 docstring and conjunction comment call 'EP14 April 23' (Pessac 0.62, Abzac 0.93, Coutras 0.87) the 2025-04-23 flood, which is id=1 in the scripts and 'episode avril 2025 (id=1)' in the v2.2 docstring.",
+    "EP14 is the 2023-11-30 night flood (25 cm inside) in validate_model.py / analyze_episodes.py and in the risk_v2 momentum comment (5 rising, river=0.602), but risk_v2 v3.2 docstring and conjunction comment call 'EP14 April 23' (Pessac 0.62, Abzac 0.93, Coutras 0.87) the April 2025 flood, which is id=1 in the scripts and 'episode avril 2025 (id=1)' in the v2.2 docstring. Resolved by date keys; the April 2025 flood is keyed 2025-04-21 since 2026-10-26.",
     "risk_v2 docstring says '5 confirmed floods, 9 false positives' but 2026-01-28 is noted 'en cours, pas encore inonde' (outcome not known when labelled) and two non-floods are near misses rather than false positives.",
-    "2024-02-26 water height: validate_model.py says '25cm eau', analyze_episodes.py says '20-25cm eau interieur moulin'.",
-    "2023-12-11 is described as a 'continuation' of December 2023, 10 days after the 2023-12-01 peak; it may be the same hydrological event counted twice.",
     "2023-03-11 flood was caused by infiltration (since sealed): the mechanism no longer applies, it should probably be excluded or weighted down in evaluation.",
     "CLAUDE.md and the detector default start at 2022-11-01 but the earliest labelled episode is 2023-01-18.",
     "calculate_risk_score_v2 docstring says weights were 'calibrated from Feb 2024 episode' while the module docstring says v3.0 was calibrated on all 14 episodes.",
-    "Non-flood episodes carry severities up to 4 (2026-01-28) and 3 (2025-11-25), higher than the 2023-03-11 and 2023-12-11 floods (3)."
+    "Non-flood episodes carry severities up to 4 (2026-01-28) and 3 (2025-11-25, 2023-12-11), as high as or higher than the 2023-03-11 flood (3).",
+    "Resolved 2026-10-26: 2023-12-11 was labelled flooded ('continuation decembre 2023'), the owner says it was a near miss; the December 2023 flood was keyed 2023-12-01T06:00 and the April 2025 flood 2025-04-23T16:00 (wrong day), both re-keyed to the owner's times; the 2024-02-26 height (25 vs 20-25 cm in the two scripts) is 20-25 cm."
   ],
   "episodes": [
     {
       "key": "2023-01-18",
       "peak_time": "2023-01-18T12:00:00",
+      "peak_time_precision_hours": 12,
       "outcome": "false_positive",
       "severity": 1,
       "water_height_cm": null,
@@ -33,77 +35,138 @@
       "notes": "pas inonde",
       "flags": [],
       "legacy_db_id": 13,
-      "legacy_refs": ["ID13"],
-      "legacy_stored_score": 60.5
+      "legacy_refs": [
+        "ID13"
+      ],
+      "legacy_stored_score": 60.5,
+      "statements": []
     },
     {
       "key": "2023-03-11",
       "peak_time": "2023-03-11T12:00:00",
+      "peak_time_precision_hours": 12,
       "outcome": "flooded",
       "severity": 3,
       "water_height_cm": null,
       "source": "owner (validate_model.py/analyze_episodes.py)",
       "notes": "Premiere inondation, infiltration (depuis colmate)",
-      "flags": ["mechanism_infiltration_since_sealed"],
+      "flags": [
+        "mechanism_infiltration_since_sealed"
+      ],
       "legacy_db_id": 12,
-      "legacy_refs": ["ID12"],
-      "legacy_stored_score": 46.9
+      "legacy_refs": [
+        "ID12"
+      ],
+      "legacy_stored_score": 46.9,
+      "statements": []
     },
     {
-      "key": "2023-12-01",
-      "peak_time": "2023-12-01T06:00:00",
+      "key": "2023-11-30",
+      "peak_time": "2023-11-30T22:15:00",
+      "peak_time_precision_hours": 0.5,
       "outcome": "flooded",
       "severity": 5,
       "water_height_cm": 25,
-      "source": "owner (validate_model.py/analyze_episodes.py)",
-      "notes": "Grosse inondation, 25 cm d'eau a l'interieur. risk_v2: Pessac 4.11 m, 5 stations en hausse, 18 mm de pluie.",
-      "flags": ["ep_number_conflict_ep14"],
+      "source": "owner (answers of 2026-10-26)",
+      "notes": "Grosse inondation, 25 cm d'eau a l'interieur, vers 23:00-23:30 (Paris) dans la nuit du 30/11 au 01/12/2023. risk_v2: Pessac 4.11 m, 5 stations en hausse, 18 mm de pluie.",
+      "flags": [
+        "ep_number_conflict_ep14",
+        "rekeyed_from_2023-12-01"
+      ],
       "legacy_db_id": 14,
-      "legacy_refs": ["ID14", "EP14 (scripts, risk_v2 momentum comment)"],
-      "legacy_stored_score": 90.0
+      "legacy_refs": [
+        "ID14",
+        "EP14 (scripts, risk_v2 momentum comment)",
+        "key 2023-12-01 (peak 06:00) before 2026-10-26"
+      ],
+      "legacy_stored_score": 90.0,
+      "statements": [
+        {
+          "date": "2026-10-26",
+          "source": "owner",
+          "text": "Inonde dans la nuit du 30/11 au 01/12/2023 vers 23:00-23:30, 25 cm a l'interieur.",
+          "local_time": "2023-11-30 23:00-23:30 Europe/Paris (CET, UTC+1)"
+        }
+      ]
     },
     {
       "key": "2023-12-11",
       "peak_time": "2023-12-11T12:00:00",
-      "outcome": "flooded",
+      "peak_time_precision_hours": 12,
+      "outcome": "near_miss",
       "severity": 3,
       "water_height_cm": null,
-      "source": "owner (validate_model.py/analyze_episodes.py)",
-      "notes": "Continuation decembre 2023",
-      "flags": ["possible_same_event_as_2023-12-01"],
+      "source": "owner (answers of 2026-10-26)",
+      "notes": "Continuation decembre 2023 ; proprietaire : 'c'etait presque mais non' (pas inonde).",
+      "flags": [
+        "possible_same_event_as_2023-11-30",
+        "outcome_changed_flooded_to_near_miss"
+      ],
       "legacy_db_id": 3,
-      "legacy_refs": ["ID3"],
-      "legacy_stored_score": 94.9
+      "legacy_refs": [
+        "ID3"
+      ],
+      "legacy_stored_score": 94.9,
+      "statements": [
+        {
+          "date": "2026-10-26",
+          "source": "owner",
+          "text": "c'etait presque mais non (issue precedente : flooded)",
+          "local_time": null
+        }
+      ]
     },
     {
       "key": "2024-02-26",
-      "peak_time": "2024-02-26T12:00:00",
+      "peak_time": "2024-02-26T11:00:00",
+      "peak_time_precision_hours": 1,
       "outcome": "flooded",
       "severity": 5,
       "water_height_cm": 25,
-      "source": "owner (validate_model.py/analyze_episodes.py)",
-      "notes": "20-25 cm d'eau a l'interieur du moulin",
-      "flags": ["water_height_range_20_25"],
+      "source": "owner (answers of 2026-10-26)",
+      "notes": "20-25 cm d'eau a l'interieur du moulin, vers 12:00 (Paris).",
+      "flags": [
+        "water_height_range_20_25"
+      ],
       "legacy_db_id": 2,
-      "legacy_refs": ["ID2", "Feb 2024 episode (calculate_risk_score_v2 docstring)"],
-      "legacy_stored_score": 70.5
+      "legacy_refs": [
+        "ID2",
+        "Feb 2024 episode (calculate_risk_score_v2 docstring)"
+      ],
+      "legacy_stored_score": 70.5,
+      "statements": [
+        {
+          "date": "2026-10-26",
+          "source": "owner",
+          "text": "Inonde a 12:00, 20-25 cm.",
+          "local_time": "2024-02-26 12:00 Europe/Paris (CET, UTC+1)"
+        }
+      ]
     },
     {
       "key": "2024-03-30",
       "peak_time": "2024-03-30T12:00:00",
+      "peak_time_precision_hours": 12,
       "outcome": "near_miss",
       "severity": 2,
       "water_height_cm": null,
       "source": "owner (validate_model.py/analyze_episodes.py)",
       "notes": "Ca a bien monte mais pas inonde. risk_v2: 5 stations en hausse, river=0.514, pas de pluie.",
-      "flags": ["outcome_interpreted_from_notes"],
+      "flags": [
+        "outcome_interpreted_from_notes"
+      ],
       "legacy_db_id": 4,
-      "legacy_refs": ["ID4", "EP4"],
-      "legacy_stored_score": 51.4
+      "legacy_refs": [
+        "ID4",
+        "EP4"
+      ],
+      "legacy_stored_score": 51.4,
+      "statements": []
     },
     {
       "key": "2024-05-09",
       "peak_time": "2024-05-09T06:00:00",
+      "peak_time_precision_hours": 12,
       "outcome": "false_positive",
       "severity": 1,
       "water_height_cm": null,
@@ -111,12 +174,17 @@
       "notes": "Pas inonde. risk_v2: Pessac 4.92 m (ROUGE), 0 station en hausse, 0 mm de pluie.",
       "flags": [],
       "legacy_db_id": 5,
-      "legacy_refs": ["ID5", "EP5"],
-      "legacy_stored_score": 60.6
+      "legacy_refs": [
+        "ID5",
+        "EP5"
+      ],
+      "legacy_stored_score": 60.6,
+      "statements": []
     },
     {
       "key": "2024-10-18",
       "peak_time": "2024-10-18T06:00:00",
+      "peak_time_precision_hours": 12,
       "outcome": "false_positive",
       "severity": 2,
       "water_height_cm": null,
@@ -124,12 +192,17 @@
       "notes": "Pas inonde. risk_v2: 6 stations en hausse, river=0.353.",
       "flags": [],
       "legacy_db_id": 6,
-      "legacy_refs": ["ID6", "EP6"],
-      "legacy_stored_score": 58.9
+      "legacy_refs": [
+        "ID6",
+        "EP6"
+      ],
+      "legacy_stored_score": 58.9,
+      "statements": []
     },
     {
       "key": "2024-11-27",
       "peak_time": "2024-11-27T06:00:00",
+      "peak_time_precision_hours": 12,
       "outcome": "false_positive",
       "severity": 1,
       "water_height_cm": null,
@@ -137,12 +210,16 @@
       "notes": "pas inonde",
       "flags": [],
       "legacy_db_id": 7,
-      "legacy_refs": ["ID7"],
-      "legacy_stored_score": 36.1
+      "legacy_refs": [
+        "ID7"
+      ],
+      "legacy_stored_score": 36.1,
+      "statements": []
     },
     {
       "key": "2024-12-11",
       "peak_time": "2024-12-11T06:00:00",
+      "peak_time_precision_hours": 12,
       "outcome": "false_positive",
       "severity": 1,
       "water_height_cm": null,
@@ -150,12 +227,16 @@
       "notes": "pas inonde",
       "flags": [],
       "legacy_db_id": 8,
-      "legacy_refs": ["ID8"],
-      "legacy_stored_score": 33.2
+      "legacy_refs": [
+        "ID8"
+      ],
+      "legacy_stored_score": 33.2,
+      "statements": []
     },
     {
       "key": "2025-01-12",
       "peak_time": "2025-01-12T06:00:00",
+      "peak_time_precision_hours": 12,
       "outcome": "false_positive",
       "severity": 1,
       "water_height_cm": null,
@@ -163,47 +244,107 @@
       "notes": "Pas inonde. Pessac ORANGE, 1 station en hausse (risk_v2).",
       "flags": [],
       "legacy_db_id": 9,
-      "legacy_refs": ["ID9", "EP9"],
-      "legacy_stored_score": 48.6
+      "legacy_refs": [
+        "ID9",
+        "EP9"
+      ],
+      "legacy_stored_score": 48.6,
+      "statements": []
     },
     {
-      "key": "2025-04-23",
-      "peak_time": "2025-04-23T16:00:00",
+      "key": "2025-04-21",
+      "peak_time": "2025-04-21T01:30:00",
+      "peak_time_precision_hours": 1,
       "outcome": "flooded",
       "severity": 4,
       "water_height_cm": null,
-      "source": "owner (validate_model.py/analyze_episodes.py)",
-      "notes": "Inonde. risk_v2 v3.2: Pessac 0.62, Abzac 0.93, Coutras 0.87 (3 au-dessus d'orange, 2 encore en hausse), etat 'post-pic toujours inonde'.",
-      "flags": ["ep_number_conflict_ep14"],
+      "source": "owner (answers of 2026-10-26)",
+      "notes": "Inonde le 21/04/2025 vers 03:00-04:00 (Paris). L'ancienne cle 2025-04-23T16:00 etait fausse (etat 'post-pic toujours inonde' au 23/04). risk_v2 v3.2 (23/04) : Pessac 0.62, Abzac 0.93, Coutras 0.87 (3 au-dessus d'orange, 2 encore en hausse).",
+      "flags": [
+        "ep_number_conflict_ep14",
+        "rekeyed_from_2025-04-23"
+      ],
       "legacy_db_id": 1,
-      "legacy_refs": ["ID1", "episode avril 2025 (id=1) (risk_v2 v2.2 docstring)", "EP14 April 23 (risk_v2 v3.2 docstring, mislabelled)"],
-      "legacy_stored_score": 51.6
+      "legacy_refs": [
+        "ID1",
+        "episode avril 2025 (id=1) (risk_v2 v2.2 docstring)",
+        "EP14 April 23 (risk_v2 v3.2 docstring, mislabelled)",
+        "key 2025-04-23 (peak 16:00) before 2026-10-26"
+      ],
+      "legacy_stored_score": 51.6,
+      "statements": [
+        {
+          "date": "2026-10-26",
+          "source": "owner",
+          "text": "Inonde le 21/04/2025 vers 03:00-04:00 (pas le 23/04).",
+          "local_time": "2025-04-21 03:00-04:00 Europe/Paris (CEST, UTC+2)"
+        }
+      ]
     },
     {
       "key": "2025-11-25",
       "peak_time": "2025-11-25T06:00:00",
+      "peak_time_precision_hours": 12,
       "outcome": "near_miss",
       "severity": 3,
       "water_height_cm": null,
       "source": "owner (validate_model.py/analyze_episodes.py)",
       "notes": "Pas inonde, haut",
-      "flags": ["outcome_interpreted_from_notes"],
+      "flags": [
+        "outcome_interpreted_from_notes"
+      ],
       "legacy_db_id": 10,
-      "legacy_refs": ["ID10"],
-      "legacy_stored_score": 83.5
+      "legacy_refs": [
+        "ID10"
+      ],
+      "legacy_stored_score": 83.5,
+      "statements": []
     },
     {
       "key": "2026-01-28",
       "peak_time": "2026-01-28T06:00:00",
+      "peak_time_precision_hours": 12,
       "outcome": "unknown",
       "severity": 4,
       "water_height_cm": null,
       "source": "owner (validate_model.py/analyze_episodes.py)",
       "notes": "En cours, pas encore inonde au moment de l'annotation",
-      "flags": ["needs_relabel", "labelled_while_ongoing"],
+      "flags": [
+        "needs_relabel",
+        "labelled_while_ongoing"
+      ],
       "legacy_db_id": 11,
-      "legacy_refs": ["ID11"],
-      "legacy_stored_score": 42.6
+      "legacy_refs": [
+        "ID11"
+      ],
+      "legacy_stored_score": 42.6,
+      "statements": []
+    },
+    {
+      "key": "2026-02-12",
+      "peak_time": "2026-02-12T16:00:00",
+      "peak_time_precision_hours": 2,
+      "outcome": "flooded",
+      "severity": 3,
+      "water_height_cm": null,
+      "source": "owner (answers of 2026-10-26)",
+      "notes": "Inonde le 12/02/2026 en fin d'apres-midi (Paris), hauteur inconnue. Crue record de la Dordogne (Pessac 7.88 m le 14/02).",
+      "flags": [
+        "severity_not_stated",
+        "water_height_unknown",
+        "added_from_owner_memory"
+      ],
+      "legacy_db_id": null,
+      "legacy_refs": [],
+      "legacy_stored_score": null,
+      "statements": [
+        {
+          "date": "2026-10-26",
+          "source": "owner",
+          "text": "Inonde le 12/02/2026 en fin d'apres-midi, hauteur inconnue.",
+          "local_time": "2026-02-12 ~17:00 Europe/Paris (CET, UTC+1), +/- 2 h"
+        }
+      ]
     }
   ]
 }

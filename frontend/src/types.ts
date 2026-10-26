@@ -957,3 +957,190 @@ export interface IndicatorsData {
   groundwater: GroundwaterIndicator[]
   tide_observed: TideObservedIndicator[]
 }
+
+// --- Lidoire long profile, episode drivers, analogs, radar frame (display only) ---
+
+export interface LidoireProfilePoint {
+  d_m: number // distance from the confluence, upstream
+  z_m: number // low ground of a +/- 30 m cross-section (m NGF)
+  z_line_m: number | null
+  lon: number
+  lat: number
+}
+
+export interface ConfluenceConfig {
+  label: 'estime'
+  upstream_station: string
+  downstream_station: string
+  ngf_zeros_m: Record<string, number>
+  alpha_downstream_weight: number
+  envelope_hours: number
+  formula: string
+}
+
+export interface BackwaterReach {
+  label: string
+  status: 'unknown' | 'none' | 'partial' | 'whole_profile'
+  distance_m: number | null
+  connected_distance_m: number | null
+  disconnected_low_points: boolean | null
+  lon: number | null
+  lat: number | null
+  z_m: number | null
+  distance_below_mill_m: number | null
+  connected_distance_below_mill_m: number | null
+  reaches_mill: boolean | null
+}
+
+export interface LidoireProfileData {
+  at: string
+  model_input: false
+  profile: {
+    metadata: Record<string, unknown>
+    length_m: number | null
+    z_range_m: [number, number] | null
+    points: LidoireProfilePoint[] | null
+  }
+  mill: {
+    lon: number
+    lat: number
+    d_m: number
+    ground_z_m_ngf: number
+    ground_z_source: string
+    floor_z_m_ngf: number | null
+  }
+  confluence: ConfluenceConfig & {
+    lon: number
+    lat: number
+    d_m: number
+    ground_z_m: number
+    z_c_m_ngf: number | null
+    inputs: {
+      pessac_max_m: number | null
+      pessac_max_m_ngf: number | null
+      libourne_max_m: number | null
+      libourne_max_m_ngf: number | null
+    }
+    instant: {
+      z_c_m_ngf: number | null
+      pessac_m: number | null
+      pessac_time: string | null
+      libourne_m: number | null
+      libourne_time: string | null
+      notes: string[]
+    }
+    notes: string[]
+  }
+  backwater: BackwaterReach & { method: string; limits: string[]; instant: BackwaterReach }
+  margin: { mill_ground_minus_z_c_m: number | null; label: string; note: string }
+  labels: { z_c: string; backwater: string }
+  errors: string[]
+}
+
+export type DriverAxis = 'pessac' | 'eyraud_q' | 'rain_72h' | 'piezo' | 'glofas'
+
+export interface DriverValues {
+  pessac_m: number | null
+  libourne_m: number | null
+  eyraud_q_m3s: number | null
+  rain_72h_mm: number | null
+  rain_72h_hours_found: number
+  piezo_m_ngf: number | null
+  piezo_time: string | null
+  glofas_m3s: number | null
+  z_c_m_ngf: number | null
+  notes: string[]
+}
+
+export interface EpisodeDriversEntry {
+  key: string
+  peak_time: string
+  outcome: EpisodeOutcome
+  severity: number
+  water_height_cm: number | null
+  notes: string | null
+  flags: string[]
+  values: DriverValues
+  percentiles: Record<DriverAxis, number | null>
+  errors: string[]
+}
+
+export interface EpisodeDriversData {
+  generated_at: string
+  model_input: false
+  labels_version: number
+  labels_updated_at: string
+  windows: Record<string, string>
+  percentile_basis: Record<string, string>
+  history_counts: Record<DriverAxis, number>
+  confluence: ConfluenceConfig
+  caveats: string[]
+  partial: boolean
+  errors: string[]
+  episodes: EpisodeDriversEntry[]
+}
+
+export interface RiskAnalog {
+  key: string
+  peak_time: string
+  outcome: EpisodeOutcome
+  severity: number
+  water_height_cm: number | null
+  notes: string | null
+  distance: number | null
+  close: boolean
+  axes_used: DriverAxis[]
+  percentiles: Partial<Record<DriverAxis, number | null>>
+  percentile_diff: Partial<Record<DriverAxis, number | null>>
+  values: DriverValues
+  observations: { count: number; with_photo: number } | null
+}
+
+export interface RiskAnalogsData {
+  timestamp: string
+  model_input: false
+  k: number
+  axes: DriverAxis[]
+  method: string
+  threshold: number
+  nothing_close: boolean
+  nearest_distance: number | null
+  message: string
+  situation: {
+    timestamp: string
+    values: DriverValues
+    percentiles: Record<DriverAxis, number | null>
+    errors: string[]
+  }
+  windows: Record<string, string>
+  percentile_basis: Record<string, string>
+  observation_window_hours: number
+  observations_available: boolean
+  labels_partial: boolean
+  analogs: RiskAnalog[]
+}
+
+export interface RadarFrameMeta {
+  available: boolean
+  time: string
+  accumulation_minutes: number
+  accumulation_start: string
+  product: string
+  source: string
+  attribution: string
+  licence_url: string
+  bbox: [number, number, number, number] // west, south, east, north
+  bbox_order: string
+  crs: string
+  width: number
+  height: number
+  pixel_deg: number
+  url: string
+  legend: { min_mm: number; rgba: [number, number, number, number] }[]
+  no_coverage_rgba: [number, number, number, number]
+  unit: string
+  model_input: false
+  coverage: number
+  max_mm: number | null
+  rain_pixels: number
+}

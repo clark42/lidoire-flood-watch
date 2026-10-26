@@ -93,6 +93,27 @@ async def get_episode_labels():
         raise HTTPException(status_code=500, detail="Episode labels unavailable")
 
 
+@router.get("/drivers")
+async def get_episode_drivers_endpoint():
+    """Values of the flood drivers at each labelled peak, with percentiles.
+
+    For every episode of ``/api/episodes/labels``, at its ``peak_time``
+    (day-precision), from the stored series, points <= peak only: Pessac max
+    over 12.5 h, Eyraud discharge max over 12.5 h, rain over 72 h, piezometer,
+    GloFAS (when stored) and the estimated confluence stage Z_c. Windows and
+    percentile bases are spelled out in the payload. Feeds the flood plane
+    (Eyraud Q x Pessac). Cached 6 h; ``partial`` when a query failed (then
+    not cached). Never a model input.
+    """
+    from app.services.episode_drivers import get_episode_drivers
+
+    try:
+        return await get_episode_drivers()
+    except (OSError, ValueError) as e:
+        logger.error("Cannot build episode drivers: %s", e)
+        raise HTTPException(status_code=500, detail="Episode drivers unavailable")
+
+
 @router.post("", response_model=FloodEpisode)
 async def create_flood_episode(episode: FloodEpisodeCreate):
     """
