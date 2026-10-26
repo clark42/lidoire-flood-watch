@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Droplets,
@@ -39,7 +39,6 @@ import RainfallPanel from '../components/RainfallPanel'
 import ForecastPanel from '../components/ForecastPanel'
 import DataSourcesStatus from '../components/DataSourcesStatus'
 import RiskBreakdownPanel from '../components/RiskBreakdownPanel'
-import HydroMap from '../components/HydroMap'
 import BasinRainfallGauge from '../components/BasinRainfallGauge'
 import MetricSparkline from '../components/MetricSparkline'
 import TimeMachineBanner from '../components/TimeMachineBanner'
@@ -49,6 +48,9 @@ import InfoTooltip from '../components/InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 import { formatAge, formatParis, parseApiDate } from '../utils/time'
 import { riskLevelLabel } from '../utils/format'
+
+// leaflet is only needed by the map: separate chunk, the rest renders first
+const HydroMap = lazy(() => import('../components/HydroMap'))
 
 const RISK_BG_COLORS: Record<RiskLevel, string> = {
   green: 'bg-green-50 border-green-200',
@@ -545,12 +547,14 @@ export default function Dashboard() {
       <RiskBreakdownPanel risk={data.risk} defaultExpanded={breakdownExpanded} />
 
       {/* HydroMap - Full Width */}
-      <HydroMap
-        stations={stations}
-        netatmoStations={netatmo?.lidoire_stations}
-        infoclimatStations={infoclimat?.nearest_stations}
-        tide={data.tide}
-      />
+      <Suspense fallback={<div className="w-full h-[380px] rounded-xl shadow bg-gray-100 animate-pulse" />}>
+        <HydroMap
+          stations={stations}
+          netatmoStations={netatmo?.lidoire_stations}
+          infoclimatStations={infoclimat?.nearest_stations}
+          tide={data.tide}
+        />
+      </Suspense>
 
       {/* Sparklines Row - 4 cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
