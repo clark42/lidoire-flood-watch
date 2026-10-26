@@ -178,6 +178,10 @@ class EvalDataset:
         i = bisect.bisect_left(times, t)
         return i if i < len(times) and times[i] == t else None
 
+    def hour_index(self, t: datetime) -> Optional[int]:
+        """Index of the row of the hour containing ``t`` (label peaks may carry minutes)."""
+        return self.index_of(risk_core.floor_hour(t))
+
     def subset(self, start: datetime, end: datetime) -> "EvalDataset":
         rows = [r for r in self.rows if start <= r.timestamp <= end]
         return EvalDataset(rows, self.station_configs, self.primary_station_id, dict(self.meta))

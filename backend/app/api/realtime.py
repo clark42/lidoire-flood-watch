@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from dateutil.parser import isoparse
 
 from app.models.schemas import (
@@ -720,3 +720,77 @@ async def get_radar_basin_rain():
         logger.warning("Radar basin rain query failed: %r", e)
         return api_json({**summarize_radar([], now), "note": "lecture InfluxDB impossible"})
     return api_json(summarize_radar(points, now))
+
+
+async def _resolve_radar_frame_time(t: Optional[str]) -> datetime:
+    from app.services import radar_frame
+
+    now = _utcnow()
+    try:
+        frame_t = radar_frame.parse_frame_time(t, now)
+    except radar_frame.FrameNotAvailable as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ValueError, OverflowError):
+        raise HTTPException(status_code=422, detail="t: 'latest' or an ISO 8601 time in the last 24 h")
+    if frame_t is None:
+        if not get_settings().radar_enabled:
+            raise HTTPException(status_code=404, detail="radar disabled (RADAR_ENABLED=false)")
+        frame_t = await radar_frame.latest_frame_time(now)
+        if frame_t is None:
+            raise HTTPException(status_code=404, detail="no recent OPERA image")
+    return frame_t
+
+
+async def _render_radar_frame(frame_t: datetime):
+    from app.services import radar_frame
+
+    try:
+        return await radar_frame.render_frame(frame_t)
+    except radar_frame.FrameNotAvailable as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except radar_frame.FrameUpstreamError as e:
+        logger.warning("Radar frame %s unavailable: %s", frame_t.isoformat(), e)
+        raise HTTPException(status_code=503, detail="OPERA image unavailable, retry later")
+
+
+@router.get("/radar/frame.png", response_class=Response,
+            responses={200: {"content": {"image/png": {}}}})
+async def get_radar_frame_png(t: Optional[str] = None):
+    """OPERA ACRR frame (1 h accumulation) over the basin, as a small PNG.
+
+    ``t`` = ``latest`` (default) or an ISO time within the rolling 24 h
+    (floored to the 15 min image step). Regular lon/lat grid, north up,
+    transparent at 0 mm, translucent grey without coverage; bbox in the
+    ``X-Radar-Bbox`` header (west,south,east,north) and in the JSON sibling
+    ``/radar/frame.json``. Cached per frame time. EUMETNET OPERA, CC BY 4.0.
+    """
+    from app.models.schemas import utc_isoformat
+
+    frame_t = await _resolve_radar_frame_time(t)
+    png, meta = await _render_radar_frame(frame_t)
+    explicit = t is not None and t.strip().lower() not in ("", "latest")
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400, immutable" if explicit else "public, max-age=300",
+            "X-Radar-Time": utc_isoformat(frame_t),
+            "X-Radar-Bbox": ",".join(f"{v:g}" for v in meta["bbox"]),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/radar/frame.json")
+async def get_radar_frame_json(t: Optional[str] = None):
+    """Metadata of the radar frame served by ``/radar/frame.png``.
+
+    Time, accumulation window, bbox (west, south, east, north, degrees),
+    size, colour legend (lower bound in mm -> RGBA), attribution, the PNG
+    URL for this exact frame and simple stats (coverage, max mm).
+    """
+    from app.models.probabilistic import api_json
+
+    frame_t = await _resolve_radar_frame_time(t)
+    _png, meta = await _render_radar_frame(frame_t)
+    return api_json(meta)

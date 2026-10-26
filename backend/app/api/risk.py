@@ -6,12 +6,16 @@ score.
 """
 
 import logging
+from datetime import timedelta
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Query
 
 from app.models.schemas import ForecastSkill, RiskOutlook, RiskScore
 from app.services.risk_core import MODEL_VERSION
 from app.services.risk_v2 import compute_current_risk, calculate_risk_from_values
 from app.services.forecast import get_risk_forecast_v2
+from app.services.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -212,3 +216,38 @@ async def simulate_risk(
     except Exception as e:
         logger.exception("Error in risk simulation")
         raise HTTPException(status_code=500, detail=f"Risk simulation failed: {e}")
+
+
+_analogs_cache = TTLCache(ttl_seconds=300, max_entries=128)
+
+
+@router.get("/analogs")
+async def get_risk_analogs(
+    at: Optional[str] = Query(None, description="ISO 8601 time (UTC if naive); default now"),
+    k: int = Query(3, ge=1, le=20, description="Number of episodes returned"),
+):
+    """Labelled episodes nearest to the situation at ``at`` (analogs).
+
+    Distance = RMS of the percentile differences on Pessac 12.5 h max,
+    Eyraud Q 12.5 h max, rain 72 h and the piezometer (axes in the config,
+    those available on both sides, at least ``analog_min_axes``), as in the
+    design prototype. Returns the ``k`` nearest with outcome, water height,
+    notes, distance, per-axis percentiles and the number of field
+    observations (and photos) within the episode window. ``nothing_close`` is
+    true when the nearest is beyond ``analog_distance_threshold`` (30 points
+    of percentile): then no past episode resembles the situation.
+    Informative, never a model input.
+    """
+    from app.api.geo import _utcnow, parse_at
+    from app.services.episode_drivers import get_analogs
+
+    now = _utcnow()
+    t = parse_at(at, now)
+    key = (t.replace(second=0, microsecond=0), k)
+    cached = _analogs_cache.get(key)
+    if cached is not None:
+        return cached
+    payload = await get_analogs(t, k)
+    if not payload["situation"]["errors"] and not payload["labels_partial"]:
+        _analogs_cache.set(key, payload, ttl_seconds=3600 if now - t > timedelta(days=1) else 300)
+    return payload

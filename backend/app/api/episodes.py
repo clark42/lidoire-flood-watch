@@ -93,6 +93,27 @@ async def get_episode_labels():
         raise HTTPException(status_code=500, detail="Episode labels unavailable")
 
 
+@router.get("/drivers")
+async def get_episode_drivers_endpoint():
+    """Values of the flood drivers at each labelled peak, with percentiles.
+
+    For every episode of ``/api/episodes/labels``, at its ``peak_time``
+    (day-precision), from the stored series, points <= peak only: Pessac max
+    over 12.5 h, Eyraud discharge max over 12.5 h, rain over 72 h, piezometer,
+    GloFAS (when stored) and the estimated confluence stage Z_c. Windows and
+    percentile bases are spelled out in the payload. Feeds the flood plane
+    (Eyraud Q x Pessac). Cached 6 h; ``partial`` when a query failed (then
+    not cached). Never a model input.
+    """
+    from app.services.episode_drivers import get_episode_drivers
+
+    try:
+        return await get_episode_drivers()
+    except (OSError, ValueError) as e:
+        logger.error("Cannot build episode drivers: %s", e)
+        raise HTTPException(status_code=500, detail="Episode drivers unavailable")
+
+
 @router.post("", response_model=FloodEpisode)
 async def create_flood_episode(episode: FloodEpisodeCreate):
     """
@@ -426,7 +447,7 @@ async def trigger_backfill(
     skip_tides: bool = Query(False, description="Skip tide backfill"),
     skip_soil: bool = Query(False, description="Skip soil data backfill"),
     skip_risk: bool = Query(False, description="Skip risk score recalculation"),
-    risk_shadow: bool = Query(False, description="Also backfill the shadow model 3.4-gate"),
+    risk_shadow: bool = Query(False, description="Also backfill the shadow models 3.4-gate and 4.0a (v4-alpha)"),
     risk_step_hours: int = Query(
         1, ge=1, le=24, description="Step of the risk score recalculation in hours (default hourly)",
     ),
@@ -445,7 +466,7 @@ async def trigger_backfill(
     - Open-Meteo: Soil moisture and temperature
 
     Then recalculates risk scores using the v3.4 model (and, with
-    ``risk_shadow=true``, the shadow model 3.4-gate), one score every
+    ``risk_shadow=true``, the shadow models 3.4-gate and 4.0a), one score every
     ``risk_step_hours`` (hourly by default, whatever the range).
 
     Example: POST /api/episodes/backfill?start_date=2022-11-01T00:00:00

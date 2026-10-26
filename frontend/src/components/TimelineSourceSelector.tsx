@@ -19,6 +19,8 @@ interface TimelineSourceSelectorProps {
   onRiskToggle: () => void
   riskShadowEnabled?: boolean
   onRiskShadowToggle?: () => void
+  riskShadowV4Enabled?: boolean
+  onRiskShadowV4Toggle?: () => void
   soilEnabled?: boolean
   onSoilToggle?: () => void
   infoclimatEnabled?: boolean
@@ -60,6 +62,8 @@ export default function TimelineSourceSelector({
   onRiskToggle,
   riskShadowEnabled,
   onRiskShadowToggle,
+  riskShadowV4Enabled,
+  onRiskShadowV4Toggle,
   soilEnabled,
   onSoilToggle,
   infoclimatEnabled,
@@ -326,6 +330,22 @@ export default function TimelineSourceSelector({
             <AlertTriangle className="w-4 h-4" />
             {riskShadowEnabled && <Check className="w-3 h-3" />}
             Shadow + remous
+          </button>
+        )}
+
+        {onRiskShadowV4Toggle && (
+          <button
+            onClick={onRiskShadowV4Toggle}
+            title="Modele shadow 4.0a (v4-alpha : max(min(remous, ruissellement Eyraud), debordement)), stocke pour comparaison, sans effet sur le score affiche ni sur les alertes"
+            className={`flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-all ${
+              riskShadowV4Enabled
+                ? 'bg-purple-50 border-purple-300 text-purple-700 border-2'
+                : 'border-gray-200 bg-white hover:bg-gray-50 text-gray-600'
+            }`}
+          >
+            <AlertTriangle className="w-4 h-4" />
+            {riskShadowV4Enabled && <Check className="w-3 h-3" />}
+            Shadow v4-alpha
           </button>
         )}
 

@@ -874,6 +874,7 @@ async def get_unified_timeline(
     include_wind: bool = Query(False, description="Include wind speed/direction data"),
     include_forecast: bool = Query(False, description="Include 7-day risk forecast overlay"),
     include_risk_shadow: bool = Query(False, description="Include the shadow risk score (v3.4 + backwater gate)"),
+    include_risk_shadow_v4: bool = Query(False, description="Include the shadow risk score 4.0a (v4-alpha mechanisms)"),
     indicators: Optional[str] = Query(
         None,
         description="Comma-separated hydrological indicator ids (flow:EYRAUD, gw:MOULIETS, tide_obs:BORDEAUX...)",
@@ -1194,6 +1195,25 @@ async def get_unified_timeline(
             )
         }
 
+    async def risk_shadow_v4_series() -> dict[str, TimelineSeries]:
+        # Stored series only (scheduler, opt-in backfill): no cache-through
+        if not include_risk_shadow_v4:
+            return {}
+        from app.services.risk_shadow_v4 import SHADOW_V4_MODEL_VERSION
+
+        shadow_data = await query_risk_shadow_timeline(
+            start=start, end=end, model_version=SHADOW_V4_MODEL_VERSION, resolution=resolution,
+            agg_fn=peak_agg_fn,
+        )
+        if not shadow_data:
+            return {}
+        return {
+            "risk:shadow_v4": TimelineSeries(
+                type="risk_score_shadow", name="Score shadow v4-alpha (remous x ruissellement)",
+                unit="/100", color="#7c3aed", data=_points(shadow_data),
+            )
+        }
+
     async def radar_series() -> dict[str, TimelineSeries]:
         # Stored series only (scheduler, 24 h rolling upstream): no cache-through
         if not include_radar:
@@ -1307,6 +1327,7 @@ async def get_unified_timeline(
         wind_series(),
         risk_series(),
         risk_shadow_series(),
+        risk_shadow_v4_series(),
         forecast_series(),
         radar_series(),
         glofas_series(),

@@ -27,6 +27,10 @@ import type {
   EnsembleForecast,
   RadarBasinRain,
   BasinGeoJson,
+  LidoireProfileData,
+  EpisodeDriversData,
+  RiskAnalogsData,
+  RadarFrameMeta,
 } from './types'
 
 const API_BASE = '/api'
@@ -333,6 +337,7 @@ export async function getUnifiedTimeline(
   signal?: AbortSignal,
   includeRiskShadow?: boolean,
   indicatorSeries?: string[],
+  includeRiskShadowV4?: boolean,
 ): Promise<UnifiedTimelineResult> {
   const params = new URLSearchParams({ resolution })
   if (start) params.set('start', start)
@@ -351,6 +356,7 @@ export async function getUnifiedTimeline(
   if (includeWind) params.set('include_wind', 'true')
   if (includeForecast) params.set('include_forecast', 'true')
   if (includeRiskShadow) params.set('include_risk_shadow', 'true')
+  if (includeRiskShadowV4) params.set('include_risk_shadow_v4', 'true')
   if (indicatorSeries && indicatorSeries.length > 0) {
     params.set('indicators', indicatorSeries.join(','))
   }
@@ -501,4 +507,30 @@ export async function getEpisodeObservations(episodeId: number): Promise<Episode
 // Hydrological indicators (flows, groundwater, observed tide), outside the risk model
 export async function getIndicators(): Promise<IndicatorsData> {
   return fetchJson<IndicatorsData>(`${API_BASE}/indicators`)
+}
+
+// Lidoire long profile, confluence stage (estimated) and backwater reach at a time
+export async function getLidoireProfile(at?: string, points: boolean = true): Promise<LidoireProfileData> {
+  const params = new URLSearchParams()
+  if (at) params.set('at', at)
+  if (!points) params.set('points', 'false')
+  const query = params.toString()
+  return fetchJson<LidoireProfileData>(`${API_BASE}/geo/profile${query ? `?${query}` : ''}`)
+}
+
+// Flood drivers at each labelled episode peak (flood plane Eyraud Q x Pessac)
+export async function getEpisodeDrivers(): Promise<EpisodeDriversData> {
+  return fetchJson<EpisodeDriversData>(`${API_BASE}/episodes/drivers`)
+}
+
+// Labelled episodes nearest to the situation at a time
+export async function getRiskAnalogs(at?: string, k: number = 3): Promise<RiskAnalogsData> {
+  const params = new URLSearchParams({ k: String(k) })
+  if (at) params.set('at', at)
+  return fetchJson<RiskAnalogsData>(`${API_BASE}/risk/analogs?${params.toString()}`)
+}
+
+// OPERA radar frame over the basin: metadata (bbox, legend) and the same-origin PNG URL
+export async function getRadarFrameMeta(t: string = 'latest'): Promise<RadarFrameMeta> {
+  return fetchJson<RadarFrameMeta>(`${API_BASE}/realtime/radar/frame.json?t=${encodeURIComponent(t)}`)
 }
