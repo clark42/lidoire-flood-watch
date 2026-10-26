@@ -390,6 +390,7 @@ async def _run_backfill_task(
     skip_risk: bool,
     risk_shadow: bool = False,
     risk_step_hours: int = 1,
+    indicators: bool = False,
 ):
     """Background task for backfill."""
     global _backfill_status
@@ -404,6 +405,7 @@ async def _run_backfill_task(
             skip_risk=skip_risk,
             risk_shadow=risk_shadow,
             risk_step_hours=risk_step_hours,
+            indicators=indicators,
         )
         _backfill_status["result"] = results
         _backfill_status["finished_at"] = _utcnow().isoformat()
@@ -428,6 +430,7 @@ async def trigger_backfill(
     risk_step_hours: int = Query(
         1, ge=1, le=24, description="Step of the risk score recalculation in hours (default hourly)",
     ),
+    indicators: bool = Query(False, description="Also backfill the hydrological indicators (flows, groundwater, observed tide)"),
 ):
     """
     Trigger comprehensive data backfill as a background task.
@@ -476,6 +479,7 @@ async def trigger_backfill(
         skip_risk=skip_risk,
         risk_shadow=risk_shadow,
         risk_step_hours=risk_step_hours,
+        indicators=indicators,
     ))
 
     return {

@@ -32,6 +32,8 @@ import {
 import type { ActionErrorState } from '../api'
 import type { FloodEpisode, EpisodeAnalysis, EpisodeOutcome } from '../types'
 import ActionError from '../components/ActionError'
+import ObservationList from '../components/ObservationList'
+import EpisodeObservationsPanel from '../components/EpisodeObservationsPanel'
 import { formatParis } from '../utils/time'
 
 // Ground truth comes from the structured `outcome` field (null = not labelled yet)
@@ -517,6 +519,8 @@ export default function Episodes() {
                 </div>
               )}
 
+              <EpisodeObservationsPanel episode={selectedEpisode} onApplied={replaceEpisode} />
+
               {/* Existing notes display */}
               {!isEditing && selectedEpisode.notes && (
                 <div className="bg-gray-50 rounded-lg p-3">
@@ -654,6 +658,8 @@ export default function Episodes() {
           )}
         </div>
       </div>
+
+      <ObservationList />
 
       {/* Add Episode Modal */}
       {showAddForm && (

@@ -20,6 +20,27 @@ Sources (best free historical source per input):
 - Tide: Open-Meteo Marine ``sea_level_height_msl`` at the Gironde mouth, the
   same series and point as the production tide collector/backfill (model
   sea level; coefficients are ESTIMATED from the tidal range).
+
+Hydrological inputs of the v4-alpha candidates (research 2026-10-26):
+
+- Discharge Q (Eyraud P540401002, Caudeau P524401001, Pessac P555001001):
+  Hydroportail variable-step Q (L/s -> m3/s), Hub'Eau ``QIXnJ`` daily max
+  where a chunk is empty. Libourne H (P577001001, weight 0, tidal) for the
+  confluence stage.
+- Climatology (fixed period ending 2022-09-30, BEFORE the evaluation
+  period): Hub'Eau ``QIXnJ`` (Eyraud since 2009, Caudeau since 2010) and
+  ``HIXnJ`` (Pessac since 1993) daily maxima, for a-priori thresholds.
+- Groundwater: Hub'Eau ``niveaux_nappes/chroniques`` (BRGM ADES), alluvial
+  piezometer of Mouliets-et-Villemartin 08048X0088/P, daily, m NGF.
+- GloFAS v4 through the Open-Meteo Flood API, Lidoire cell (44.875,
+  -0.025): ``consolidated_v4`` (reanalysis, 1984 -> 2025-05, climatology)
+  and ``seamless_v4`` (consolidated, then the archived ``forecast_v4``
+  day 0) over the evaluation period. Daily values.
+
+COMEPHORE (Meteo-France hourly 1 km radar reanalysis) is NOT downloaded:
+the monthly tar files (200-240 MB) can be range-read, but finding the RR
+members needs one header request per member (3 members per hour), i.e.
+~140k requests over 2022-2026, or ~10 GB for the whole tars.
 """
 
 from __future__ import annotations
@@ -45,6 +66,8 @@ HUBEAU_ELAB_URL = "https://hubeau.eaufrance.fr/api/v2/hydrometrie/obs_elab"
 OPEN_METEO_HIST_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 OPEN_METEO_MARINE_URL = "https://marine-api.open-meteo.com/v1/marine"
+OPEN_METEO_FLOOD_URL = "https://flood-api.open-meteo.com/v1/flood"
+HUBEAU_PIEZO_URL = "https://hubeau.eaufrance.fr/api/v1/niveaux_nappes/chroniques"
 
 # Minimum delay between two requests to the same host (seconds)
 MIN_INTERVAL_S = {
@@ -240,16 +263,21 @@ def _naive_utc(dt: datetime) -> datetime:
     return dt
 
 
-def parse_hydroportail(payload: Optional[dict]) -> list[tuple[datetime, float]]:
-    """(naive UTC timestamp, height m) points from a Hydroportail series payload.
+# Hydroportail units -> m (heights) or m3/s (discharge)
+HYDROPORTAIL_UNIT_SCALE = {"mm": 1000.0, "cm": 100.0, "l": 1000.0, "l/s": 1000.0}
 
-    Values are in mm (``series.unit == "mm"``), timestamps ISO UTC.
+
+def parse_hydroportail(payload: Optional[dict]) -> list[tuple[datetime, float]]:
+    """(naive UTC timestamp, value) points from a Hydroportail series payload.
+
+    Heights come in mm (``series.unit == "mm"``) -> m, discharge in L/s
+    (``"l"``) -> m3/s; timestamps ISO UTC.
     """
     if not payload:
         return []
     series = payload.get("series") or {}
     unit = (series.get("unit") or "mm").lower()
-    scale = 1000.0 if unit == "mm" else (100.0 if unit == "cm" else 1.0)
+    scale = HYDROPORTAIL_UNIT_SCALE.get(unit, 1.0)
     out = []
     for obs in series.get("data") or []:
         v, t = obs.get("v"), obs.get("t")
@@ -265,7 +293,7 @@ def parse_hydroportail(payload: Optional[dict]) -> list[tuple[datetime, float]]:
 
 
 def parse_hubeau_elab(payload: Optional[dict]) -> list[tuple[date, float]]:
-    """(day, daily max height m) from a Hub'Eau obs_elab HIXnJ payload (mm)."""
+    """(day, value) from a Hub'Eau obs_elab payload: HIXnJ mm -> m, QIXnJ L/s -> m3/s."""
     if not payload:
         return []
     out = []
@@ -302,6 +330,37 @@ def parse_open_meteo_hourly(payload: Optional[dict], variable: str) -> list[tupl
     return out
 
 
+def parse_hubeau_piezo(payload: Optional[dict]) -> list[tuple[date, float]]:
+    """(day, groundwater level m NGF) from a Hub'Eau niveaux_nappes chroniques payload."""
+    if not payload:
+        return []
+    out = []
+    for obs in payload.get("data") or []:
+        v, d = obs.get("niveau_nappe_eau"), obs.get("date_mesure")
+        if v is None or not d:
+            continue
+        try:
+            out.append((date.fromisoformat(str(d)[:10]), float(v)))
+        except (TypeError, ValueError):
+            continue
+    out.sort()
+    return out
+
+
+def parse_open_meteo_daily(payload: Optional[dict], variable: str) -> list[tuple[date, Optional[float]]]:
+    """(day, value or None) from an Open-Meteo daily payload."""
+    if not payload:
+        return []
+    daily = payload.get("daily") or {}
+    out = []
+    for t, v in zip(daily.get("time") or [], daily.get(variable) or []):
+        try:
+            out.append((date.fromisoformat(str(t)[:10]), None if v is None else float(v)))
+        except ValueError:
+            continue
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Downloads
 # ---------------------------------------------------------------------------
@@ -327,12 +386,19 @@ def download_station_levels(
     cache: RawCache,
     client: Optional[PoliteClient],
     refresh: bool = False,
+    variable: str = "H",
 ) -> StationRaw:
-    """Hydroportail series by quarter, Hub'Eau HIXnJ daily max where empty."""
+    """Hydroportail series by quarter, Hub'Eau <variable>IXnJ daily max where empty.
+
+    ``variable`` is ``"H"`` (height, m) or ``"Q"`` (discharge, m3/s).
+    """
+    if variable not in ("H", "Q"):
+        raise ValueError(f"unknown variable {variable!r}")
     raw = StationRaw(station_id=station_id)
     seen: set[datetime] = set()
+    suffix = "" if variable == "H" else f"_{variable}"
     for c_start, c_end in quarter_chunks(start, end, cap=last_complete_day()):
-        key = f"{station_id}_{c_start.isoformat()}_{c_end.isoformat()}"
+        key = f"{station_id}{suffix}_{c_start.isoformat()}_{c_end.isoformat()}"
         payload = cached_get(
             cache, client, "hydroportail", key,
             HYDROPORTAIL_URL.format(station_id=station_id),
@@ -340,7 +406,7 @@ def download_station_levels(
                 "hydro_series[startAt]": c_start.strftime("%d/%m/%Y"),
                 "hydro_series[endAt]": c_end.strftime("%d/%m/%Y"),
                 "hydro_series[variableType]": "simple_and_interpolated_and_hourly_variable",
-                "hydro_series[simpleAndInterpolatedAndHourlyVariable]": "H",
+                "hydro_series[simpleAndInterpolatedAndHourlyVariable]": variable,
                 "hydro_series[statusData]": "most_valid",
             },
             headers={
@@ -359,10 +425,10 @@ def download_station_levels(
             continue
 
         daily_payload = cached_get(
-            cache, client, "hubeau_hixnj", key, HUBEAU_ELAB_URL,
+            cache, client, f"hubeau_{variable.lower()}ixnj", key, HUBEAU_ELAB_URL,
             {
                 "code_entite": station_id,
-                "grandeur_hydro_elab": "HIXnJ",
+                "grandeur_hydro_elab": f"{variable}IXnJ",
                 "date_debut_obs_elab": c_start.isoformat(),
                 "date_fin_obs_elab": c_end.isoformat(),
                 "size": 20000,
@@ -475,3 +541,93 @@ def download_sea_level(
         OPEN_METEO_MARINE_URL, "openmeteo_marine", "gironde", lat, lon,
         "sea_level_height_msl", start, end, cache, client, refresh,
     )
+
+
+def download_daily_elab(
+    station_id: str,
+    grandeur: str,
+    start: date,
+    end: date,
+    cache: RawCache,
+    client: Optional[PoliteClient],
+    refresh: bool = False,
+) -> list[tuple[date, float]]:
+    """Hub'Eau obs_elab daily series (one request, e.g. QIXnJ/HIXnJ climatology).
+
+    The period is fixed by the caller (climatology before the evaluation),
+    so the cache key never depends on today's date.
+    """
+    payload = cached_get(
+        cache, client, "hubeau_elab_clim", f"{station_id}_{grandeur}_{start.isoformat()}_{end.isoformat()}",
+        HUBEAU_ELAB_URL,
+        {
+            "code_entite": station_id,
+            "grandeur_hydro_elab": grandeur,
+            "date_debut_obs_elab": start.isoformat(),
+            "date_fin_obs_elab": end.isoformat(),
+            "size": 20000,
+            "sort": "asc",
+        },
+        refresh=refresh,
+    )
+    return parse_hubeau_elab(payload)
+
+
+def download_piezo(
+    code_bss: str,
+    start: date,
+    end: date,
+    cache: RawCache,
+    client: Optional[PoliteClient],
+    refresh: bool = False,
+) -> list[tuple[date, float]]:
+    """Daily groundwater level (m NGF) of one piezometer, by calendar year."""
+    out: list[tuple[date, float]] = []
+    safe = code_bss.replace("/", "_")
+    for c_start, c_end in year_chunks(start, end, cap=last_complete_day()):
+        payload = cached_get(
+            cache, client, "hubeau_piezo", f"{safe}_{c_start.isoformat()}_{c_end.isoformat()}",
+            HUBEAU_PIEZO_URL,
+            {
+                "code_bss": code_bss,
+                "date_debut_mesure": c_start.isoformat(),
+                "date_fin_mesure": c_end.isoformat(),
+                "size": 20000,
+                "sort": "asc",
+            },
+            refresh=refresh,
+        )
+        out.extend(parse_hubeau_piezo(payload))
+    out = sorted(dict(out).items())
+    return out
+
+
+def download_glofas(
+    model: str,
+    lat: float,
+    lon: float,
+    start: date,
+    end: date,
+    cache: RawCache,
+    client: Optional[PoliteClient],
+    refresh: bool = False,
+) -> list[tuple[date, Optional[float]]]:
+    """GloFAS v4 daily river discharge (m3/s) at one cell (Open-Meteo Flood API), by year."""
+    out: list[tuple[date, Optional[float]]] = []
+    for c_start, c_end in year_chunks(start, end, cap=last_complete_day()):
+        payload = cached_get(
+            cache, client, "openmeteo_flood", f"{model}_{lat:g}_{lon:g}_{c_start.isoformat()}_{c_end.isoformat()}",
+            OPEN_METEO_FLOOD_URL,
+            {
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "river_discharge",
+                "models": model,
+                "start_date": c_start.isoformat(),
+                "end_date": c_end.isoformat(),
+            },
+            refresh=refresh,
+        )
+        out.extend(parse_open_meteo_daily(payload, "river_discharge"))
+    out.sort(key=lambda x: x[0])
+    return out

@@ -156,6 +156,30 @@ async def require_api_key_for_writes(
         )
 
 
+async def require_api_key(
+    request: Request,
+    api_key: str | None = Security(api_key_header),
+) -> None:
+    """Route-level dependency: enforce the API key on every method, reads
+    included (private data such as observation photos). Same dev mode as
+    :func:`require_api_key_for_writes` when API_KEY is empty."""
+    expected = get_settings().api_key
+    if not expected:
+        return
+    if not api_key_matches(api_key, expected):
+        logger.warning(
+            "Rejected %s %s: missing or invalid API key (client %s)",
+            request.method,
+            request.url.path,
+            request.client.host if request.client else "unknown",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Missing or invalid {API_KEY_HEADER_NAME} header",
+            headers={"WWW-Authenticate": API_KEY_HEADER_NAME},
+        )
+
+
 def warn_if_api_key_missing(settings: Settings | None = None) -> bool:
     """Log a warning when write protection is disabled.
 

@@ -23,7 +23,11 @@ Optional attributes:
 ``n_rising``, ``n_above_yellow``, ``n_above_orange``, ``rain_1h``, ``rain_3h``,
 ``rain_6h``, ``rain_12h``, ``rain_24h``, ``rain_48h``, ``rain_72h``,
 ``rain_168h`` (mm, basin mean), ``rain_hours_72h``, ``tide_available``,
-``tide_coefficient``, ``hours_to_high_tide``, ``n_daily_fallback``.
+``tide_coefficient``, ``hours_to_high_tide``, ``n_daily_fallback``, and the
+v4-alpha inputs (publication lags applied, see dataset.py):
+``q_<eyraud|caudeau|pessac>_m3s`` / ``_max_12h``, ``q_eyraud_lag0_*``
+(sensitivity only), ``libourne_h``, ``libourne_max_12h``, ``z_conf_ngf``,
+``piezo_ngf``, ``glofas_lidoire_m3s``.
 ``row.features`` is the production ``RiskFeatures`` (input of compute_risk).
 """
 

@@ -96,6 +96,16 @@ export interface RiskFactors {
   tide_coefficient_raw?: number
   tide_hours_to_high?: number
   tendency_rate_cm_h?: number
+  // v3.3 auditability
+  stability_dampener?: number
+  n_rising_stations?: number | null
+  n_above_orange?: number | null
+  tide_available?: boolean
+  unavailable_factors?: string[] // excluded from the denominator
+  notes?: string[]
+  // v3.4: gate (0-1) applied to tide_score / tide_phase_score, and its input
+  tide_gate?: number
+  backwater_level_m?: number | null // max of Pessac over the previous 12.5 h
 }
 
 export interface RiskScore {
@@ -105,6 +115,7 @@ export interface RiskScore {
   factors: RiskFactors
   description: string
   recommendations: string[]
+  model_version?: string | null
 }
 
 export interface VideoAnalysis {
@@ -195,14 +206,6 @@ export interface InfoclimatData {
   stations_found: number
   nearest_stations: InfoclimatStation[]
   rainfall: InfoclimatRainfall
-}
-
-export interface DataSource {
-  name: string
-  status: 'ok' | 'degraded' | 'error'
-  description: string
-  details?: string
-  url?: string
 }
 
 export interface ForecastPoint {
@@ -367,7 +370,7 @@ export interface TimelineDataPoint {
 }
 
 export interface TimelineSeries {
-  type: 'river_level' | 'rainfall' | 'rainfall_cumul' | 'tide' | 'risk_score' | 'risk_score_shadow' | 'soil_moisture' | 'soil_temperature' | 'evapotranspiration' | 'wind_speed' | 'wind_westerly' | 'forecast_risk_score' | 'forecast_rainfall' | 'forecast_level'
+  type: 'river_level' | 'rainfall' | 'rainfall_cumul' | 'tide' | 'risk_score' | 'risk_score_shadow' | 'soil_moisture' | 'soil_temperature' | 'evapotranspiration' | 'wind_speed' | 'wind_westerly' | 'forecast_risk_score' | 'forecast_rainfall' | 'forecast_level' | IndicatorSeriesType
   name: string
   unit: string
   color: string
@@ -399,9 +402,25 @@ export interface RainfallStationInfo {
   available?: boolean
 }
 
+// Hydrological indicators (outside the risk model v3.4): flows, groundwater, observed tide
+export type IndicatorSeriesType = 'flow_tributary' | 'flow_dordogne' | 'groundwater' | 'tide_observed'
+
+export interface IndicatorSeriesInfo {
+  id: string // "flow:EYRAUD", "gw:MOULIETS", "tide_obs:BORDEAUX"
+  kind: 'flow' | 'groundwater' | 'tide_observed'
+  type: IndicatorSeriesType
+  name: string
+  unit: string
+  color: string
+  role?: string | null
+  distance_km: number
+}
+
 export interface AvailableSources {
   river_stations: RiverStationInfo[]
   rainfall_stations: RainfallStationInfo[]
+  /** Absent on older backends */
+  indicator_series?: IndicatorSeriesInfo[]
   has_tide: boolean
   has_risk_score: boolean
   has_infoclimat: boolean
@@ -550,7 +569,7 @@ export interface SourcesDetail {
     camera?: { name: string; description: string; configured: boolean }
   }
   risk_model?: {
-    version: string
+    version?: string // risk_core.MODEL_VERSION
     weights: Record<string, string>
     conjunction_multiplier?: string
     stability_dampener?: string
@@ -560,4 +579,381 @@ export interface SourcesDetail {
       tide_coef_high?: number | null
     }
   }
+}
+
+// Probabilistic forecasts (GET /api/forecast/ensemble) - informative, not in the v3.4 score
+export interface EnsembleWindowStats {
+  p10: number
+  p50: number
+  p90: number
+  mean: number
+  max: number
+  members: number
+  /** Share of members above each threshold (keys: threshold in mm, e.g. "25") */
+  prob: Record<string, number>
+}
+
+export interface EnsembleHorizon {
+  start: string
+  end: string
+  lead_start_h: number
+  lead_end_h: number
+  models: Record<string, EnsembleWindowStats>
+  blend: { prob: Record<string, number>; models: string[] }
+}
+
+export interface EnsembleModelInfo {
+  id: string
+  label: string
+  available: boolean
+  members?: number
+  run_init?: string
+  run_init_known?: boolean
+  horizon_end?: string | null
+}
+
+export interface EnsembleRain {
+  available: boolean
+  note?: string
+  thresholds?: Record<string, number[]>
+  issued_at?: string
+  models?: EnsembleModelInfo[]
+  horizons?: Record<string, EnsembleHorizon[]>
+  attribution?: string
+}
+
+export interface GlofasDay {
+  date: string
+  lead_days: number
+  p10: number
+  p50: number
+  p90: number
+  min: number
+  max: number
+  mean: number
+  members: number
+  prob_gt_p95: number | null
+  prob_gt_p99: number | null
+}
+
+export interface GlofasForecast {
+  available: boolean
+  note?: string
+  stale?: boolean
+  run?: string
+  run_known?: boolean
+  members?: number
+  climatology?: { p50: number; p90: number; p95: number; p99: number; max: number; first_day?: string; last_day?: string } | null
+  days?: GlofasDay[]
+  max_prob_gt_p95_10d?: { date: string; value: number } | null
+  max_prob_gt_p99_10d?: { date: string; value: number } | null
+  attribution?: string
+}
+
+export interface EnsembleForecast {
+  rain: EnsembleRain
+  glofas: GlofasForecast
+  note?: string
+}
+
+// Observed basin rain, OPERA radar (GET /api/realtime/radar)
+export interface RadarWindow {
+  mm: number | null
+  max_pixel_mm: number | null
+  hours_found: number
+  hours_expected: number
+  complete: boolean
+}
+
+export interface RadarBasinRain {
+  available: boolean
+  note?: string
+  last_image_time: string | null
+  age_minutes: number | null
+  windows: Record<string, RadarWindow>
+  attribution: string
+  licence_url?: string
+}
+
+// Lidoire basin polygon (GET /api/geo/basin)
+export interface BasinProperties {
+  name: string
+  area_km2: number
+  source: string
+  source_url: string
+  licence: string
+  attribution: string
+}
+
+export interface BasinGeoJson {
+  type: 'FeatureCollection'
+  features: {
+    type: 'Feature'
+    properties: BasinProperties
+    geometry: { type: 'Polygon'; coordinates: number[][][] }
+  }[]
+}
+
+// Outlook (GET /api/risk/outlook): "do I need to act, and when?"
+export interface OutlookDriver {
+  factor: string
+  label: string
+  /** Points of the 0-100 score brought by this factor */
+  points: number
+  text: string
+}
+
+export interface OutlookHorizon {
+  hours: number
+  label: string
+  max_score: number
+  level: RiskLevel
+  max_at: string
+  max_hours_ahead: number
+  /** First hour at or above `level` */
+  first_at_level: string
+  drivers: OutlookDriver[]
+  modifiers: string[]
+  unavailable: string[]
+  summary: string
+}
+
+export interface OutlookHighTide {
+  timestamp: string
+  coefficient: number | null
+  estimated: boolean
+  hours_from_now: number
+}
+
+export interface OutlookConfidence {
+  level: 'good' | 'reduced' | 'low'
+  notes: string[]
+  unavailable_factors: string[]
+  tide_estimated: boolean
+  stale_sources: string[]
+}
+
+export interface OutlookChecklist {
+  level: RiskLevel
+  title: string
+  actions: string[]
+  act_before: string | null
+}
+
+export interface RiskOutlook {
+  generated_at: string
+  forecast_generated_at: string
+  model_version: string | null
+  horizons: OutlookHorizon[]
+  highest_level: RiskLevel
+  next_high_tide: OutlookHighTide | null
+  confidence: OutlookConfidence
+  checklist: OutlookChecklist
+  inputs_summary: Record<string, unknown>
+}
+
+// Forecast skill (GET /api/risk/forecast-skill): archived forecast vs stored realtime score
+export interface ForecastSkillPair {
+  run_at: string
+  lead_hours: number
+  valid_at: string
+  forecast_score: number
+  actual_score: number
+  actual_at: string
+}
+
+export interface ForecastSkillLead {
+  lead_hours: number
+  n: number
+  mae: number | null
+  bias: number | null
+  hits: number
+  misses: number
+  false_alarms: number
+  correct_negatives: number
+  pod: number | null
+  far: number | null
+  csi: number | null
+}
+
+export interface ForecastSkill {
+  generated_at: string
+  model_version: string
+  threshold: number
+  threshold_level: string
+  days: number
+  lead_hours: number[]
+  tolerance_minutes: number
+  n_runs: number
+  first_run_at: string | null
+  last_run_at: string | null
+  by_lead: ForecastSkillLead[]
+  pairs: ForecastSkillPair[]
+  notes: string[]
+}
+
+// Official vigilance (GET /api/vigilance): informative, not a model input.
+// Levels: 1 vert, 2 jaune, 3 orange, 4 rouge (null = unknown)
+export type VigilanceLevel = 1 | 2 | 3 | 4
+export type VigilanceColor = 'vert' | 'jaune' | 'orange' | 'rouge'
+
+export interface VigilanceWindow {
+  begin: string
+  end: string
+  level: VigilanceLevel
+}
+
+export interface VigilanceTroncon {
+  code: string
+  name: string
+  level: VigilanceLevel | null
+  color: VigilanceColor | null
+  url: string
+  station_url: string | null
+}
+
+export interface VigilancePhenomenon {
+  id: string
+  key: string
+  label: string
+  level: VigilanceLevel | null
+  color: VigilanceColor | null
+  level_tomorrow: VigilanceLevel | null
+  windows: VigilanceWindow[]
+}
+
+export interface VigilanceDepartment {
+  code: string
+  name: string
+  max_level: VigilanceLevel | null
+  phenomena: VigilancePhenomenon[]
+  url: string
+}
+
+export interface VigilanceStatus {
+  timestamp: string
+  vigicrues: {
+    available: boolean
+    issued_at: string | null
+    fetched_at: string | null
+    troncons: VigilanceTroncon[]
+    url: string
+  }
+  meteofrance: {
+    available: boolean
+    issued_at: string | null
+    fetched_at: string | null
+    valid_from: string | null
+    valid_to: string | null
+    departments: VigilanceDepartment[]
+    url: string
+  }
+  note: string
+}
+
+// Field observations at the mill (ground truth from the owner)
+export type ObservationKind = 'flooded' | 'water_rising' | 'near_miss' | 'normal'
+
+export interface ObservationInput {
+  observed_at?: string | null
+  kind: ObservationKind
+  water_height_cm?: number | null
+  reference?: string | null
+  note?: string | null
+  source?: string
+}
+
+export interface Observation {
+  id: number
+  observed_at: string
+  kind: ObservationKind
+  water_height_cm: number | null
+  reference: string | null
+  note: string | null
+  has_photo: boolean
+  photo_url: string | null
+  created_at: string
+  source: string
+}
+
+export interface OutcomeSuggestion {
+  outcome: EpisodeOutcome
+  observed_at: string
+  water_height_cm: number | null
+  observation_id: number
+  reason: string
+}
+
+export interface EpisodeObservations {
+  episode_id: number
+  window_start: string
+  window_end: string
+  observations: Observation[]
+  suggested_outcome: OutcomeSuggestion | null
+}
+
+// /api/indicators (stored series only, never a model input)
+export interface IndicatorThresholdStatus {
+  exceeded: string[]
+  next: string | null
+  next_value: number | null
+  distance: number | null
+  ratio_to_next: number | null
+}
+
+export type IndicatorTrend = 'rising' | 'falling' | 'stable'
+
+interface IndicatorBase {
+  id: string
+  key: string
+  name: string
+  distance_km?: number | null
+  available: boolean
+  last_timestamp: string | null
+  age_hours: number | null
+  stale: boolean | null
+  percentile: number | null
+  percentile_label: string | null
+  percentile_basis: string
+  history_days: number
+}
+
+export interface FlowIndicator extends IndicatorBase {
+  station_id: string
+  river: string | null
+  role: string | null
+  basin_km2: number | null
+  q_m3s: number | null
+  q_mean_24h_m3s: number | null
+  trend_m3s_per_h: number | null
+  trend: IndicatorTrend | null
+  thresholds_daily_m3s: Record<string, number>
+  threshold: IndicatorThresholdStatus
+}
+
+export interface GroundwaterIndicator extends IndicatorBase {
+  code_bss: string
+  aquifer: string | null
+  level_m_ngf: number | null
+  change_24h_m: number | null
+  trend: IndicatorTrend | null
+  thresholds_m_ngf: Record<string, number>
+  threshold: IndicatorThresholdStatus
+}
+
+export interface TideObservedIndicator extends IndicatorBase {
+  source: string | null
+  datum: string | null
+  height_m: number | null
+  max_24h_m: number | null
+}
+
+export interface IndicatorsData {
+  timestamp: string
+  model_input: false
+  note: string
+  runoff: FlowIndicator[]
+  dordogne: FlowIndicator[]
+  groundwater: GroundwaterIndicator[]
+  tide_observed: TideObservedIndicator[]
 }

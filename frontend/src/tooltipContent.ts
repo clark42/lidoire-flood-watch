@@ -158,12 +158,40 @@ export const TOOLTIPS = {
   },
 
   // Previsions
+  outlook: {
+    text: "Pour chaque horizon (6 h, 24 h, 72 h) : le score maximal prevu, son heure, et les facteurs qui y contribuent le plus (en points du score). La liste d'actions correspond au niveau le plus eleve prevu ; elle est modifiable dans backend/app/data/action_plan.json. Prevision recalculee chaque heure : un score, pas une probabilite.",
+  },
+  forecastSkill: {
+    text: "Chaque heure, la prevision est archivee. Ici, le score prevu a 6 h, 24 h et 72 h est compare au score temps reel effectivement calcule a l'heure visee. MAE = ecart moyen en points ; biais > 0 = prevision trop pessimiste. Detection = prevu et observe au-dessus du seuil orange ; manque = observe seulement ; fausse alerte = prevu seulement.",
+  },
   forecastHeader: {
     text: "Projection du score de risque sur les prochaines heures, basee sur les previsions de maree et de pluie. Les niveaux de riviere sont maintenus constants (pas de modele hydrologique).",
   },
   forecast: {
     text: "Prevision de risque sur 72h combinant : pluie horaire (Open-Meteo AROME), marees avec coefficients, et projection des niveaux de riviere basee sur les stations amont avec leurs delais de propagation. Cache 30 min, actualisation automatique.",
     link: { url: 'https://open-meteo.com/', label: 'Open-Meteo' },
+  },
+
+  // Previsions probabilistes (indicatives, hors score v3.4)
+  ensembleRain: {
+    text: "Part des membres des ensembles meteo (ECMWF 51, ICON-EU 40, ICON-D2 20) dont la pluie moyenne sur le bassin depasse chaque seuil du modele (24 h : 25/40/60 mm ; 72 h : 50/80/120 mm). Moyenne des modeles disponibles pour la fenetre. N'entre pas dans le score.",
+    link: { url: 'https://open-meteo.com/en/docs/ensemble-api', label: 'Open-Meteo Ensemble' },
+  },
+  glofas: {
+    text: "Debit modelise par GloFAS v4 (Copernicus) sur la maille Lidoire : mediane, bandes p10-p90 et min-max des 51 membres. Seuils p95/p99 de la reanalyse 1997-2025 de la meme maille. Aucune station ne mesure la Lidoire : c'est un indicateur, pas une mesure.",
+    link: { url: 'https://open-meteo.com/en/docs/flood-api', label: 'Open-Meteo Flood (GloFAS)' },
+  },
+  radarBasin: {
+    text: "Pluie observee par le composite radar europeen OPERA (2 km, cumul 1 h toutes les 15 min), moyennee sur le bassin versant de la Lidoire. Les cumuls 3/6/24 h additionnent les cumuls horaires ; * = heures manquantes.",
+    link: { url: 'https://eumetnet.github.io/openradardata-documentation/', label: 'OPERA Open Radar Data' },
+  },
+  // Indicateurs hydrologiques (hors modele)
+  indicatorsHeader: {
+    text: "Indicateurs collectes pour l'affichage et l'evaluation, sans effet sur le score v3.4. Aucune station ne mesure la Lidoire : l'Eyraud (73,5 km2, rive droite) sert d'analogue de son ruissellement (ses 6 plus gros debits journaliers depuis 2022-11 tombent sur les 6 crues du moulin). La nappe alluviale de Mouliets et la maree reellement observee completent le tableau.",
+    link: { url: 'https://hubeau.eaufrance.fr/page/api-hydrometrie', label: "Hub'Eau" },
+  },
+  indicatorsPercentile: {
+    text: "Rang de la valeur actuelle dans l'historique stocke depuis 2022-11 (moyennes journalieres ; max journaliers pour la maree). p99 = seuls 1 % des jours ont fait plus. Les seuils de debit portent sur la moyenne 24 h.",
   },
 } as const
 

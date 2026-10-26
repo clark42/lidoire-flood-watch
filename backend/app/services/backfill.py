@@ -242,6 +242,7 @@ async def run_full_backfill(
     skip_risk: bool = False,
     risk_shadow: bool = False,
     risk_step_hours: int = 1,
+    indicators: bool = False,
 ) -> dict:
     """
     Run complete backfill of all data sources.
@@ -254,6 +255,8 @@ async def run_full_backfill(
         skip_*: Skip specific data sources
         risk_shadow: Also backfill the shadow model 3.4-gate (off by default)
         risk_step_hours: Step of the risk score recalculation (default 1 h)
+        indicators: Also backfill the hydrological indicators (river_flow,
+            groundwater, tide_observed; off by default, never a model input)
 
     Returns:
         Summary of all backfill operations
@@ -303,6 +306,13 @@ async def run_full_backfill(
         results["risk_scores"] = await recalculate_risk_scores(
             start_date, end_date, shadow=risk_shadow, step_hours=risk_step_hours,
         )
+
+    # 6. Hydrological indicators (optional, outside the model)
+    if indicators:
+        from app.services.collectors.hydro_indicators import backfill_indicators
+
+        _update_progress("indicators: flows, groundwater, observed tide...")
+        results["indicators"] = await backfill_indicators(start_date, end_date)
 
     _update_progress("done")
 

@@ -14,7 +14,7 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
-import { getStatus, getSourcesDetail, simulateRisk, errorMessage, toActionError } from '../api'
+import { getStatus, getSourcesDetail, getCurrentRisk, simulateRisk, errorMessage, toActionError } from '../api'
 import type { ActionErrorState } from '../api'
 import type {
   DependencyCheck,
@@ -30,6 +30,7 @@ import { formatAge, parseApiDate } from '../utils/time'
 import ApiKeyPanel from '../components/ApiKeyPanel'
 import { formatDistanceKm } from '../utils/format'
 import ActionError from '../components/ActionError'
+import ForecastSkillPanel from '../components/ForecastSkillPanel'
 
 const DEPENDENCIES: { key: DependencyName; label: string }[] = [
   { key: 'database', label: 'PostgreSQL' },
@@ -106,6 +107,12 @@ function SourceFreshnessRow({ source }: { source: SourceFreshness }) {
   )
 }
 
+/** "3.4" / "v3.4" -> "v3.4" */
+function formatModelVersion(version: string | null | undefined): string | null {
+  if (!version) return null
+  return version.startsWith('v') ? version : `v${version}`
+}
+
 function DependencyRow({
   label,
   state,
@@ -143,6 +150,8 @@ export default function Configuration() {
   const [sourcesError, setSourcesError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [sourcesLoading, setSourcesLoading] = useState(true)
+  // Fallback when /api/sources-detail has no risk_model.version: RiskScore.model_version
+  const [scoreModelVersion, setScoreModelVersion] = useState<string | null>(null)
 
   // Simulation state
   const [simParams, setSimParams] = useState({
@@ -189,6 +198,11 @@ export default function Configuration() {
       const data = await getSourcesDetail()
       setSources(data)
       setSourcesError(null)
+      if (!data.risk_model?.version) {
+        getCurrentRisk()
+          .then(risk => setScoreModelVersion(risk.model_version ?? null))
+          .catch(err => console.error('Error fetching risk model version:', err))
+      }
     } catch (err) {
       console.error('Error fetching sources detail:', err)
       setSourcesError(errorMessage(err))
@@ -697,7 +711,7 @@ export default function Configuration() {
               <div className="p-4 border-b">
                 <h4 className="font-medium flex items-center gap-2">
                   <AlertTriangle className="w-5 h-5 text-red-500" />
-                  Modele de risque {sources.risk_model.version}
+                  Modele de risque {formatModelVersion(sources.risk_model.version ?? scoreModelVersion) ?? ''}
                 </h4>
               </div>
               <div className="p-4 space-y-4">
@@ -781,6 +795,8 @@ export default function Configuration() {
           )}
         </div>
       ) : null}
+
+      <ForecastSkillPanel />
 
       {/* Risk Simulator */}
       <div className="bg-white rounded-lg shadow">

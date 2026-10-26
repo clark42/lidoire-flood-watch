@@ -31,6 +31,13 @@ Candidates (every model follows the ``scripts.eval`` Model protocol:
   two unit hydrographs, routing store) of the Lidoire, parameters fixed from
   the literature (no calibration: there is no discharge gauge on the
   Lidoire) and a climatological potential evapotranspiration.
+- :class:`V4AlphaModel`: the v4-alpha mechanism model (backwater AND
+  runoff, OR overbank, optional groundwater) of
+  :mod:`app.services.risk_v4`, fed with the candidate features; variants
+  change the runoff proxy (Eyraud / Caudeau discharge, GR4H, GloFAS), the
+  backwater input (Pessac H_aval or confluence stage Z_c) and the switches.
+  :func:`v4_alpha_scores` is an independent vectorised implementation
+  (equivalence test).
 
 Every stateful quantity (API, GR4H stores) is updated from ``rain_1h`` in
 chronological order, so a model only ever uses current and past rows. A
@@ -46,6 +53,11 @@ from typing import Mapping, Optional, Sequence
 
 import numpy as np
 
+from app.services.risk_v4 import (
+    V4Features,
+    V4Params,
+    compute_risk_v4,
+)
 from app.services.risk_shadow import (
     BACKWATER_GATE_FULL_M,
     BACKWATER_GATE_LOW_M,
@@ -248,7 +260,18 @@ def mm_h_to_m3s(q_mm_h: float, area_km2: float = LIDOIRE_AREA_KM2) -> float:
 
 FEATURE_NAMES = (
     "h_aval", "api_fast", "api_slow", "rain_24h", "rain_72h", "q_gr4h", "gr4h_soil",
+    "q_eyraud", "q_caudeau", "q_glofas", "z_conf", "piezo", "q_eyraud_lag0",
 )
+
+# dataset value -> candidate feature (pass-through, already causal and lagged)
+PASSTHROUGH_FEATURES = {
+    "q_eyraud": "q_eyraud_max_12h",  # 12.5 h max of the Eyraud Q ending t - 7 h
+    "q_caudeau": "q_caudeau_max_12h",
+    "q_glofas": "glofas_lidoire_m3s",
+    "z_conf": "z_conf_ngf",
+    "piezo": "piezo_ngf",
+    "q_eyraud_lag0": "q_eyraud_lag0_max_12h",  # sensitivity only: no publication lag
+}
 
 
 class CandidateFeatures:
@@ -258,7 +281,10 @@ class CandidateFeatures:
     - ``api_fast`` / ``api_slow``: API of basin rain, k = 0.88 / 0.97 per day;
     - ``rain_24h`` / ``rain_72h``: basin rain windows from the dataset;
     - ``q_gr4h`` (m3/s) and ``gr4h_soil`` (S/X1): GR4H driven by ``rain_1h``
-      and the climatological PET.
+      and the climatological PET;
+    - v4-alpha pass-through inputs (:data:`PASSTHROUGH_FEATURES`): Eyraud /
+      Caudeau discharge (12.5 h max, publication lag applied by the
+      dataset), GloFAS Lidoire discharge, confluence stage, groundwater.
 
     A missing ``rain_1h`` counts as 0 mm. A timestamp at or before the last
     one resets every state (a new replay started).
@@ -295,6 +321,8 @@ class CandidateFeatures:
             "q_gr4h": None,
             "gr4h_soil": None,
         }
+        for name, key in PASSTHROUGH_FEATURES.items():
+            out[name] = values.get(key)
         if self.gr4h is not None:
             # hours skipped since the last row: zero rain, PET only
             for _ in range(max(0, int(round(dt_h)) - 1)):
@@ -407,7 +435,8 @@ class V33BackwaterModel(_StatefulModel):
 
 def _transform(name: str, x: np.ndarray) -> np.ndarray:
     """Feature transform used by the logistic models (log1p for rain/flow)."""
-    if name in ("api_fast", "api_slow", "rain_24h", "rain_72h", "q_gr4h"):
+    if name in ("api_fast", "api_slow", "rain_24h", "rain_72h", "q_gr4h", "q_eyraud", "q_caudeau", "q_glofas",
+                "q_eyraud_lag0"):
         return np.log1p(np.maximum(x, 0.0))
     return x
 
@@ -542,3 +571,83 @@ def logistic_model_from_fit(
 def design_matrix(table: Mapping[str, np.ndarray], feature_names: Sequence[str]) -> np.ndarray:
     """Transformed (unstandardised) feature columns, NaN kept."""
     return np.column_stack([_transform(n, np.asarray(table[n], dtype=float)) for n in feature_names])
+
+
+# ---------------------------------------------------------------------------
+# v4-alpha (app.services.risk_v4)
+# ---------------------------------------------------------------------------
+
+RUNOFF_FEATURES = ("q_eyraud", "q_caudeau", "q_gr4h", "q_glofas", "q_eyraud_lag0")
+
+
+@dataclass
+class V4AlphaModel(_StatefulModel):
+    """v4-alpha score of :func:`app.services.risk_v4.compute_risk_v4` on the candidate features.
+
+    ``runoff_feature`` picks the runoff proxy (one of :data:`RUNOFF_FEATURES`;
+    ``params.runoff`` must hold thresholds on that proxy's scale). No
+    parameter is fitted: every threshold is in ``params`` (pre-registered).
+    """
+
+    params: V4Params
+    runoff_feature: str = "q_eyraud"
+    name: str = "v4a_joint"
+    kind: str = "score"
+    thresholds: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SCORE_THRESHOLDS))
+
+    def __post_init__(self):
+        if self.runoff_feature not in RUNOFF_FEATURES:
+            raise ValueError(f"unknown runoff feature {self.runoff_feature!r}")
+        self.with_gr4h = self.runoff_feature == "q_gr4h"
+        self._init_extractor()
+
+    def v4_features(self, f: Mapping[str, Optional[float]]) -> V4Features:
+        def val(k: str) -> Optional[float]:
+            v = f.get(k)
+            return None if v is None or math.isnan(v) else float(v)
+
+        return V4Features(
+            backwater_level_m=val("h_aval"),
+            confluence_stage_ngf=val("z_conf"),
+            runoff_q_m3s=val(self.runoff_feature),
+            groundwater_ngf=val("piezo"),
+        )
+
+    def breakdown(self, row):
+        return compute_risk_v4(self.v4_features(self._features(row)), self.params)
+
+    def score(self, row) -> Optional[float]:
+        return self.breakdown(row).score
+
+
+def _graded_vec(x: np.ndarray, th) -> np.ndarray:
+    """Vectorised risk_v4.graded_score (NaN stays NaN)."""
+    z, y, o, r = th.as_tuple()
+    x = np.asarray(x, dtype=float)
+    out = np.zeros_like(x)
+    out = np.where((x > z) & (x < y), 15.0 * (x - z) / (y - z), out)
+    out = np.where((x >= y) & (x < o), 15.0 + 20.0 * (x - y) / (o - y), out)
+    out = np.where((x >= o) & (x < r), 35.0 + 20.0 * (x - o) / (r - o), out)
+    out = np.where(x >= r, np.minimum(100.0, 55.0 + 20.0 * (x - r) / (r - o)), out)
+    return np.where(np.isnan(x), np.nan, out)
+
+
+def v4_alpha_scores(table: Mapping[str, np.ndarray], params: V4Params, runoff_feature: str = "q_eyraud") -> np.ndarray:
+    """Independent vectorised v4-alpha score over a :func:`feature_table` (NaN = not scored)."""
+    h = np.asarray(table["h_aval"], dtype=float)
+    if params.backwater_source == "confluence":
+        sb = _graded_vec(table["z_conf"], params.confluence)
+    else:
+        sb = _graded_vec(h, params.backwater)
+    sr = _graded_vec(table[runoff_feature], params.runoff) if params.runoff is not None else np.full(len(h), np.nan)
+    joint = np.where(np.isnan(sb) | np.isnan(sr), np.nan, np.minimum(sb, sr))
+    branches = [joint]
+    if params.use_overbank and params.overbank is not None:
+        branches.append(_graded_vec(h, params.overbank))
+    if params.use_groundwater and params.groundwater is not None:
+        branches.append(_graded_vec(table["piezo"], params.groundwater))
+    stacked = np.vstack(branches)
+    with np.errstate(all="ignore"):
+        filled = np.where(np.isnan(stacked), -1.0, stacked)
+        best = np.where(np.all(np.isnan(stacked), axis=0), np.nan, np.max(filled, axis=0))
+    return np.round(np.minimum(100.0, best), 2)

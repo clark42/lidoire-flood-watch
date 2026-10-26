@@ -128,9 +128,13 @@ async def test_status_sources_fresh_keep_contract(frozen_ages):
     _influx_ok()
     body = await status.get_status()
     assert body["status"] == "healthy"
-    assert set(body["sources"]) == {
-        "river_primary", "rain_openmeteo", "infoclimat", "netatmo", "tide", "soil", "risk_score",
-    }
+    core = {"river_primary", "rain_openmeteo", "infoclimat", "netatmo", "tide", "soil", "risk_score"}
+    assert core <= set(body["sources"])
+    # Only informative sources are added: vigilance, hydrological indicators (tests/indicators) and probabilistic series (tests/probabilistic)
+    extra = set(body["sources"]) - core
+    assert "vigilance" in extra
+    assert all(k in {"vigilance", "radar_opera", "glofas", "ensemble_rain"} or k.startswith("indicator_") for k in extra)
+    assert not any(body["sources"][k]["critical"] for k in extra)
     river = body["sources"]["river_primary"]
     assert river["status"] == "ok" and river["critical"] is True
     assert river["last_timestamp"] == (NOW - timedelta(hours=0.1)).isoformat()
