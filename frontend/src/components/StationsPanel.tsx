@@ -9,8 +9,8 @@ import {
   Clock,
   Activity,
 } from 'lucide-react'
-import { format } from 'date-fns'
-import { fr } from 'date-fns/locale'
+import { formatParis } from '../utils/time'
+import { formatDistanceKm } from '../utils/format'
 import InfoTooltip from './InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 
@@ -216,7 +216,7 @@ function StationCard({
           <div className="flex items-center gap-3 mt-1 text-xs text-gray-500">
             <span className="flex items-center gap-1">
               <MapPin className="w-3 h-3" />
-              {station.distance_km} km
+              {formatDistanceKm(station.distance_km)}
             </span>
             {station.delay_hours > 0 && (
               <span className="flex items-center gap-1">
@@ -315,7 +315,7 @@ function StationCard({
 
       {/* Timestamp */}
       <div className="mt-2 text-xs text-gray-400">
-        {format(new Date(station.current_level.timestamp), "HH:mm", { locale: fr })}
+        {formatParis(station.current_level.timestamp, 'HH:mm')}
       </div>
     </div>
   )
