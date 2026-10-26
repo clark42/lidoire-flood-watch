@@ -263,7 +263,8 @@ async def get_status():
     return {
         "status": "healthy" if healthy else "degraded",
         "timestamp": _utcnow().isoformat(),
-        "version": "1.0.0",
+        "version": settings.app_version,
+        "model_version": MODEL_VERSION,
         "location": {
             "lat": settings.moulin_lat,
             "lon": settings.moulin_lon,
@@ -415,7 +416,7 @@ async def get_sources_detail():
             },
         },
         "risk_model": {
-            "version": "v3.2",
+            "version": f"v{MODEL_VERSION}",
             "weights": {
                 "river_levels": "28% (multi-station weighted avg, Libourne exclue — maree)",
                 "rain_24h": "10%",

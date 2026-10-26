@@ -370,6 +370,7 @@ Fichier `.env` a la racine (voir `.env.example`) :
 - `NETATMO_CLIENT_ID`, `NETATMO_CLIENT_SECRET`, `NETATMO_REFRESH_TOKEN` (optionnels)
 - `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` (optionnels, notifications) ; reglages `NOTIFY_*` (voir `config.py`)
 - `CAMERA_RTSP_URL` (optionnel), `LOG_LEVEL`
+- `APP_VERSION` (optionnel, defaut `dev`) : version renvoyee par `/api/status` (`version`, plus `model_version` = `MODEL_VERSION`) et `/` ; le chart Helm la fixe au tag d'image (`image.tag`, sinon `appVersion`)
 
 Installation existante : conserver l'ancien mot de passe Postgres et l'ancien jeton Influx (`INFLUXDB_ADMIN_TOKEN` = ancien `INFLUXDB_TOKEN`) pour les volumes existants, puis `docker compose run --rm --user root backend chown -R 10001:10001 /app/data`. Detail dans le README.
 

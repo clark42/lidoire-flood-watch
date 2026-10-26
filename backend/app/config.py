@@ -10,6 +10,10 @@ from app.geo import display_distance_km
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
+    # Application version (APP_VERSION): the image tag in Kubernetes (set by
+    # the Helm chart, e.g. sha-1a2b3c4), "dev" when not set
+    app_version: str = "dev"
+
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/lidoire_flood"
     influxdb_url: str = "http://localhost:8086"
