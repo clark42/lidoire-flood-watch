@@ -1,0 +1,250 @@
+/*
+ * "Terrain et confiance" panels: basin map (BasinMap), GloFAS fan
+ * (GlofasFan), forecast vs observed chart (ForecastVsObserved).
+ * SVG presentation attributes do not resolve var(): the token colours are
+ * set here, in CSS.
+ */
+
+/* ---------- shared SVG chart text ---------- */
+.fchart svg,
+.bmap svg {
+  display: block;
+  max-width: 100%;
+}
+.fchart text,
+.bmap text {
+  font-family: var(--f-body);
+  font-size: 11px;
+  fill: var(--ink-2);
+}
+.fchart .fchart-ax {
+  fill: var(--ink-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.fchart .fchart-lab {
+  fill: var(--ink);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.fchart .fchart-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.fchart .fchart-base {
+  stroke: var(--line-2);
+  stroke-width: 1;
+}
+
+/* ---------- basin map ---------- */
+.bmap svg {
+  overflow: hidden;
+  border-radius: 6px;
+}
+.bmap text {
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.bmap .bmap-ax {
+  fill: var(--ink-3);
+  font-size: 10.5px;
+}
+.bmap .bmap-lab {
+  fill: var(--ink);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.bmap-bg {
+  fill: var(--surface);
+}
+.bmap-basin {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+.bmap-hatch-line {
+  stroke: var(--accent);
+  stroke-width: 1;
+  opacity: 0.35;
+}
+.bmap-radar {
+  image-rendering: pixelated;
+}
+.bmap-radar-frame {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+.bmap-troncon {
+  fill: none;
+  stroke-width: 9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.25;
+}
+.bmap-river-halo {
+  fill: none;
+  stroke: var(--surface);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.bmap-river {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.bmap-river-core {
+  fill: none;
+  stroke: var(--water);
+  stroke-width: 0.8;
+  stroke-linecap: round;
+  opacity: 0.7;
+}
+.bmap-lidoire {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* The Lidoire "flows": discreet moving dashes, off under reduced motion */
+.bmap-lidoire-flow {
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 1.2;
+  stroke-dasharray: 2 10;
+  stroke-linecap: round;
+  animation: bmap-flow 1.6s linear infinite;
+}
+.bmap-station {
+  stroke: var(--ink);
+  stroke-width: 1.4;
+}
+.bmap-station--tide {
+  fill: var(--surface);
+  stroke: var(--ink-3);
+  stroke-dasharray: 2 2;
+}
+.bmap-marker {
+  fill: var(--surface);
+  stroke: var(--ink);
+  stroke-width: 1.4;
+}
+.bmap-mill {
+  fill: var(--ink);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+.bmap-pulse {
+  fill: none;
+  stroke: var(--lv-red);
+  stroke-width: 1.5;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bmap-pulse 2.2s ease-out infinite;
+}
+.bmap-scale {
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+@keyframes bmap-flow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+@keyframes bmap-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(3);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bmap-lidoire-flow,
+  .bmap-pulse {
+    animation: none;
+  }
+}
+
+/* ---------- GloFAS fan ---------- */
+.gfan-outer {
+  fill: var(--water-soft);
+  opacity: 0.75;
+}
+.gfan-inner {
+  fill: var(--water);
+  opacity: 0.35;
+}
+.gfan-floods {
+  fill: var(--silt-soft);
+}
+.gfan-floods-label {
+  fill: var(--silt) !important;
+}
+.gfan-clim {
+  stroke: var(--ink-3);
+  stroke-dasharray: 3 3;
+}
+.gfan-median {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-dasharray: 1 3;
+  stroke-linecap: round;
+}
+.gfan-max {
+  fill: none;
+  stroke: var(--water);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+.gfan-now {
+  stroke: var(--ink);
+  stroke-width: 1.2;
+}
+
+/* ---------- forecast vs observed ---------- */
+.fvo-actual {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+}
+.fvo-forecast {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 1 3;
+  stroke-linecap: round;
+}
+.fvo-threshold {
+  stroke: var(--lv-orange);
+  stroke-dasharray: 4 3;
+}
+.fvo-dot {
+  fill: var(--surface);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+/* ---------- source health shapes ---------- */
+.shealth-mark {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+/* ---------- analog photo slot ---------- */
+.analog-photo {
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  border: 1px dashed var(--line-2);
+  background: repeating-linear-gradient(135deg, var(--hatch) 0 1px, transparent 1px 8px);
+}
