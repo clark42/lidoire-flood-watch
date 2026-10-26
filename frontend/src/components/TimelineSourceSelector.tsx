@@ -222,7 +222,7 @@ export default function TimelineSourceSelector({
         >
           <Anchor className="w-4 h-4" />
           {tideEnabled && <Check className="w-3 h-3" />}
-          Maree (Libourne)
+          Maree (confluence, estimee)
         </button>
 
         <button

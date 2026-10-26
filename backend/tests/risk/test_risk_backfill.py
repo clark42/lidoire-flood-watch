@@ -93,7 +93,7 @@ class _InfluxStub:
         return [r for r in self.rain_rows if start <= r["timestamp"] < end]
 
     async def query_tides(self, port, start, end):
-        return self.tide_rows if port == "BORDEAUX" else []
+        return self.tide_rows if port == "LIDOIRE" else []
 
     async def write_risk_score(self, score, level, timestamp, factors=None, model_version=None, source=None):
         self.writes.append({"score": score, "level": level, "timestamp": timestamp,

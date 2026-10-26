@@ -27,7 +27,8 @@ Deviations from the live realtime score (documented in ``meta``): soil
 saturation, westerly wind and video are not archived (unavailable inputs,
 excluded from the denominator, as in the production backfill); rain is the
 Open-Meteo basin mean (no Netatmo/Infoclimat archive); tide coefficients are
-estimated from the model sea-level range.
+estimated from the model sea-level range. Tide times get the production phase
+lag (``settings.tide_phase_lag_hours``, overridable by ``tide_lag_hours``).
 """
 
 from __future__ import annotations
@@ -94,6 +95,7 @@ class BuildOptions:
     level_mode: str = "causal"  # "causal" | "interp"
     forecast_rain: str = "none"  # "none" | "oracle"
     use_tide: bool = True
+    tide_lag_hours: Optional[float] = None  # default: production Open-Meteo lag
     max_age_hours: Optional[float] = None  # default depends on level_mode
     rate_window_h: Optional[float] = None  # default: settings (3h)
 
@@ -103,6 +105,13 @@ class BuildOptions:
         if self.level_mode == "interp":
             return settings.risk_level_max_age_hours
         return CAUSAL_MAX_AGE_HOURS
+
+    def resolved_tide_lag(self) -> float:
+        if self.tide_lag_hours is not None:
+            return self.tide_lag_hours
+        from app.services.collectors.tide import SOURCE_OPEN_METEO, tide_phase_lag_hours
+
+        return tide_phase_lag_hours(SOURCE_OPEN_METEO)
 
     def resolved_rate_window(self, settings) -> float:
         return self.rate_window_h if self.rate_window_h is not None else settings.risk_rate_window_hours
@@ -216,8 +225,13 @@ def daily_station_feature(
 
 def high_tides_from_sea_level(
     sea_level: Sequence[tuple[datetime, Optional[float]]],
+    lag_hours: Optional[float] = None,
 ) -> list[tuple[datetime, Optional[int]]]:
-    """High tides (time, estimated coefficient) with the production extractor."""
+    """High tides (time, estimated coefficient) with the production extractor.
+
+    Times are shifted to the Lidoire confluence by ``lag_hours`` (default:
+    the production Open-Meteo lag), exactly as the collector does.
+    """
     from app.models.schemas import TideType
     from app.services.collectors.tide import _extract_tides_from_levels
 
@@ -225,7 +239,7 @@ def high_tides_from_sea_level(
         return []
     times = [ts.isoformat() for ts, _ in sea_level]
     levels = [v for _, v in sea_level]
-    tides = _extract_tides_from_levels(times, levels)
+    tides = _extract_tides_from_levels(times, levels, lag_hours)
     return sorted(
         (risk_core.to_utc_naive(td.timestamp), td.coefficient)
         for td in tides if td.tide_type == TideType.HIGH
@@ -284,7 +298,9 @@ def build_rows(
         (ts, mm, pid) for pid, series in raw.rain_by_point.items() for ts, mm in series.items()
     )
     rain_hourly = risk_core.aggregate_hourly_rain(rain_records)
-    tide_index = _TideIndex(high_tides_from_sea_level(raw.sea_level) if options.use_tide else [])
+    tide_index = _TideIndex(
+        high_tides_from_sea_level(raw.sea_level, options.resolved_tide_lag()) if options.use_tide else []
+    )
     cfg_by_id = {c.station_id: c for c in station_configs}
     primary_pts = points.get(primary_station_id, [])
 
@@ -446,7 +462,8 @@ def collect_raw_inputs(
             MARINE_LAT, MARINE_LON, fetch_start, end + timedelta(days=2), cache, client, refresh,
         )
         meta["tide"] = {
-            "source": "Open-Meteo Marine sea_level_height_msl (Gironde mouth), coefficients estimated",
+            "source": "Open-Meteo Marine sea_level_height_msl (Gironde mouth), coefficients estimated, "
+                      "times shifted by the phase lag to the Lidoire confluence",
             "n_hours": sum(1 for _, v in raw.sea_level if v is not None),
         }
     finally:
@@ -483,6 +500,7 @@ def build_dataset(
             "level_mode": options.level_mode,
             "forecast_rain": options.forecast_rain,
             "use_tide": options.use_tide,
+            "tide_lag_hours": options.resolved_tide_lag(),
             "max_age_hours": options.resolved_max_age(settings),
             "rate_window_h": options.resolved_rate_window(settings),
         },

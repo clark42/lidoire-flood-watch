@@ -27,7 +27,7 @@ export const TOOLTIPS = {
     link: { url: 'https://maree.info/82', label: 'Marees Libourne' },
   },
   tidePhaseBmPm: {
-    text: "PM = Pleine Mer (maree haute), BM = Basse Mer (maree basse). Le risque est maximal a PM quand la maree empeche la riviere de s'ecouler vers l'ocean.",
+    text: "PM = Pleine Mer (maree haute), BM = Basse Mer (maree basse). Le risque est maximal a PM quand la maree empeche la riviere de s'ecouler vers l'ocean. Heures estimees a la confluence de la Lidoire : maree de l'embouchure de la Gironde decalee de 6 h (propagation mesuree : +4 h a Libourne, +7 h a Pessac).",
     link: { url: 'https://www.shom.fr/les-marees', label: 'SHOM - Les marees' },
   },
   tidePhaseHours: {
@@ -121,13 +121,13 @@ export const TOOLTIPS = {
 
   // Maree timeline
   timelineTide: {
-    text: "Hauteur d'eau maregraphique a Libourne, en metres par rapport au zero hydrographique (reference des cartes marines). Les valeurs negatives sont normales : elles indiquent une basse mer sous le zero de reference. La sinusoide ~12h correspond au cycle naturel des marees. Attention : ce referentiel est different de celui des stations de riviere (zero local de chaque echelle).",
+    text: "Niveau marin modele (Open-Meteo Marine) a l'embouchure de la Gironde, en metres par rapport au niveau moyen, avec les heures decalees de 6 h pour estimer la maree a la confluence de la Lidoire. Seule la phase (heure des PM/BM) est representative : l'amplitude reste celle de l'embouchure. La sinusoide ~12h correspond au cycle naturel des marees. Attention : ce referentiel est different de celui des stations de riviere (zero local de chaque echelle).",
     link: { url: 'https://maree.info/82', label: 'Marees Libourne' },
   },
 
   // Timeline panels
   timelineLevels: {
-    text: "Niveaux d'eau mesures en continu sur les stations du bassin (Dordogne, Isle, Dronne). Chaque courbe correspond a une station hydrometrique Hub'Eau. La maree de Libourne (tirets) a un referentiel different (zero hydrographique) et peut etre negative en basse mer.",
+    text: "Niveaux d'eau mesures en continu sur les stations du bassin (Dordogne, Isle, Dronne). Chaque courbe correspond a une station hydrometrique Hub'Eau. La maree (tirets, estimee a la confluence) a un referentiel different (niveau moyen de la mer) et est negative en basse mer.",
     link: { url: 'https://hubeau.eaufrance.fr/page/api-hydrometrie', label: "Hub'Eau API" },
   },
   timelineRainfall: {

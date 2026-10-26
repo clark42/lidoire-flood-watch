@@ -33,10 +33,10 @@ def tide_rows_from_events():
         rows = []
         for ts, tide_type, height, coef in events:
             rows.append({"timestamp": ts, "height_m": height, "coefficient": None,
-                         "tide_type": tide_type, "port": "BORDEAUX"})
+                         "tide_type": tide_type, "port": "LIDOIRE"})
             if coef is not None:
                 rows.append({"timestamp": ts, "height_m": None, "coefficient": coef,
-                             "tide_type": tide_type, "port": "BORDEAUX"})
+                             "tide_type": tide_type, "port": "LIDOIRE"})
         return rows
 
     return _rows

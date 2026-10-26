@@ -37,7 +37,7 @@ MARINE_LEVELS = [0.83, 1.12, 1.07, 0.65, -0.06, -0.92, -1.69, -2.14,
 
 
 def test_extract_tides_range_based_coefficient():
-    tides = tide._extract_tides_from_levels(MARINE_TIMES, MARINE_LEVELS)
+    tides = tide._extract_tides_from_levels(MARINE_TIMES, MARINE_LEVELS, lag_hours=0)
     types = [(t.timestamp.hour, t.tide_type) for t in tides]
     assert types == [(1, TideType.HIGH), (7, TideType.LOW), (14, TideType.HIGH)]
     # PM at 14h: range 1.55 - (-2.14) = 3.69 m -> ~74 (not clamped to 30)

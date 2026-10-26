@@ -100,7 +100,7 @@ def known_station_ids() -> set[str]:
 
 def known_tide_ports() -> set[str]:
     settings = get_settings()
-    return {settings.tide_port_bordeaux, settings.tide_port_libourne}
+    return {settings.tide_port_confluence, settings.tide_port_bordeaux, settings.tide_port_libourne}
 
 
 def validate_station_ids(station_ids: Iterable[str]) -> list[str]:
@@ -1291,7 +1291,7 @@ async def query_river_levels_multi_station(
 async def query_tides_timeline(
     start: datetime,
     end: datetime,
-    port: str = "LIBOURNE",
+    port: str = "LIDOIRE",
     resolution: str = "1h",
 ) -> list[dict]:
     """Query tide height data with aggregation for timeline display."""

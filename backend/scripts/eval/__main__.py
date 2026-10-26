@@ -56,6 +56,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--forecast-rain", choices=("none", "oracle"), default="none",
                    help="oracle = observed future rain as forecast (upper bound, leaks)")
     p.add_argument("--no-tide", action="store_true", help="tide inputs unavailable")
+    p.add_argument("--tide-lag", type=float, default=None,
+                   help="hours from the Gironde mouth to the confluence (default: settings)")
     p.add_argument("--merge-gap", type=int, default=0, help="merge alerts separated by <= N hours")
     p.add_argument("--lead-window", type=float, default=72.0)
     p.add_argument("--lag-window", type=float, default=6.0)
@@ -78,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
 
     t0 = time.time()
     options = BuildOptions(level_mode=args.level_mode, forecast_rain=args.forecast_rain,
-                           use_tide=not args.no_tide)
+                           use_tide=not args.no_tide, tide_lag_hours=args.tide_lag)
     raw, sources_meta = collect_raw_inputs(args.start, args.end, offline=args.offline, refresh=args.refresh)
     dataset = build_dataset(args.start, args.end, options, raw=raw, sources_meta=sources_meta)
     print(f"dataset: {len(dataset)} hours, coverage {dataset.meta['coverage']} ({time.time() - t0:.0f}s)")

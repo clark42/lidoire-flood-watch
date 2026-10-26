@@ -493,9 +493,15 @@ def _snapshot_station_points(snapshot: dict) -> dict[str, list[risk_core.LevelPo
 
 
 def _snapshot_tide_rows(snapshot: dict) -> list[dict]:
-    """Convert snapshot tide records to query_tides()-like rows."""
+    """Convert snapshot tide records to query_tides()-like rows.
+
+    Confluence port only, as ``load_tide_rows`` (legacy ports have no phase lag).
+    """
+    port = get_settings().tide_port_confluence
     rows = []
     for t in snapshot["tides"]:
+        if t.get("port") not in (None, port):
+            continue
         try:
             ts = _to_naive(isoparse(t["timestamp"]))
         except (ValueError, TypeError, KeyError):
@@ -618,13 +624,15 @@ async def get_realtime_data_at(timestamp: str):
     )
 
     # Tide display (PM/BM events of the snapshot)
-    tide_forecast = TideForecast(port="LIBOURNE", tides=[], current_coefficient=tide_state.coefficient)
+    tide_forecast = TideForecast(
+        port=settings.tide_port_confluence, tides=[], current_coefficient=tide_state.coefficient,
+    )
     for row in sorted(tide_rows, key=lambda r: r["timestamp"]):
         if row["height_m"] is None or row.get("tide_type") not in ("PM", "BM"):
             continue
         td = TideData(
             timestamp=row["timestamp"],
-            port=row.get("port") or "LIBOURNE",
+            port=row.get("port") or settings.tide_port_confluence,
             tide_type=TideType(row["tide_type"]),
             height_m=row["height_m"],
             coefficient=tide_state.coefficient,

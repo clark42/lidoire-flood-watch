@@ -219,9 +219,13 @@ async def get_sources_detail():
             },
             "tide": {
                 "name": "Open-Meteo Marine",
-                "description": "Marees et coefficients estimes depuis hauteur mer",
+                "description": (
+                    "Marees et coefficients estimes depuis hauteur mer, heures decalees "
+                    f"de +{settings.tide_phase_lag_hours.get('open-meteo-marine', 0):g} h "
+                    "(embouchure -> confluence Lidoire)"
+                ),
                 "api_url": "https://marine-api.open-meteo.com/v1/marine",
-                "ports": [settings.tide_port_bordeaux, settings.tide_port_libourne],
+                "ports": [settings.tide_port_confluence],
                 "reference_point": {"lat": 45.6, "lon": -1.2, "name": "Embouchure Gironde"},
             },
             "meteo_agricole": {

@@ -882,19 +882,16 @@ def _coefficient_near(ts: datetime, coefs: list[tuple[datetime, int]], max_gap_h
 
 
 async def load_tide_rows(start: datetime, end: datetime) -> list[dict]:
-    """Stored tide rows for [start, end]: Bordeaux first, else Libourne.
+    """Stored tide rows for [start, end] at the Lidoire confluence.
 
     Shared by the backfill and the TimeMachine so both see the same tides.
+    Only the confluence port is read: the legacy BORDEAUX / LIBOURNE points
+    carry the source times without the phase lag and must not be mixed in.
     """
     from app.services import influx_client
 
-    settings = get_settings()
-    tide_rows: list[dict] = []
-    for port in (settings.tide_port_bordeaux, settings.tide_port_libourne):
-        tide_rows = await influx_client.query_tides(port, start, end)
-        if any(r.get("height_m") is not None for r in tide_rows):
-            break
-    return tide_rows
+    rows = await influx_client.query_tides(get_settings().tide_port_confluence, start, end)
+    return rows if any(r.get("height_m") is not None for r in rows) else []
 
 
 def _ceil_hour(dt: datetime) -> datetime:

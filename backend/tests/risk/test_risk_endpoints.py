@@ -26,10 +26,10 @@ def _snapshot(sc):
         ts = r["timestamp"].replace(tzinfo=timezone.utc).isoformat()
         if r["height_m"] is not None:
             tides.append({"timestamp": ts, "value": r["height_m"], "field": "height_m",
-                          "port": "BORDEAUX", "tide_type": r["tide_type"]})
+                          "port": "LIDOIRE", "tide_type": r["tide_type"]})
         if r["coefficient"] is not None:
             tides.append({"timestamp": ts, "value": r["coefficient"], "field": "coefficient",
-                          "port": "BORDEAUX", "tide_type": r["tide_type"]})
+                          "port": "LIDOIRE", "tide_type": r["tide_type"]})
     return {"river_levels": river, "rainfall": [], "tides": tides, "risk_scores": []}
 
 
@@ -54,7 +54,7 @@ def timemachine(monkeypatch):
 
     async def fake_tides(port, start, end):
         # Stored tides read by load_tide_rows (+/-13h, Bordeaux first)
-        return [r for r in sc.tide_rows if start <= r["timestamp"] <= end] if port == "BORDEAUX" else []
+        return [r for r in sc.tide_rows if start <= r["timestamp"] <= end] if port == "LIDOIRE" else []
 
     monkeypatch.setattr(influx_client, "query_tides", fake_tides)
     monkeypatch.setattr(realtime_api, "query_historical_snapshot", fake_snapshot)

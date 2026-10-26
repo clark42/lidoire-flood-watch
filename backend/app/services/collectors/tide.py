@@ -12,6 +12,13 @@ Honesty rules:
 - Open-Meteo Marine only provides a sea level series: high/low tides are
   extracted from it and the coefficient is *estimated* from the tidal range
   (see ``_estimate_coefficient``).
+
+Phase: every source time is shifted ONCE, here, by
+``settings.tide_phase_lag_hours[source]`` (PM/BM events and hourly heights),
+so the stored and served tides estimate the tide at the Lidoire confluence
+and are tagged ``port=settings.tide_port_confluence``. Realtime, forecast,
+backfill, TimeMachine, timeline and the eval harness all read these times.
+Heights and coefficients stay those of the source (Gironde mouth / Bordeaux).
 """
 
 import logging
@@ -65,6 +72,15 @@ def _to_naive_utc(dt: datetime) -> datetime:
     return dt
 
 
+def tide_phase_lag_hours(source: Optional[str]) -> float:
+    """Lag (h) from ``source`` times to the Lidoire confluence (0 if not configured)."""
+    return float(get_settings().tide_phase_lag_hours.get(source or "", 0.0))
+
+
+def _confluence_port() -> str:
+    return get_settings().tide_port_confluence
+
+
 def _estimate_coefficient(range_m: float) -> int:
     """Indicative tide coefficient from a tidal range in metres (clamped 20-120)."""
     coef = int(round(100.0 * range_m / RANGE_AT_COEF_100_M))
@@ -109,15 +125,25 @@ async def fetch_open_meteo_marine() -> list[TideData]:
         return []
 
 
-def _extract_tides_from_levels(times: list[str], levels: list[Optional[float]]) -> list[TideData]:
+def _extract_tides_from_levels(
+    times: list[str],
+    levels: list[Optional[float]],
+    lag_hours: Optional[float] = None,
+) -> list[TideData]:
     """
     Extract high and low tides from an hourly sea level time series (UTC).
 
     Finds local maxima (high tides) and minima (low tides). The coefficient of
     each high tide is estimated from its range to the adjacent low tides.
+    Event times are shifted by ``lag_hours`` (default: the Open-Meteo lag
+    of the settings) to the Lidoire confluence.
     """
     if len(times) < 3 or len(levels) < 3:
         return []
+    if lag_hours is None:
+        lag_hours = tide_phase_lag_hours(SOURCE_OPEN_METEO)
+    lag = timedelta(hours=lag_hours)
+    port = _confluence_port()
 
     # (index, type) of each extremum
     extrema: list[tuple[int, TideType]] = []
@@ -147,8 +173,8 @@ def _extract_tides_from_levels(times: list[str], levels: list[Optional[float]]) 
 
         tides.append(
             TideData(
-                timestamp=_to_naive_utc(datetime.fromisoformat(times[i])),
-                port="BORDEAUX",
+                timestamp=_to_naive_utc(datetime.fromisoformat(times[i])) + lag,
+                port=port,
                 tide_type=tide_type,
                 height_m=height,
                 coefficient=coef,
@@ -188,12 +214,14 @@ async def fetch_shom_api() -> list[TideData]:
             response.raise_for_status()
             data = response.json()
 
+            lag = timedelta(hours=tide_phase_lag_hours(SOURCE_SHOM))
+            port = _confluence_port()
             tides = []
             for item in data.get("predictions", []):
                 tides.append(
                     TideData(
-                        timestamp=_to_naive_utc(datetime.fromisoformat(item["datetime"])),
-                        port="BORDEAUX",
+                        timestamp=_to_naive_utc(datetime.fromisoformat(item["datetime"])) + lag,
+                        port=port,
                         tide_type=TideType.HIGH if item["type"] == "PM" else TideType.LOW,
                         height_m=float(item["height"]),
                         coefficient=item.get("coefficient"),
@@ -221,6 +249,7 @@ def _generate_estimated_tides(now: Optional[datetime] = None) -> list[TideData]:
         current += timedelta(hours=12, minutes=25)
 
     coef_base = 75
+    port = _confluence_port()
 
     for i in range(28):  # 7 days * 4 tides
         is_high = i % 2 == 0
@@ -229,7 +258,7 @@ def _generate_estimated_tides(now: Optional[datetime] = None) -> list[TideData]:
         tides.append(
             TideData(
                 timestamp=current,
-                port="BORDEAUX",
+                port=port,
                 tide_type=TideType.HIGH if is_high else TideType.LOW,
                 height_m=5.2 + (0.5 if is_high else -0.5) + (coef - 75) * 0.02,
                 coefficient=coef if is_high else None,
@@ -310,7 +339,7 @@ async def get_current_tide_data() -> TideForecast:
     current_coef = past_high_tides[-1].coefficient if past_high_tides else None
 
     return TideForecast(
-        port="BORDEAUX",
+        port=_confluence_port(),
         next_high_tide=next_high,
         next_low_tide=next_low,
         current_coefficient=current_coef or (next_high.coefficient if next_high else None),
@@ -318,18 +347,19 @@ async def get_current_tide_data() -> TideForecast:
         recent_tides=recent_tides,
         available=available,
         source=source,
+        phase_lag_hours=tide_phase_lag_hours(source) if available else None,
     )
 
 
 async def _recent_stored_tides(now: datetime) -> list[TideData]:
-    """PM/BM events stored in InfluxDB over [now - 13h, now] (Bordeaux port).
+    """PM/BM events stored in InfluxDB over [now - 13h, now] (confluence port).
 
     Returns [] when InfluxDB is unavailable (the risk then only sees the
     tides of the in-memory list, as before).
     """
     from app.services import influx_client
 
-    port = get_settings().tide_port_bordeaux
+    port = _confluence_port()
     try:
         rows = await influx_client.query_tides(port, now - RECENT_TIDES_WINDOW, now + timedelta(seconds=1))
     except Exception as e:
@@ -338,7 +368,7 @@ async def _recent_stored_tides(now: datetime) -> list[TideData]:
     return tide_events_from_rows(rows, port)
 
 
-def tide_events_from_rows(rows: list[dict], default_port: str = "BORDEAUX") -> list[TideData]:
+def tide_events_from_rows(rows: list[dict], default_port: Optional[str] = None) -> list[TideData]:
     """PM/BM TideData from ``influx_client.query_tides`` rows.
 
     query_tides returns one row per field: the ``height_m`` and the
@@ -346,6 +376,7 @@ def tide_events_from_rows(rows: list[dict], default_port: str = "BORDEAUX") -> l
     ``tide_type`` tag; they are merged here. Untagged hourly heights are
     ignored.
     """
+    default_port = default_port or _confluence_port()
     events: dict[tuple[datetime, str], dict] = {}
     for r in rows:
         tide_type = r.get("tide_type")
@@ -411,11 +442,15 @@ async def fetch_and_store_tides_range(start: datetime, end: datetime) -> int:
 
     Uses Open-Meteo Marine API with start_date/end_date parameters to get
     historical and forecast sea level data. Stores all hourly points for
-    continuous timeline display.
+    continuous timeline display, shifted to the Lidoire confluence (the raw
+    window starts ``lag`` earlier so that [start, end] stays covered).
     """
     from app.services import influx_client
 
-    start_str = start.strftime("%Y-%m-%d")
+    lag_hours = tide_phase_lag_hours(SOURCE_OPEN_METEO)
+    lag = timedelta(hours=lag_hours)
+    port = _confluence_port()
+    start_str = (start - lag).strftime("%Y-%m-%d")
     end_str = end.strftime("%Y-%m-%d")
 
     try:
@@ -446,16 +481,16 @@ async def fetch_and_store_tides_range(start: datetime, end: datetime) -> int:
             # Store all hourly height points for continuous timeline (one batch)
             stored = await influx_client.write_points_batch([
                 influx_client.make_tide_point(
-                    port="BORDEAUX",
+                    port=port,
                     height_m=h,
-                    timestamp=datetime.fromisoformat(t),
+                    timestamp=_to_naive_utc(datetime.fromisoformat(t)) + lag,
                 )
                 for t, h in zip(times, levels)
                 if h is not None
             ])
 
             # Also extract and store PM/BM events with (estimated) coefficients
-            await store_tides_to_influx(_extract_tides_from_levels(times, levels))
+            await store_tides_to_influx(_extract_tides_from_levels(times, levels, lag_hours))
 
             logger.info("Stored %d hourly tide points for %s -> %s", stored, start_str, end_str)
             return stored

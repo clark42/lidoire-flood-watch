@@ -119,28 +119,28 @@ def build_scenario(t0: datetime = T0, forecast_24h: float = 0.0, forecast_72h: f
     next_low = t0 + timedelta(hours=8, minutes=12)
     following_high = t0 + timedelta(hours=14, minutes=25)
     tide = TideForecast(
-        port="BORDEAUX",
-        next_high_tide=TideData(timestamp=next_high, port="BORDEAUX", tide_type=TideType.HIGH,
+        port="LIDOIRE",
+        next_high_tide=TideData(timestamp=next_high, port="LIDOIRE", tide_type=TideType.HIGH,
                                 height_m=5.6, coefficient=95),
-        next_low_tide=TideData(timestamp=next_low, port="BORDEAUX", tide_type=TideType.LOW,
+        next_low_tide=TideData(timestamp=next_low, port="LIDOIRE", tide_type=TideType.LOW,
                                height_m=0.8),
         # As computed by collectors/tide.py: coefficient of the latest past high
         current_coefficient=93,
         recent_tides=[
-            TideData(timestamp=prev_high, port="BORDEAUX", tide_type=TideType.HIGH, height_m=5.5, coefficient=93),
+            TideData(timestamp=prev_high, port="LIDOIRE", tide_type=TideType.HIGH, height_m=5.5, coefficient=93),
         ],
         tides=[
-            TideData(timestamp=next_high, port="BORDEAUX", tide_type=TideType.HIGH, height_m=5.6, coefficient=95),
-            TideData(timestamp=next_low, port="BORDEAUX", tide_type=TideType.LOW, height_m=0.8),
-            TideData(timestamp=following_high, port="BORDEAUX", tide_type=TideType.HIGH, height_m=5.7, coefficient=97),
+            TideData(timestamp=next_high, port="LIDOIRE", tide_type=TideType.HIGH, height_m=5.6, coefficient=95),
+            TideData(timestamp=next_low, port="LIDOIRE", tide_type=TideType.LOW, height_m=0.8),
+            TideData(timestamp=following_high, port="LIDOIRE", tide_type=TideType.HIGH, height_m=5.7, coefficient=97),
         ],
     )
     tide_rows = [
-        {"timestamp": prev_high, "height_m": 5.5, "coefficient": None, "tide_type": "PM", "port": "BORDEAUX"},
-        {"timestamp": prev_high, "height_m": None, "coefficient": 93, "tide_type": "PM", "port": "BORDEAUX"},
-        {"timestamp": next_high, "height_m": 5.6, "coefficient": None, "tide_type": "PM", "port": "BORDEAUX"},
-        {"timestamp": next_high, "height_m": None, "coefficient": 95, "tide_type": "PM", "port": "BORDEAUX"},
-        {"timestamp": next_low, "height_m": 0.8, "coefficient": None, "tide_type": "BM", "port": "BORDEAUX"},
+        {"timestamp": prev_high, "height_m": 5.5, "coefficient": None, "tide_type": "PM", "port": "LIDOIRE"},
+        {"timestamp": prev_high, "height_m": None, "coefficient": 93, "tide_type": "PM", "port": "LIDOIRE"},
+        {"timestamp": next_high, "height_m": 5.6, "coefficient": None, "tide_type": "PM", "port": "LIDOIRE"},
+        {"timestamp": next_high, "height_m": None, "coefficient": 95, "tide_type": "PM", "port": "LIDOIRE"},
+        {"timestamp": next_low, "height_m": 0.8, "coefficient": None, "tide_type": "BM", "port": "LIDOIRE"},
     ]
     return Scenario(t0, station_points, rain_hourly, rainfall, stations_data, tide, tide_rows)
 

@@ -524,13 +524,14 @@ async def _query_tide_events(start: datetime, end: datetime) -> list[TideData]:
     local maxima of the hourly heights (coefficient from the nearest stored
     coefficient record, if any).
     """
+    from app.config import get_settings
     from app.services.collectors.tide import tide_events_from_rows
     from app.services.risk_v2 import load_tide_rows, tide_inputs_from_records
 
     rows = await load_tide_rows(start, end)
     if not rows:
         return []
-    port = next((r.get("port") for r in rows if r.get("port")), None) or "BORDEAUX"
+    port = next((r.get("port") for r in rows if r.get("port")), None) or get_settings().tide_port_confluence
     events = tide_events_from_rows(rows, port)
     if events:
         return events
@@ -556,8 +557,8 @@ async def _query_tide_events(start: datetime, end: datetime) -> list[TideData]:
 async def get_historical_tides(start: datetime, end: datetime) -> list[TideData]:
     """Get historical tide events (PM/BM) from InfluxDB.
 
-    Every collector stores tides with ``port=BORDEAUX`` (Open-Meteo Marine /
-    SHOM), Libourne is only read as a fallback. When nothing is stored for
+    Every collector stores tides at the Lidoire confluence (source times +
+    phase lag, ``settings.tide_port_confluence``). When nothing is stored for
     the period, the hourly sea level of the period (plus 1 day of margin)
     is fetched from Open-Meteo Marine, stored, and read back.
     """

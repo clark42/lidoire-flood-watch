@@ -540,7 +540,7 @@ async def get_risk_forecast_v2(hours: int = 168) -> dict:
     try:
         last_known = max((ts for ts, _ in tide_highs), default=now)
         extra = await _fetch_tide_highs_from_influx(
-            tide.port if tide else settings.tide_port_bordeaux,
+            tide.port if tide else settings.tide_port_confluence,
             last_known + timedelta(minutes=1),
             now + timedelta(hours=hours + 13),
         )

@@ -55,6 +55,9 @@ class TideForecast(BaseModel):
     # and must not drive the risk model as if they were real.
     available: bool = True
     source: Optional[str] = None
+    # Hours added to the source times to estimate the tide at the Lidoire
+    # confluence (settings.tide_phase_lag_hours); all times above include it.
+    phase_lag_hours: Optional[float] = None
 
 
 # River level data
