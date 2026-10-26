@@ -30,6 +30,7 @@ import { formatAge, parseApiDate } from '../utils/time'
 import ApiKeyPanel from '../components/ApiKeyPanel'
 import { formatDistanceKm } from '../utils/format'
 import ActionError from '../components/ActionError'
+import ForecastSkillPanel from '../components/ForecastSkillPanel'
 
 const DEPENDENCIES: { key: DependencyName; label: string }[] = [
   { key: 'database', label: 'PostgreSQL' },
@@ -794,6 +795,8 @@ export default function Configuration() {
           )}
         </div>
       ) : null}
+
+      <ForecastSkillPanel />
 
       {/* Risk Simulator */}
       <div className="bg-white rounded-lg shadow">

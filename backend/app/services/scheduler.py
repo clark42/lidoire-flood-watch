@@ -298,6 +298,10 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # Forecast archive (forecast_runs), hourly right after risk_scorer
+    from app.services.forecast_archive import schedule_forecast_archive
+    schedule_forecast_archive(_scheduler, first_run=now + RISK_JOB_FIRST_RUN_DELAY)
+
     # Official vigilance (Vigicrues, Meteo-France): every 30 minutes, informative only
     from app.services.collectors.vigilance import schedule_vigilance
     schedule_vigilance(_scheduler, first_run=now)

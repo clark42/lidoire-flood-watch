@@ -158,6 +158,12 @@ export const TOOLTIPS = {
   },
 
   // Previsions
+  outlook: {
+    text: "Pour chaque horizon (6 h, 24 h, 72 h) : le score maximal prevu, son heure, et les facteurs qui y contribuent le plus (en points du score). La liste d'actions correspond au niveau le plus eleve prevu ; elle est modifiable dans backend/app/data/action_plan.json. Prevision recalculee chaque heure : un score, pas une probabilite.",
+  },
+  forecastSkill: {
+    text: "Chaque heure, la prevision est archivee. Ici, le score prevu a 6 h, 24 h et 72 h est compare au score temps reel effectivement calcule a l'heure visee. MAE = ecart moyen en points ; biais > 0 = prevision trop pessimiste. Detection = prevu et observe au-dessus du seuil orange ; manque = observe seulement ; fausse alerte = prevu seulement.",
+  },
   forecastHeader: {
     text: "Projection du score de risque sur les prochaines heures, basee sur les previsions de maree et de pluie. Les niveaux de riviere sont maintenus constants (pas de modele hydrologique).",
   },

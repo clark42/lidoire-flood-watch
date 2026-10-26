@@ -67,22 +67,25 @@ app/
 │   ├── realtime.py      # /api/realtime + TimeMachine /at
 │   ├── timeline.py      # /api/timeline/sources, /api/timeline/unified
 │   ├── episodes.py      # /api/episodes : CRUD, labels, confirm, analyse, backfill, detection
-│   ├── risk.py          # /api/risk : score, previsions, simulation
+│   ├── risk.py          # /api/risk : score, previsions, outlook, forecast-skill, simulation
 │   ├── notify.py        # /api/notify/test (message de test, X-API-Key)
 │   ├── vigilance.py     # /api/vigilance (couleurs officielles, lecture du cache)
 │   ├── observations.py  # /api/observations (+ photo), /api/episodes/{id}/observations
 │   ├── indicators.py    # /api/indicators (indicateurs hydrologiques hors modele)
 │   └── auth.py          # /api/auth/netatmo (OAuth2)
 ├── data/
-│   └── episodes_labels.json  # Verite terrain des 14 episodes (source unique)
+│   ├── episodes_labels.json  # Verite terrain des 14 episodes (source unique)
+│   └── action_plan.json # Actions par niveau (jaune/orange/rouge), modifiable par le proprietaire
 ├── models/
 │   ├── schemas.py       # Modeles Pydantic (RiskScore, EpisodeOutcome, EpisodeLabelSet...)
-│   └── orm.py           # Tables PostgreSQL
+│   └── orm.py           # Tables PostgreSQL (flood_episodes, notifier_state, forecast_runs)
 └── services/
     ├── risk_core.py     # Coeur de scoring PUR, modele v3.4 (compute_risk, aucune I/O)
     ├── risk_shadow.py   # Modele shadow 3.4-gate (gate de remous, PUR), stocke, jamais affiche
     ├── risk_v2.py       # Construction des features (temps reel, simulation, backfill), stockage
     ├── forecast.py      # Previsions horaires (features par heure -> compute_risk)
+    ├── outlook.py       # Horizons 6/24/72 h, pourquoi, checklist, notes de confiance (PUR + cache)
+    ├── forecast_archive.py  # Archive forecast_runs (job horaire) + prevu vs observe
     ├── backfill.py      # Backfill historique (rivers, rain, tides, soil, risk)
     ├── episode_detector.py  # Detection automatique d'episodes par seuil
     ├── episode_analyzer.py / episode_analyzer_v2.py  # Contexte hydro-meteo des episodes
@@ -125,9 +128,8 @@ scripts/eval/            # Harnais d'evaluation (python -m scripts.eval build|re
 └── candidates.py        # Comparaison des modeles candidats (LOEO bloque)
 tests/
 ├── risk/  storage/  security/  collectors/
-├── groundtruth/  evaluation/  models/  followups/  notifier/
+├── groundtruth/  evaluation/  models/  followups/  notifier/  indicators/ (fixtures/ JSON enregistres)  outlook/
 ├── vigilance/ (fixtures/ : reponses enregistrees)  observations/
-├── groundtruth/  evaluation/  models/  followups/  notifier/  indicators/ (fixtures/ JSON enregistres)
 ```
 
 Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episodes.py` (remplaces par `scripts/eval/`).
@@ -150,6 +152,7 @@ src/
 │   └── Configuration.tsx # Statut, simulation, cle API ; version du modele lue dans l'API (`risk_model.version`, sinon `RiskScore.model_version`)
 └── components/
     ├── RiskGauge.tsx, RiskBreakdownPanel.tsx (contributions = poids x score / denominateur x conjonction x amortisseur, gate maree), StationsPanel.tsx, RainfallPanel.tsx
+    ├── OutlookPanel.tsx (haut du Dashboard), ForecastSkillPanel.tsx (Configuration)
     ├── ForecastPanel.tsx, BasinRainfallGauge.tsx, SoilConditionsPanel.tsx, NowcastRainChart.tsx
     ├── HydroMap.tsx, MetricSparkline.tsx, TimeMachineBanner.tsx, TimelineSourceSelector.tsx
     ├── InfoTooltip.tsx, DataCard.tsx, DataSourcesStatus.tsx (bandeau des sources = `/api/status.sources`)
@@ -204,6 +207,14 @@ Service dans `backend/app/services/forecast.py` :
 - Niveaux projetes : tendance actuelle (12 h max) + reponse a la pluie tombee apres t0, decalee par `delay_hours` de chaque station
 - Nombre de stations en hausse : decroissance lineaire sur 48 h, plus apport de la pluie projetee
 - Cache Redis 30 min ; overlay Timeline via `include_forecast=true`
+- Le payload ajoute `horizons` (6/24/72 h, voir Outlook), `high_tides` (PM estimees a la confluence) et `inputs_summary` (pluie prevue apres t0 sur 24/72 h, max projete de Pessac sur 72 h, gate maree et H de H+0). `use_cache=False` recalcule (job d'archive) et rafraichit le cache.
+
+### Outlook et archive des previsions
+
+- `GET /api/risk/outlook` (`services/outlook.py`) : pour 6, 24 et 72 h (H+0 inclus), score max, niveau, heure du max, premiere heure a ce niveau, et pourquoi = top 3 des facteurs du RiskBreakdown de l'heure max, en points du score (poids x score / denominateur x conjonction x amortisseur x 100, ramenes a 100 si plafond ; somme = score), textes en francais, plus multiplicateurs et gate maree. Aussi : prochaine PM estimee a la confluence, confiance (`good`/`reduced`/`low` : facteurs indisponibles, maree estimee, sources de `/api/status` perimees, entrees de prevision en erreur ; `low` si source critique ou riviere/pluie prevue absente) et checklist du niveau le plus haut (`act_before` = premiere heure a ce niveau). Lit la prevision 168 h en cache, cache Redis 10 min (`forecast:outlook`, purge avec `invalidate_forecast_cache`), n'ecrit rien.
+- `app/data/action_plan.json` : actions courtes par niveau (`yellow`/`orange`/`red`, vert = aucune). Une copie dans `/app/data/action_plan.json` (PVC `backend-data`) remplace le defaut sans reconstruire l'image ; un fichier invalide est ignore (log).
+- Table PostgreSQL `forecast_runs` (creee par `init_db`) : une ligne par run horaire, `run_at` (UTC naif), `model_version`, `horizon_hours`, listes JSON `scores` / `levels` / `pessac_levels_m` indexees par echeance (0 = H+0), `rain_forecast_24h_mm`, `rain_forecast_72h_mm`, `pessac_projected_max_m`, `tide_gate`, `inputs` (resume + statut des sources), unique (`run_at`, `model_version`). Ecrite seulement par le job `forecast_archiver` (toutes les heures, 2 min apres `risk_scorer`, via `get_risk_forecast_v2(168, use_cache=False)` : meme chemin v3.4, aucun modele duplique ; un echec n'affecte jamais le score). Retention : tout garder (~3-4 Ko par ligne, ~30 Mo par an), la verification prospective porte sur plusieurs saisons.
+- `GET /api/risk/forecast-skill?lead_hours=6,24,72&days=30` (`days` 1-180, 0-168 h, 10 echeances max, 422 sinon) : chaque run archive de la version courante, score a H+L apparie au `risk_score` temps reel stocke (source `realtime`, meme version) le plus proche de `run_at` + L a 35 min pres. Renvoie les paires, MAE, biais (prevu - observe) et table detection / manque / fausse alerte / rejet correct au seuil orange (POD, FAR, CSI) par echeance. Paires horaires, pas des evenements. Vide mais bien forme (`n_runs` = 0) tant que l'archive se remplit ; 503 si Postgres ou Influx en echec.
 
 ### Indicateurs hydrologiques (hors modele)
 
@@ -244,7 +255,7 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 - **Camera** : Flux RTSP configurable via `CAMERA_RTSP_URL`
 - **Vigilance officielle** (`collectors/vigilance.py`, informative, PAS une entree du modele) : Vigicrues `services/1/InfoVigiCru.geojson` (~2.2 Mo, sans filtre ni gzip, `NivInfViCr` 1-4 par `CdEntCru`) pour les troncons DO5 "Dordogne aval" (Pessac) et DO22 "Confluence Garonne - Dordogne" (Libourne), SPC 32 ; Meteo-France via le miroir data.gouv `files.data.gouv.fr/meteofrance/data/vigilance/metropole/{AAAA}/{MM}/{JJ}/{HHMMSS}/CDP_CARTE_EXTERNE.json` (pas d'alias latest : index du jour, runs du plus recent au plus ancien, les runs texte seuls n'ont pas de carte), departements 33 et 24, phenomenes 2 pluie-inondation, 4 crues, 3 orages, 1 vent, periodes J/J1. Couleurs 1 vert, 2 jaune, 3 orange, 4 rouge. Aucun historique cote API : mesure Influx `vigilance` (tags `source` vigicrues|meteofrance, `zone` DO5|DO22|33|24, `phenomenon`, champ `level`) ecrite a chaque changement, au premier passage apres demarrage et toutes les 6 h (keepalive). `GET /api/vigilance` lit le cache (`peek_vigilance`, perime a 2 h), liens vers vigicrues.gouv.fr/territoire/32, /station/<code> et vigilance.meteofrance.fr/fr/<departement>.
 
-Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), indicateurs (debits et maree observee 15 min, piezometre 3 h), `vigilance_collector` 30 min, camera si configuree.
+Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `forecast_archiver` 1 h (2 min apres `risk_scorer`), `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), indicateurs (debits et maree observee 15 min, piezometre 3 h), `vigilance_collector` 30 min, camera si configuree.
 
 APIs externes hors du chemin des requetes :
 - Netatmo, Infoclimat, Meteo Agricole, nowcast et vigilance ne sont jamais appeles par une route ni par `gather_realtime_inputs` : lecture seule des caches remplis par les jobs (`peek_*`, perimes au-dela de 1 h pour Netatmo/Infoclimat, 15 min pour le nowcast, 12 h pour Meteo Agricole ; au-dela => indisponible, comme un echec).
@@ -409,4 +420,5 @@ Installation existante : conserver l'ancien mot de passe Postgres et l'ancien je
 - Pluie radar (COMEPHORE, ANTILOPE) comme entree d'un modele pluie-debit.
 - Gate de remous sur v3.4 en mode shadow pendant une saison : en place (serie `risk_score_shadow`, version `3.4-gate`, voir Stockage) ; comparer les deux courbes et labelliser les periodes ci-dessus avant toute bascule.
 - Regression logistique / GR4H seulement quand davantage d'episodes seront labellises.
+- Archiver aussi le shadow `3.4-gate` dans `forecast_runs` (une ligne par version) et ajouter les scores evenementiels (POD/FAR par episode) a `forecast-skill`.
 - Vigilance officielle (Vigicrues DO5, Meteo-France pluie-inondation/crues >= orange) comme feature candidate, une fois la serie `vigilance` accumulee ; observations terrain comme labels supplementaires.

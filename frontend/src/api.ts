@@ -17,6 +17,8 @@ import type {
   RiskSimulationResult,
   SystemStatus,
   SourcesDetail,
+  RiskOutlook,
+  ForecastSkill,
   VigilanceStatus,
   Observation,
   ObservationInput,
@@ -285,6 +287,20 @@ export async function getInfoclimatData(): Promise<InfoclimatData> {
 // Forecast
 export async function getForecast(hours: number = 168): Promise<ForecastData> {
   return fetchJson<ForecastData>(`${API_BASE}/risk/forecast?hours=${hours}`)
+}
+
+// Outlook 6 / 24 / 72 h (max, why, checklist)
+export async function getRiskOutlook(): Promise<RiskOutlook> {
+  return fetchJson<RiskOutlook>(`${API_BASE}/risk/outlook`)
+}
+
+// Archived forecasts vs realized realtime score
+export async function getForecastSkill(
+  leadHours: number[] = [6, 24, 72],
+  days: number = 30,
+): Promise<ForecastSkill> {
+  const params = new URLSearchParams({ lead_hours: leadHours.join(','), days: String(days) })
+  return fetchJson<ForecastSkill>(`${API_BASE}/risk/forecast-skill?${params}`)
 }
 
 // Timeline Sources

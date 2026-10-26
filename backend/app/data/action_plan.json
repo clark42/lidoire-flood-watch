@@ -1,0 +1,35 @@
+{
+  "_comment": "Plan d'action du moulin, modifiable par le proprietaire. Une action par ligne, courte. Niveaux : yellow, orange, red (vert = aucune action). Une copie dans /app/data/action_plan.json (volume du backend) remplace ce fichier sans reconstruire l'image.",
+  "version": 1,
+  "levels": {
+    "yellow": {
+      "title": "Vigilance : surveiller",
+      "actions": [
+        "Consulter le tableau de bord matin et soir, et après chaque forte averse.",
+        "Vérifier que les notifications arrivent bien sur le téléphone.",
+        "Noter l'heure de la prochaine pleine mer à la confluence.",
+        "Vérifier lampe, batteries et téléphone chargés."
+      ]
+    },
+    "orange": {
+      "title": "Risque marqué : se préparer",
+      "actions": [
+        "Prévoir d'être sur place ou joignable avant le pic annoncé.",
+        "Monter à l'étage ou surélever les objets de valeur, papiers et appareils sensibles.",
+        "Préparer le matériel de protection disponible (sacs, bâches, batardeaux le cas échéant).",
+        "Déplacer les véhicules et le matériel hors des zones basses.",
+        "Suivre la vigilance Vigicrues sur la Dordogne."
+      ]
+    },
+    "red": {
+      "title": "Risque fort : protéger et mettre à l'abri",
+      "actions": [
+        "Mettre en place les protections prévues avant la pleine mer la plus proche du pic.",
+        "Mettre à l'abri les objets de valeur et les produits polluants.",
+        "Couper l'électricité des pièces exposées si c'est sans danger.",
+        "Ne pas rester dans les zones exposées ; suivre les consignes des autorités (112 en cas d'urgence).",
+        "Noter l'heure et la hauteur d'eau observées, avec des photos (vérité terrain)."
+      ]
+    }
+  }
+}
