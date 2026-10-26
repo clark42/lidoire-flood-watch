@@ -149,6 +149,12 @@ async def netatmo_auth_start(
     Note that a key in a URL can end up in proxy access logs and browser
     history: rotate it if such logs are shared.
 
+    Frontend contract (keep it): the dashboard link to this endpoint
+    (RainfallPanel, and the ``auth_url`` returned by the Netatmo collector,
+    which stays the bare path ``/api/auth/netatmo``) gets
+    ``?api_key=<localStorage lfw_api_key>`` appended by the frontend. The
+    query parameter name ``api_key`` must not change.
+
     IMPORTANT: Register the callback URL in your Netatmo app at dev.netatmo.com:
     http://localhost:3000/api/auth/netatmo/callback
     """
@@ -330,7 +336,8 @@ async def netatmo_setup_info():
             "2. Select your app (or create one)",
             "3. In 'Redirect URI', add the callback URL below",
             "4. Save changes",
-            "5. Then visit /api/auth/netatmo to authorize",
+            "5. Then visit /api/auth/netatmo to authorize "
+            "(append ?api_key=<API_KEY> when API_KEY is configured)",
         ],
         "callback_url": callback_url,
         "client_id_configured": bool(settings.netatmo_client_id),

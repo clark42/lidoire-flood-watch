@@ -46,7 +46,11 @@ class TideForecast(BaseModel):
     next_high_tide: Optional[TideData] = None
     next_low_tide: Optional[TideData] = None
     current_coefficient: Optional[int] = None
-    tides: list[TideData] = []
+    tides: list[TideData] = []  # upcoming tides (t > now), for display
+    # Tides of the last 13h (t <= now). The risk model needs the high tide
+    # that just passed (tide phase is the signed distance to the NEAREST high
+    # tide, past or future), exactly like the backfill / TimeMachine.
+    recent_tides: list[TideData] = []
     # False when no real tide source answered: tides are computed estimates
     # and must not drive the risk model as if they were real.
     available: bool = True

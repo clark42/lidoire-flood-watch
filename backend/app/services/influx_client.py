@@ -466,37 +466,60 @@ async def write_points_batch(points: list, chunk_size: int = 5000) -> int:
     return written
 
 
+# ``source`` tag of risk_score points: the hourly realtime job and the
+# historical backfill compute the score from different inputs (fused gauges,
+# rain forecast, wind and soil are only available live), so they are kept in
+# separate series and readers prefer the realtime value for an hour that has
+# both. Points written before this tag existed have no ``source``: they are
+# read as RISK_SOURCE_UNKNOWN and treated like realtime points.
+RISK_SOURCE_REALTIME = "realtime"
+RISK_SOURCE_BACKFILL = "backfill"
+RISK_SOURCE_UNKNOWN = "unknown"
+
+
+def make_risk_point(
+    score: float,
+    level: str,
+    timestamp: datetime,
+    factors: Optional[dict] = None,
+    model_version: Optional[str] = None,
+    source: Optional[str] = None,
+) -> Point:
+    """Build a ``risk_score`` point (same shape as :func:`write_risk_score`)."""
+    point = Point("risk_score").field("score", float(score)).field("level", str(level))
+    if model_version:
+        point = point.tag("model_version", str(model_version))
+    if source:
+        point = point.tag("source", str(source))
+    point = point.time(timestamp, WritePrecision.S)
+
+    if factors:
+        for key, value in factors.items():
+            if isinstance(value, bool):
+                point = point.field(f"factor_{key}", 1.0 if value else 0.0)
+            elif isinstance(value, (int, float)):
+                point = point.field(f"factor_{key}", float(value))
+    return point
+
+
 async def write_risk_score(
     score: float,
     level: str,
     timestamp: datetime,
     factors: Optional[dict] = None,
     model_version: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> bool:
     """Write risk score to InfluxDB.
 
-    Series key = measurement + ``model_version`` tag only: ``level`` is a
-    FIELD, so re-running a backfill with the same model version overwrites
-    the points instead of creating a parallel series. Legacy points (before
-    v3.3) carry ``level`` as a tag and no ``model_version``; readers below
-    handle both.
+    Series key = measurement + ``model_version`` + ``source`` tags: ``level``
+    is a FIELD, so re-running a backfill with the same model version
+    overwrites the points instead of creating a parallel series. Legacy
+    points (before v3.3) carry ``level`` as a tag and no ``model_version``;
+    readers below handle both.
     """
-    settings = get_settings()
-
     try:
-        point = Point("risk_score").field("score", float(score)).field("level", str(level))
-        if model_version:
-            point = point.tag("model_version", str(model_version))
-        point = point.time(timestamp, WritePrecision.S)
-
-        if factors:
-            for key, value in factors.items():
-                if isinstance(value, bool):
-                    point = point.field(f"factor_{key}", 1.0 if value else 0.0)
-                elif isinstance(value, (int, float)):
-                    point = point.field(f"factor_{key}", float(value))
-
-        await _run_write(point)
+        await _run_write(make_risk_point(score, level, timestamp, factors, model_version, source))
         return True
     except Exception as e:
         logger.error("Error writing risk score to InfluxDB: %s", e)
@@ -916,6 +939,52 @@ def select_risk_rows_by_version(
     return [best[ts][1] for ts in sorted(best)]
 
 
+def _risk_source_rank(source: Optional[str]) -> int:
+    """Realtime first, then untagged (pre-``source``) points, backfill last."""
+    if source == RISK_SOURCE_BACKFILL:
+        return 2
+    if source == RISK_SOURCE_REALTIME:
+        return 0
+    return 1
+
+
+def _hour_bucket(ts: datetime) -> datetime:
+    return to_naive_utc(ts).replace(minute=0, second=0, microsecond=0)
+
+
+def prefer_realtime_risk_rows(rows: list[dict]) -> list[dict]:
+    """Drop backfill rows of an hour that also has a realtime/untagged row.
+
+    Rows have "timestamp", "model_version" and "source" (None = untagged).
+    Hours are compared per model version, so a backfill of a new model is
+    never hidden by realtime points of an older one. Rows without any
+    ``source`` (all data written before the tag existed) are unchanged.
+    """
+    covered = {
+        (_hour_bucket(r["timestamp"]), r.get("model_version"))
+        for r in rows if r.get("source") != RISK_SOURCE_BACKFILL
+    }
+    return [
+        r for r in rows
+        if r.get("source") != RISK_SOURCE_BACKFILL
+        or (_hour_bucket(r["timestamp"]), r.get("model_version")) not in covered
+    ]
+
+
+def select_risk_window_rows(rows: list[dict], preferred_version: Optional[str] = None) -> list[dict]:
+    """One row per (aggregated) window: preferred version, then realtime source."""
+    best: dict = {}
+    for row in rows:
+        ts = row["timestamp"]
+        rank = (
+            _risk_version_rank(row.get("model_version"), preferred_version),
+            _risk_source_rank(row.get("source")),
+        )
+        if ts not in best or rank < best[ts][0]:
+            best[ts] = (rank, row)
+    return [best[ts][1] for ts in sorted(best)]
+
+
 def _risk_rows_from_tables(tables) -> list[dict]:
     """Rows from a pivoted risk_score query (one record per point)."""
     results = []
@@ -930,6 +999,7 @@ def _risk_rows_from_tables(tables) -> list[dict]:
                 "score": score,
                 "level": values.get("level"),
                 "model_version": values.get("model_version"),
+                "source": values.get("source"),
             }
             for key, value in values.items():
                 if isinstance(key, str) and key.startswith("factor_"):
@@ -949,7 +1019,9 @@ async def query_risk_scores(
     fields. Reads both v3.3+ points (level field, model_version tag) and
     legacy points (level tag). When several model versions exist for the
     same timestamp, ``model_version`` (default: current model) wins, then
-    the newest version, then legacy points.
+    the newest version, then legacy points. Within an hour, realtime points
+    win over backfilled ones of the same version (see
+    :func:`prefer_realtime_risk_rows`).
     """
     settings = get_settings()
     preferred = model_version or _current_risk_model_version()
@@ -964,7 +1036,8 @@ async def query_risk_scores(
 
     try:
         tables = await _run_query(query)
-        return select_risk_rows_by_version(_risk_rows_from_tables(tables), preferred)
+        rows = select_risk_rows_by_version(_risk_rows_from_tables(tables), preferred)
+        return prefer_realtime_risk_rows(rows)
     except Exception as e:
         logger.error("Error querying risk scores from InfluxDB: %s", e)
         return []
@@ -1009,6 +1082,29 @@ async def get_data_stats() -> dict:
     return stats
 
 
+def _rain_range_hour_end(start: datetime, end: datetime) -> str:
+    """``range`` + ``timeShift`` stages for hour-end labelled rain points.
+
+    Convention (same as ``risk_core.aggregate_hourly_rain``): a rain point
+    stamped ``t`` covers the hour ENDING at ``t`` (Open-Meteo hourly values,
+    Netatmo ``hourly_slot``), i.e. rain in ``(t - 1h, t]``. ``aggregateWindow``
+    uses ``[start, stop)`` windows stamped at their stop, which would put a
+    13:00 point (rain of 12:00-13:00) in the window stamped 14:00, one hour
+    after the river levels measured in [12:00, 13:00) (stamped 13:00).
+
+    Shifting every point by -1s maps ``(t - 1h, t]`` onto ``[t - 1h, t)``, so
+    the window stamped ``t`` holds exactly the rain of the hour ending at
+    ``t`` (sub-minute points are unaffected: precision is 1s). The range is
+    moved by +1s first so that, after the shift, the table bounds are again
+    exactly ``[start, end)`` (rain of ``(start, end]``).
+    """
+    return (
+        f"|> range(start: {_flux_ts(start + timedelta(seconds=1))}, "
+        f"stop: {_flux_ts(end + timedelta(seconds=1))})\n"
+        "        |> timeShift(duration: -1s)"
+    )
+
+
 def _rain_aggregation(resolution: str, agg_fn: str) -> str:
     """Flux aggregation stage(s) for the ``precipitation_mm_h`` rate field.
 
@@ -1021,6 +1117,8 @@ def _rain_aggregation(resolution: str, agg_fn: str) -> str:
       - coarser (6h, 12h, 1d...): sum of the hourly values (mm per period),
       - sub-hour (15m...): mean rate x window fraction of an hour (mm per window).
     Other functions (mean/max/...) apply directly at ``resolution``.
+    Input points are expected to be shifted by :func:`_rain_range_hour_end`
+    (hour-end labels), so every window stamped ``t`` ends at ``t``.
     """
     validate_resolution(resolution)
     validate_agg_fn(agg_fn)
@@ -1059,7 +1157,7 @@ def build_rainfall_by_station_query(
 
     return f'''
     from(bucket: {_bucket()})
-        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
+        {_rain_range_hour_end(start, end)}
         |> filter(fn: (r) => r._measurement == "rainfall")
         |> filter(fn: (r) => r._field == "precipitation_mm_h")
         {source_filter}
@@ -1331,10 +1429,11 @@ async def query_risk_scores_timeline(
 ) -> list[dict]:
     """Query risk scores with aggregation for timeline display.
 
-    Aggregates per model version (legacy points, split by their level tag,
-    are merged into one "legacy" series) and keeps, for each window, the
-    value of the preferred version (default: current model), else the
-    newest one.
+    Aggregates per model version and source (legacy points, split by their
+    level tag, are merged into one "legacy" series; untagged points get the
+    "unknown" source) and keeps, for each window, the value of the preferred
+    version (default: current model), else the newest one, and within a
+    version the realtime series over the backfilled one.
     """
     settings = get_settings()
     preferred = model_version or _current_risk_model_version()
@@ -1345,7 +1444,8 @@ async def query_risk_scores_timeline(
         |> filter(fn: (r) => r._measurement == "risk_score")
         |> filter(fn: (r) => r._field == "score")
         |> map(fn: (r) => ({{r with model_version: if exists r.model_version then r.model_version else "{LEGACY_RISK_VERSION}"}}))
-        |> group(columns: ["model_version"])
+        |> map(fn: (r) => ({{r with source: if exists r.source then r.source else "{RISK_SOURCE_UNKNOWN}"}}))
+        |> group(columns: ["model_version", "source"])
         |> aggregateWindow(every: {resolution}, fn: mean, createEmpty: false)
         |> sort(columns: ["_time"])
     '''
@@ -1360,11 +1460,12 @@ async def query_risk_scores_timeline(
                     "timestamp": record.get_time(),
                     "value": record.get_value(),
                     "model_version": record.values.get("model_version"),
+                    "source": record.values.get("source"),
                 })
 
         return [
             {"timestamp": r["timestamp"], "value": r["value"]}
-            for r in select_risk_rows_by_version(results, preferred)
+            for r in select_risk_window_rows(results, preferred)
         ]
     except Exception as e:
         logger.error("Error querying risk scores timeline from InfluxDB: %s", e)
@@ -1385,7 +1486,7 @@ def build_basin_sparkline_query(
     validate_source(source)
     return f'''
     from(bucket: {_bucket()})
-        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
+        {_rain_range_hour_end(start, end)}
         |> filter(fn: (r) => r._measurement == "rainfall")
         |> filter(fn: (r) => r.source == {flux_string(source)})
         |> filter(fn: (r) => r._field == "precipitation_mm_h")

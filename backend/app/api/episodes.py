@@ -3,7 +3,7 @@
 import asyncio
 import inspect
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
@@ -32,6 +32,11 @@ from app.services.episode_detector import run_episode_detection
 from app.services.labels import load_label_set, strip_legacy_prefixes
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # In-memory backfill job tracker
@@ -362,10 +367,10 @@ async def _run_backfill_task(
             skip_risk=skip_risk,
         )
         _backfill_status["result"] = results
-        _backfill_status["finished_at"] = datetime.utcnow().isoformat()
+        _backfill_status["finished_at"] = _utcnow().isoformat()
     except Exception as e:
         _backfill_status["error"] = str(e)
-        _backfill_status["finished_at"] = datetime.utcnow().isoformat()
+        _backfill_status["finished_at"] = _utcnow().isoformat()
         logger.error("Backfill error: %s", e)
     finally:
         _backfill_status["running"] = False
@@ -411,7 +416,7 @@ async def trigger_backfill(
         "progress": "starting",
         "result": None,
         "error": None,
-        "started_at": datetime.utcnow().isoformat(),
+        "started_at": _utcnow().isoformat(),
         "finished_at": None,
     }
 

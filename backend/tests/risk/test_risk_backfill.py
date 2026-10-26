@@ -80,6 +80,8 @@ class _InfluxStub:
         self.rain_rows = rain_rows
         self.tide_rows = tide_rows
         self.writes: list[dict] = []
+        self.batches = 0
+        self.existing_scores: list[dict] = []
 
     async def query_river_levels(self, station_id, start, end):
         return [
@@ -93,10 +95,32 @@ class _InfluxStub:
     async def query_tides(self, port, start, end):
         return self.tide_rows if port == "BORDEAUX" else []
 
-    async def write_risk_score(self, score, level, timestamp, factors=None, model_version=None):
+    async def write_risk_score(self, score, level, timestamp, factors=None, model_version=None, source=None):
         self.writes.append({"score": score, "level": level, "timestamp": timestamp,
-                            "factors": factors, "model_version": model_version})
+                            "factors": factors, "model_version": model_version, "source": source})
         return True
+
+    async def write_points_batch(self, points, chunk_size=5000):
+        """Backfill path: one batched write of risk_score points."""
+        for p in points:
+            d = influx_client.point_as_dict(p)
+            assert d["measurement"] == "risk_score"
+            fields = d["fields"]
+            self.writes.append({
+                "score": fields["score"], "level": fields["level"],
+                "timestamp": d["timestamp"],
+                "factors": {k[len("factor_"):]: v for k, v in fields.items() if k.startswith("factor_")},
+                "model_version": d["tags"].get("model_version"),
+                "source": d["tags"].get("source"),
+            })
+        self.batches += 1
+        return len(points)
+
+    async def query_risk_scores(self, start, end, model_version=None):
+        return [
+            r for r in self.existing_scores
+            if start <= r["timestamp"].astimezone(timezone.utc).replace(tzinfo=None) < end
+        ]
 
 
 @pytest.fixture
@@ -109,7 +133,8 @@ def influx_stub(monkeypatch):
         for k, v in sc.rain_hourly.items()
     ]
     stub = _InfluxStub(sc.station_points, rain_rows, sc.tide_rows)
-    for name in ("query_river_levels", "query_rainfall", "query_tides", "write_risk_score"):
+    for name in ("query_river_levels", "query_rainfall", "query_tides", "write_risk_score",
+                 "write_points_batch", "query_risk_scores"):
         monkeypatch.setattr(influx_client, name, getattr(stub, name))
     return sc, stub
 
@@ -118,8 +143,10 @@ async def test_risk_backfill_stores_with_model_version_and_audit_fields(influx_s
     sc, stub = influx_stub
     stored = await risk_v2.backfill_risk_scores(sc.t0 - timedelta(hours=2), sc.t0)
     assert stored == 3 == len(stub.writes)
+    assert stub.batches == 1  # one batched write, not one write per score
     last = stub.writes[-1]
     assert last["model_version"] == "3.3"
+    assert {w["source"] for w in stub.writes} == {"backfill"}
     assert last["timestamp"] == sc.t0
     for key in ("momentum", "conjunction", "dampener", "n_rising", "tide_available", "river_level"):
         assert key in last["factors"]
@@ -157,3 +184,29 @@ async def test_risk_backfill_store_false_writes_nothing(influx_stub):
     computed = await risk_v2.backfill_risk_scores(sc.t0 - timedelta(hours=2), sc.t0, store=False)
     assert computed == 3
     assert stub.writes == []
+
+
+async def test_risk_backfill_skip_live_hours_keeps_realtime_points(influx_stub):
+    """Timeline cache-through: hours with a realtime score are not recomputed."""
+    sc, stub = influx_stub
+    stub.existing_scores = [
+        # realtime point of the current model at 11:02 -> hour 11:00 is live
+        {"timestamp": (sc.t0 - timedelta(minutes=58)).replace(tzinfo=timezone.utc),
+         "score": 40.0, "model_version": "3.3", "source": "realtime"},
+        # backfill and older-model points do not protect their hour
+        {"timestamp": (sc.t0 - timedelta(hours=2)).replace(tzinfo=timezone.utc),
+         "score": 40.0, "model_version": "3.3", "source": "backfill"},
+        {"timestamp": sc.t0.replace(tzinfo=timezone.utc),
+         "score": 40.0, "model_version": "3.2", "source": None},
+    ]
+    stored = await risk_v2.backfill_risk_scores(sc.t0 - timedelta(hours=2), sc.t0, skip_live_hours=True)
+    assert stored == 2
+    assert [w["timestamp"] for w in stub.writes] == [sc.t0 - timedelta(hours=2), sc.t0]
+
+
+async def test_risk_backfill_steps_start_on_full_hours(influx_stub):
+    sc, stub = influx_stub
+    await risk_v2.backfill_risk_scores(sc.t0 - timedelta(hours=2, minutes=17, seconds=5), sc.t0, store=True)
+    assert [w["timestamp"] for w in stub.writes] == [
+        sc.t0 - timedelta(hours=2), sc.t0 - timedelta(hours=1), sc.t0,
+    ]

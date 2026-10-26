@@ -1,10 +1,15 @@
 """SQLAlchemy ORM models for PostgreSQL persistence."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Integer, String, DateTime, Text, Float
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (column default)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class FloodEpisodeRow(Base):
@@ -17,7 +22,7 @@ class FloodEpisodeRow(Base):
     severity: Mapped[int] = mapped_column(Integer, nullable=False)
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     # Structured ground truth (added by data_store.migrate_episode_schema on
     # existing databases; null outcome = not labelled yet)
     outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)

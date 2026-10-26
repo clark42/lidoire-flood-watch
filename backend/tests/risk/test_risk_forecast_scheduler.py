@@ -138,12 +138,7 @@ async def test_risk_get_forecast_h0_equals_realtime(monkeypatch):
     monkeypatch.setattr(forecast_mod, "_fetch_past_hourly_rain_utc", fake_past)
     monkeypatch.setattr(forecast_mod, "_fetch_tide_highs_from_influx", fake_tides)
 
-    class FrozenDatetime(datetime):
-        @classmethod
-        def utcnow(cls):
-            return sc.t0
-
-    monkeypatch.setattr(forecast_mod, "datetime", FrozenDatetime)
+    monkeypatch.setattr(forecast_mod, "_utcnow", lambda: sc.t0)
 
     result = await forecast_mod.get_risk_forecast_v2(hours=24)
     realtime = risk_v2.risk_from_inputs(inputs)

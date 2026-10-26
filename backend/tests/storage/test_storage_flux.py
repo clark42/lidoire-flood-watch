@@ -114,7 +114,10 @@ def test_rainfall_query_contains_escaped_filters():
     )
     assert 'r.source == "netatmo-lidoire"' in q
     assert 'r.city == "Saint-Rémy" or r.city == "Flaujagues"' in q
-    assert "range(start: 2024-02-10T00:00:00Z, stop: 2024-02-12T00:00:00Z)" in q
+    # Hour-end labelled rain: range moved by +1s then every point shifted by
+    # -1s, so the table covers rain of (start, end] with bounds [start, end)
+    assert "range(start: 2024-02-10T00:00:01Z, stop: 2024-02-12T00:00:01Z)" in q
+    assert q.index("timeShift(duration: -1s)") < q.index("aggregateWindow")
 
 
 # --- aggregation order --------------------------------------------------------

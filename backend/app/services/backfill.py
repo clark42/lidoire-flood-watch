@@ -12,7 +12,7 @@ features at each step only use observed points at or before that step.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.config import get_settings
@@ -60,7 +60,7 @@ async def backfill_river_levels(
         station_name = station["name"]
         river = station["river"]
 
-        print(f"\n--- Backfilling river levels: {station_name} ({station_id}) ---")
+        logger.info("Backfilling river levels: %s (%s)", station_name, station_id)
         total_points = 0
 
         # Process in batches
@@ -68,14 +68,14 @@ async def backfill_river_levels(
         while current_start < end_date:
             current_end = min(current_start + timedelta(days=batch_days), end_date)
 
-            print(f"  Fetching {current_start.date()} -> {current_end.date()}...")
+            logger.info("  Fetching %s -> %s", current_start.date(), current_end.date())
 
             # Try Hydroportail first (sub-hourly data)
             levels = await fetch_hydroportail_data(station_id, current_start, current_end)
 
             if not levels:
                 # Fallback to Hub'Eau obs_elab (daily max)
-                print(f"  Hydroportail failed, trying Hub'Eau obs_elab...")
+                logger.info("  Hydroportail failed, trying Hub'Eau obs_elab")
                 levels = await fetch_historical_data(
                     station_id, current_start, current_end, granularity="daily_max"
                 )
@@ -96,9 +96,9 @@ async def backfill_river_levels(
 
                 written = await influx_client.write_river_levels_batch(batch)
                 total_points += written
-                print(f"  Stored {written} points for {current_start.date()} -> {current_end.date()}")
+                logger.info("  Stored %d points for %s -> %s", written, current_start.date(), current_end.date())
             else:
-                print(f"  No data available for this period")
+                logger.info("  No data available for this period")
 
             current_start = current_end
 
@@ -130,7 +130,7 @@ async def backfill_rainfall(
     Returns:
         Total points stored
     """
-    print("\n--- Backfilling rainfall data ---")
+    logger.info("Backfilling rainfall data")
     total = 0
 
     current_start = start_date
@@ -143,7 +143,7 @@ async def backfill_rainfall(
         current_start = current_end
         await asyncio.sleep(0.5)
 
-    print(f"Total rainfall points stored: {total}")
+    logger.info("Total rainfall points stored: %d", total)
     return total
 
 
@@ -158,7 +158,7 @@ async def backfill_tides(
     Note: Open-Meteo Marine has limited historical data (~2-3 months back).
     For older data, only predictions can be regenerated.
     """
-    print("\n--- Backfilling tide data ---")
+    logger.info("Backfilling tide data")
     total = 0
 
     current_start = start_date
@@ -171,7 +171,7 @@ async def backfill_tides(
         current_start = current_end
         await asyncio.sleep(0.5)
 
-    print(f"Total tide points stored: {total}")
+    logger.info("Total tide points stored: %d", total)
     return total
 
 
@@ -183,7 +183,7 @@ async def backfill_soil(
     """
     Backfill soil moisture and temperature from Open-Meteo.
     """
-    print("\n--- Backfilling soil data ---")
+    logger.info("Backfilling soil data")
     total = 0
 
     current_start = start_date
@@ -196,7 +196,7 @@ async def backfill_soil(
         current_start = current_end
         await asyncio.sleep(0.5)
 
-    print(f"Total soil points stored: {total}")
+    logger.info("Total soil points stored: %d", total)
     return total
 
 
@@ -212,7 +212,9 @@ async def recalculate_risk_scores(
       3h; rate by regression on points <= t), hourly rain windows ending
       at t (mean per hour across sources), tide predictions;
     - calls risk_core.compute_risk;
-    - stores the score tagged with model_version (re-runs overwrite).
+    - stores the scores in one batched write, tagged model_version and
+      source=backfill (re-runs overwrite; realtime points are preferred on
+      read for an hour that has both).
     """
     from app.services.risk_v2 import backfill_risk_scores
 
@@ -249,12 +251,9 @@ async def run_full_backfill(
     if start_date is None:
         start_date = datetime(2022, 11, 1)
     if end_date is None:
-        end_date = datetime.utcnow()
+        end_date = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    print(f"\n{'='*60}")
-    print(f"STARTING FULL BACKFILL")
-    print(f"Period: {start_date.date()} -> {end_date.date()}")
-    print(f"{'='*60}")
+    logger.info("Starting full backfill: %s -> %s", start_date.date(), end_date.date())
 
     results = {
         "period": {
@@ -295,8 +294,6 @@ async def run_full_backfill(
 
     _update_progress("done")
 
-    print(f"\n{'='*60}")
-    print("BACKFILL COMPLETE")
-    print(f"{'='*60}")
+    logger.info("Full backfill complete")
 
     return results

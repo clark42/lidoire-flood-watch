@@ -7,7 +7,7 @@ Episodes are persisted in PostgreSQL via SQLAlchemy async.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select, delete as sa_delete, inspect as sa_inspect, text
@@ -20,6 +20,7 @@ from app.models.schemas import (
     FloodEpisodeCreate,
     TimelinePoint,
     TideData,
+    TideType,
     RiverLevel,
     RainfallObservation,
 )
@@ -29,6 +30,11 @@ from app.services import influx_client
 from app.services.labels import LEGACY_PREFIX_SOURCE, parse_legacy_outcome
 
 _episode_logger = logging.getLogger(__name__ + ".episodes")
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # Ground-truth columns added after the initial flood_episodes schema.
 # create_all() never alters existing tables, so they are added at startup.
@@ -195,7 +201,7 @@ async def create_episode(episode: FloodEpisodeCreate) -> FloodEpisode:
             severity=episode.severity,
             description=episode.description,
             notes=episode.notes,
-            created_at=datetime.utcnow(),
+            created_at=_utcnow(),
         )
         _apply_ground_truth(row, episode, only_set=False)
         session.add(row)
@@ -383,7 +389,7 @@ async def _fetch_and_store_river_levels(
     """
     from app.services.collectors.hubeau import fetch_realtime_observations
 
-    now = datetime.utcnow()
+    now = _utcnow()
     hours_back = max(1, int((now - influx_client.to_naive_utc(start)).total_seconds() / 3600))
     semaphore = asyncio.Semaphore(HUBEAU_CONCURRENCY)
 
@@ -470,19 +476,13 @@ async def _fetch_and_store_river_levels_elab(
 
 
 async def store_tide_data(tides: list[TideData]) -> int:
-    """Store tide data in InfluxDB."""
-    stored = 0
-    for tide in tides:
-        success = await influx_client.write_tide(
-            port=tide.port,
-            height_m=tide.height_m,
-            timestamp=tide.timestamp,
-            tide_type=tide.tide_type.value if tide.tide_type else None,
-            coefficient=tide.coefficient,
-        )
-        if success:
-            stored += 1
-    return stored
+    """Store tide data in InfluxDB (one batched write).
+
+    Estimated tides (computed placeholders) are never stored.
+    """
+    from app.services.collectors.tide import store_tides_to_influx
+
+    return await store_tides_to_influx(tides)
 
 
 async def store_river_levels(levels: list[RiverLevel]) -> int:
@@ -502,43 +502,77 @@ async def store_river_levels(levels: list[RiverLevel]) -> int:
 
 
 async def store_rainfall(observations: list[RainfallObservation]) -> int:
-    """Store rainfall observations in InfluxDB."""
-    stored = 0
-    for obs in observations:
-        success = await influx_client.write_rainfall(
+    """Store rainfall observations in InfluxDB (one batched write)."""
+    points = [
+        influx_client.make_rainfall_point(
             source=obs.source,
             precipitation_mm_h=obs.precipitation_mm_h,
             timestamp=obs.timestamp,
             precipitation_mm_24h=obs.precipitation_mm_24h,
         )
-        if success:
-            stored += 1
-    return stored
+        for obs in observations
+    ]
+    if not points:
+        return 0
+    return await influx_client.write_points_batch(points)
+
+
+async def _query_tide_events(start: datetime, end: datetime) -> list[TideData]:
+    """PM/BM events stored for [start, end] (same port rule as the risk backfill).
+
+    PM/BM-tagged events are used when present, else high tides detected as
+    local maxima of the hourly heights (coefficient from the nearest stored
+    coefficient record, if any).
+    """
+    from app.services.collectors.tide import tide_events_from_rows
+    from app.services.risk_v2 import load_tide_rows, tide_inputs_from_records
+
+    rows = await load_tide_rows(start, end)
+    if not rows:
+        return []
+    port = next((r.get("port") for r in rows if r.get("port")), None) or "BORDEAUX"
+    events = tide_events_from_rows(rows, port)
+    if events:
+        return events
+
+    heights = {
+        influx_client.to_naive_utc(r["timestamp"]): float(r["height_m"])
+        for r in rows if r.get("height_m") is not None and r.get("timestamp") is not None
+    }
+    highs, _ = tide_inputs_from_records(rows)
+    return [
+        TideData(
+            timestamp=ts,
+            port=port,
+            tide_type=TideType.HIGH,
+            height_m=heights.get(ts, 0.0),
+            coefficient=coef,
+            source="influxdb",
+        )
+        for ts, coef in highs
+    ]
 
 
 async def get_historical_tides(start: datetime, end: datetime) -> list[TideData]:
-    """Get historical tide data from InfluxDB."""
-    data = await influx_client.query_tides("LIBOURNE", start, end)
+    """Get historical tide events (PM/BM) from InfluxDB.
 
-    if not data:
-        # Fetch from API and store
-        from app.services.collectors.tide import get_tide_forecast
-        forecast = await get_tide_forecast()
-        if forecast and forecast.tides:
-            await store_tide_data(forecast.tides)
-            data = await influx_client.query_tides("LIBOURNE", start, end)
+    Every collector stores tides with ``port=BORDEAUX`` (Open-Meteo Marine /
+    SHOM), Libourne is only read as a fallback. When nothing is stored for
+    the period, the hourly sea level of the period (plus 1 day of margin)
+    is fetched from Open-Meteo Marine, stored, and read back.
+    """
+    start = influx_client.to_naive_utc(start)
+    end = influx_client.to_naive_utc(end)
+    events = await _query_tide_events(start, end)
 
-    return [
-        TideData(
-            timestamp=d["timestamp"],
-            port=d.get("port", "LIBOURNE"),
-            tide_type=d.get("tide_type"),
-            height_m=d.get("height_m", 0),
-            coefficient=d.get("coefficient"),
-        )
-        for d in data
-        if d.get("height_m") is not None
-    ]
+    if not events:
+        from app.services.collectors.tide import fetch_and_store_tides_range
+
+        stored = await fetch_and_store_tides_range(start - timedelta(days=1), end + timedelta(days=1))
+        if stored:
+            events = await _query_tide_events(start, end)
+
+    return events
 
 
 async def get_historical_river_levels(

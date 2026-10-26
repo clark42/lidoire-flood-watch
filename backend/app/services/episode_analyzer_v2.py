@@ -10,6 +10,7 @@ Data sources:
 - Local observations: User-provided notes and photos
 """
 
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 import httpx
@@ -25,6 +26,8 @@ from app.models.schemas import (
     RainfallObservation,
 )
 from app.services.collectors.hubeau import fetch_episode_context, fetch_historical_data
+
+logger = logging.getLogger(__name__)
 
 
 async def analyze_episode(
@@ -161,7 +164,10 @@ async def _fetch_historical_rainfall(
                     "start_date": start.strftime("%Y-%m-%d"),
                     "end_date": end.strftime("%Y-%m-%d"),
                     "hourly": "precipitation",
-                    "timezone": "Europe/Paris",
+                    # UTC labels (naive), like every other collector: the
+                    # 24/48/72h windows below end at the episode date in UTC.
+                    # Each value is the rain of the hour ENDING at its label.
+                    "timezone": "UTC",
                 },
                 timeout=30.0,
             )
@@ -183,11 +189,13 @@ async def _fetch_historical_rainfall(
                     )
 
             total_mm = sum(p for p in precip if p is not None)
-            print(f"Open-Meteo archive: {len(rainfall)} hourly points, total={total_mm:.1f}mm "
-                  f"({start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')})")
+            logger.info(
+                "Open-Meteo archive: %d hourly points, total=%.1fmm (%s to %s)",
+                len(rainfall), total_mm, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"),
+            )
 
     except Exception as e:
-        print(f"Error fetching historical rainfall: {e}")
+        logger.warning("Error fetching historical rainfall: %s", e)
 
     return rainfall
 
@@ -201,15 +209,14 @@ def _calculate_episode_context(
     """Calculate summary context metrics for an episode."""
     settings = get_settings()
 
-    # Strip timezone to avoid naive/aware comparison failures
-    ep_date = episode_date.replace(tzinfo=None) if episode_date.tzinfo else episode_date
+    from app.services.risk_core import aggregate_hourly_rain, rain_window_sum, to_utc_naive
 
-    def _strip_tz(dt: datetime) -> datetime:
-        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+    # Naive UTC (aware values are converted, not just stripped)
+    ep_date = to_utc_naive(episode_date)
+    _strip_tz = to_utc_naive
 
     # Rainfall sums: mean per hour across sources, then sum (same rule as
     # the risk model), only hours before the episode date
-    from app.services.risk_core import aggregate_hourly_rain, rain_window_sum, to_utc_naive
 
     rain_hourly = aggregate_hourly_rain(
         (to_utc_naive(r.timestamp), r.precipitation_mm_h, getattr(r, "source", ""))

@@ -392,7 +392,10 @@ async def get_multi_station_data() -> MultiStationData:
 
         current = levels[-1]
         tendency = _calculate_tendency(levels, t=now)
-        rate = _calculate_rate_of_change(levels, t=now)
+        # UNROUNDED rate: risk_core compares it with RISING_RATE_CM_H (> 1.0),
+        # exactly like the backfill/TimeMachine (rounding 1.04 to 1.0 used to
+        # drop a rising station). The UI rounds for display (toFixed(1)).
+        rate = rate_cm_per_hour(levels, now, window_h=settings.risk_rate_window_hours)
 
         # Get thresholds for this station
         thresholds = station_config.get("thresholds", {})
@@ -534,7 +537,9 @@ def _calculate_rate_of_change(
         t: Evaluation instant (default: now, UTC); later points are ignored
 
     Returns:
-        Rate of change in cm/hour (positive = rising), rounded to 0.1
+        Rate of change in cm/hour (positive = rising), rounded to 0.1.
+        Display only: the risk model uses the unrounded
+        ``risk_core.rate_cm_per_hour`` (see ``get_multi_station_data``).
     """
     return round(rate_cm_per_hour(levels, t or _utcnow(), window_h=window_hours), 1)
 

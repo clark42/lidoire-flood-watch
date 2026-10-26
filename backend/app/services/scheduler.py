@@ -33,33 +33,38 @@ _scheduler: Optional[AsyncIOScheduler] = None
 RISK_JOB_FIRST_RUN_DELAY = timedelta(minutes=2)
 
 
+def _utcnow() -> datetime:
+    """Naive UTC now (module-level so tests can freeze time)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 async def collect_tide_job():
     """Job to collect tide data."""
     try:
         count = await collect_and_store_tides()
-        print(f"[{datetime.now()}] Collected {count} tide data points")
+        logger.info("Collected %s tide data points", count)
     except Exception as e:
-        print(f"[{datetime.now()}] Error collecting tide data: {e}")
+        logger.error("Error collecting tide data: %s", e)
 
 
 async def collect_river_job():
     """Job to collect river level data from Hub'Eau and store in InfluxDB."""
     try:
-        now = datetime.utcnow()
+        now = _utcnow()
         start = now - timedelta(hours=1)
         count = await _fetch_and_store_river_levels(start, now)
-        print(f"[{datetime.now()}] Collected {count} river level data points (Hub'Eau)")
+        logger.info("Collected %s river level data points (Hub'Eau)", count)
     except Exception as e:
-        print(f"[{datetime.now()}] Error collecting river data: {e}")
+        logger.error("Error collecting river data: %s", e)
 
 
 async def collect_weather_job():
     """Job to collect weather data."""
     try:
         count = await collect_and_store_weather()
-        print(f"[{datetime.now()}] Collected {count} weather data points")
+        logger.info("Collected %s weather data points", count)
     except Exception as e:
-        print(f"[{datetime.now()}] Error collecting weather data: {e}")
+        logger.error("Error collecting weather data: %s", e)
 
 
 async def collect_netatmo_job():
@@ -69,29 +74,29 @@ async def collect_netatmo_job():
         if basin_data.get("available"):
             count = await store_rainfall_to_influx(basin_data)
             lidoire_count = len(basin_data.get("lidoire_stations", []))
-            print(f"[{datetime.now()}] Collected {count} Netatmo data points ({lidoire_count} Lidoire stations)")
+            logger.info("Collected %s Netatmo data points (%s Lidoire stations)", count, lidoire_count)
         else:
-            print(f"[{datetime.now()}] Netatmo not available (token missing?)")
+            logger.info("Netatmo not available (token missing?)")
     except Exception as e:
-        print(f"[{datetime.now()}] Error collecting Netatmo data: {e}")
+        logger.error("Error collecting Netatmo data: %s", e)
 
 
 async def collect_meteo_agricole_job():
     """Job to collect La Meteo Agricole data."""
     try:
         count = await collect_and_store_meteo_agricole()
-        print(f"[{datetime.now()}] Collected {count} Meteo Agricole data points")
+        logger.info("Collected %s Meteo Agricole data points", count)
     except Exception as e:
-        print(f"[{datetime.now()}] Error collecting Meteo Agricole data: {e}")
+        logger.error("Error collecting Meteo Agricole data: %s", e)
 
 
 async def collect_nowcast_rain_job():
     """Job to collect nowcast rain radar data (minute-by-minute)."""
     try:
         count = await collect_and_store_nowcast_rain()
-        print(f"[{datetime.now()}] Collected {count} nowcast rain data points")
+        logger.info("Collected %s nowcast rain data points", count)
     except Exception as e:
-        print(f"[{datetime.now()}] Error collecting nowcast rain data: {e}")
+        logger.error("Error collecting nowcast rain data: %s", e)
 
 
 async def compute_risk_job():
@@ -119,9 +124,9 @@ async def collect_camera_job():
     try:
         from app.services.video_analyzer import capture_and_analyze
         result = await capture_and_analyze()
-        print(f"[{datetime.now()}] Camera analysis: level={result.water_level_index:.1f}")
+        logger.info("Camera analysis: level=%.1f", result.water_level_index)
     except Exception as e:
-        print(f"[{datetime.now()}] Error analyzing camera: {e}")
+        logger.error("Error analyzing camera: %s", e)
 
 
 async def start_scheduler():
