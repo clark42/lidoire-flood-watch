@@ -9,6 +9,8 @@ import {
   Polyline,
 } from 'react-leaflet'
 import { DivIcon, type LatLngExpression } from 'leaflet'
+// Loaded with this lazy chunk only (HydroMap is the single leaflet user)
+import 'leaflet/dist/leaflet.css'
 import type {
   StationData,
   NetatmoStation,

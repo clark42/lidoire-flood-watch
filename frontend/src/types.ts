@@ -96,6 +96,16 @@ export interface RiskFactors {
   tide_coefficient_raw?: number
   tide_hours_to_high?: number
   tendency_rate_cm_h?: number
+  // v3.3 auditability
+  stability_dampener?: number
+  n_rising_stations?: number | null
+  n_above_orange?: number | null
+  tide_available?: boolean
+  unavailable_factors?: string[] // excluded from the denominator
+  notes?: string[]
+  // v3.4: gate (0-1) applied to tide_score / tide_phase_score, and its input
+  tide_gate?: number
+  backwater_level_m?: number | null // max of Pessac over the previous 12.5 h
 }
 
 export interface RiskScore {
@@ -105,6 +115,7 @@ export interface RiskScore {
   factors: RiskFactors
   description: string
   recommendations: string[]
+  model_version?: string | null
 }
 
 export interface VideoAnalysis {
@@ -195,14 +206,6 @@ export interface InfoclimatData {
   stations_found: number
   nearest_stations: InfoclimatStation[]
   rainfall: InfoclimatRainfall
-}
-
-export interface DataSource {
-  name: string
-  status: 'ok' | 'degraded' | 'error'
-  description: string
-  details?: string
-  url?: string
 }
 
 export interface ForecastPoint {
@@ -547,7 +550,7 @@ export interface SourcesDetail {
     camera?: { name: string; description: string; configured: boolean }
   }
   risk_model?: {
-    version: string
+    version?: string // risk_core.MODEL_VERSION
     weights: Record<string, string>
     conjunction_multiplier?: string
     stability_dampener?: string
