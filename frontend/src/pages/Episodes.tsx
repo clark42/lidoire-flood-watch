@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { format } from 'date-fns'
-import { fr } from 'date-fns/locale'
 import {
   Plus,
   Search,
@@ -33,6 +32,7 @@ import {
 import type { ActionErrorState } from '../api'
 import type { FloodEpisode, EpisodeAnalysis, EpisodeOutcome } from '../types'
 import ActionError from '../components/ActionError'
+import { formatParis } from '../utils/time'
 
 // Ground truth comes from the structured `outcome` field (null = not labelled yet)
 const OUTCOME_OPTIONS: { value: EpisodeOutcome; label: string }[] = [
@@ -53,7 +53,7 @@ function isPending(ep: FloodEpisode): boolean {
   return !ep.outcome
 }
 
-// Backend datetimes are naive UTC: parse them as UTC
+// Backend datetimes are UTC ("Z"); legacy strings without offset are UTC too
 function parseApiDate(value: string): Date {
   return new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`)
 }
@@ -94,8 +94,8 @@ export default function Episodes() {
       const data = await getEpisodes(100)
       // Sort by peak_time descending
       data.sort((a, b) => {
-        const ta = new Date(a.peak_time || a.start_time).getTime()
-        const tb = new Date(b.peak_time || b.start_time).getTime()
+        const ta = parseApiDate(a.peak_time || a.start_time).getTime()
+        const tb = parseApiDate(b.peak_time || b.start_time).getTime()
         return tb - ta
       })
       setEpisodes(data)
@@ -329,9 +329,7 @@ export default function Episodes() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-medium">
-                          {format(new Date(ep.peak_time || ep.start_time), 'dd MMM yyyy', {
-                            locale: fr,
-                          })}
+                          {formatParis(ep.peak_time || ep.start_time, 'dd MMM yyyy')}
                         </span>
                         {statusBadge(ep.outcome)}
                       </div>
@@ -406,10 +404,9 @@ export default function Episodes() {
               <div className="bg-gray-50 rounded-lg p-4">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="font-medium">
-                    {format(
-                      new Date(selectedEpisode.peak_time || selectedEpisode.start_time),
+                    {formatParis(
+                      selectedEpisode.peak_time || selectedEpisode.start_time,
                       'dd MMMM yyyy HH:mm',
-                      { locale: fr }
                     )}
                   </h4>
                   {statusBadge(selectedEpisode.outcome)}
@@ -425,9 +422,7 @@ export default function Episodes() {
                     {selectedEpisode.observed_at && (
                       <span>
                         Pic observe :{' '}
-                        {format(parseApiDate(selectedEpisode.observed_at), 'dd MMM yyyy HH:mm', {
-                          locale: fr,
-                        })}
+                        {formatParis(selectedEpisode.observed_at, 'dd MMM yyyy HH:mm')}
                       </span>
                     )}
                     {selectedEpisode.outcome_source && (
@@ -628,7 +623,7 @@ export default function Episodes() {
                 <button
                   onClick={() => {
                     const targetDate = selectedEpisode.peak_time || selectedEpisode.start_time
-                    navigate(`/?tm=${new Date(targetDate).toISOString()}`)
+                    navigate(`/?tm=${parseApiDate(targetDate).toISOString()}`)
                   }}
                   className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-cyan-50 text-cyan-700 rounded-lg hover:bg-cyan-100 text-sm font-medium"
                 >
@@ -637,9 +632,9 @@ export default function Episodes() {
                 </button>
                 <button
                   onClick={() => {
-                    const start = new Date(selectedEpisode.start_time)
+                    const start = parseApiDate(selectedEpisode.start_time)
                     const end = selectedEpisode.end_time
-                      ? new Date(selectedEpisode.end_time)
+                      ? parseApiDate(selectedEpisode.end_time)
                       : new Date(start.getTime() + 5 * 24 * 60 * 60 * 1000)
                     const bufferStart = new Date(start.getTime() - 3 * 24 * 60 * 60 * 1000)
                     navigate(`/timeline?start=${bufferStart.toISOString()}&end=${end.toISOString()}`)

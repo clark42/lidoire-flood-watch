@@ -58,6 +58,11 @@ externalSecrets:
 # secret is created empty by Terraform: enable once a version has been added.
 # Injected into the backend with envFrom (optional: the pod starts even if the
 # Kubernetes Secret is not synced yet).
+# Notifications: add NTFY_URL, NTFY_TOPIC and optionally NTFY_TOKEN to the same
+# secret (the topic is a password on a public ntfy server); NOTIFY_* tuning
+# keys (backend/app/config.py) also work here or in backend.extraEnv. The
+# NetworkPolicies are managed outside this chart (Terraform stack 11-lidoire):
+# if they restrict the backend egress, allow the ntfy host (HTTPS).
 externalApis:
   enabled: false
   remoteKey: "name:lidoire-external-apis"

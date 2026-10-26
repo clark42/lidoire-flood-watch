@@ -63,11 +63,12 @@ app/
 ├── db.py                # Moteur SQLAlchemy async (PostgreSQL)
 ├── api/                 # Routes FastAPI (toutes sous /api)
 │   ├── deps.py          # require_api_key_for_writes : X-API-Key sur POST/PUT/PATCH/DELETE
-│   ├── status.py        # /api/status (checks reels Influx/Postgres/Redis), /api/health
+│   ├── status.py        # /api/status (checks reels Influx/Postgres/Redis + fraicheur des sources), /api/health
 │   ├── realtime.py      # /api/realtime + TimeMachine /at
 │   ├── timeline.py      # /api/timeline/sources, /api/timeline/unified
 │   ├── episodes.py      # /api/episodes : CRUD, labels, confirm, analyse, backfill, detection
 │   ├── risk.py          # /api/risk : score, previsions, simulation
+│   ├── notify.py        # /api/notify/test (message de test, X-API-Key)
 │   └── auth.py          # /api/auth/netatmo (OAuth2)
 ├── data/
 │   └── episodes_labels.json  # Verite terrain des 14 episodes (source unique)
@@ -83,10 +84,11 @@ app/
     ├── episode_detector.py  # Detection automatique d'episodes par seuil
     ├── episode_analyzer.py / episode_analyzer_v2.py  # Contexte hydro-meteo des episodes
     ├── labels.py        # Chargement des labels, parsing des anciens prefixes [CONFIRMED: ...]
-    ├── cache.py         # get_redis() partage + TTLCache en memoire
+    ├── cache.py         # get_redis() partage, TTLCache en memoire, CircuitBreaker, EXTERNAL_TIMEOUT_S
     ├── influx_client.py # InfluxDB non bloquant, ecritures par lot, validation Flux
     ├── data_store.py    # Acces InfluxDB/PostgreSQL de plus haut niveau
     ├── scheduler.py     # APScheduler (collectes + score horaire)
+    ├── notifier.py      # Notifications ntfy (niveau, prevision, donnees perimees)
     ├── video_analyzer.py    # Detection niveau d'eau via camera
     ├── models_experimental.py  # Modeles candidats, importes par AUCUN code de production
     └── collectors/
@@ -114,7 +116,7 @@ scripts/eval/            # Harnais d'evaluation (python -m scripts.eval build|re
 └── candidates.py        # Comparaison des modeles candidats (LOEO bloque)
 tests/
 ├── risk/  storage/  security/  collectors/
-├── groundtruth/  evaluation/  models/  followups/
+├── groundtruth/  evaluation/  models/  followups/  notifier/
 ```
 
 Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episodes.py` (remplaces par `scripts/eval/`).
@@ -126,7 +128,8 @@ src/
 ├── App.tsx              # Router principal, navigation
 ├── api.ts               # Client API (fetchJson, X-API-Key depuis localStorage 'lfw_api_key')
 ├── types.ts             # Types TypeScript (miroir des schemas backend)
-├── utils/time.ts        # Helpers de dates (UTC)
+├── utils/time.ts        # parseApiDate (UTC) + formatParis : tout l'affichage en Europe/Paris
+├── utils/format.ts      # Libelles FR des niveaux de risque, formatDistanceKm
 ├── tooltipContent.ts    # Dictionnaire centralise des textes de tooltips
 ├── pages/
 │   ├── Dashboard.tsx    # Vue temps reel avec score de risque + TimeMachine
@@ -186,9 +189,13 @@ Service dans `backend/app/services/forecast.py` :
 - Nombre de stations en hausse : decroissance lineaire sur 48 h, plus apport de la pluie projetee
 - Cache Redis 30 min ; overlay Timeline via `include_forecast=true`
 
+### Notifications
+
+`services/notifier.py`, job `notifier` (toutes les heures, 5 min apres `risk_scorer`), canal ntfy (`POST <NTFY_URL>/<NTFY_TOPIC>`, bearer `NTFY_TOKEN` optionnel, interface `Channel` pour d'autres canaux). Sans `NTFY_URL`/`NTFY_TOPIC` : aucun job, un log info au demarrage. Declencheurs : dernier score temps reel stocke passant en orange/rouge (immediat ; jaune seulement si `NOTIFY_YELLOW`), baisse envoyee apres `NOTIFY_DOWNGRADE_HOLD_HOURS` (3 h, le score oscille avec la maree) vers le plus haut niveau vu pendant l'attente ; max de la prevision sur `NOTIFY_FORECAST_HOURS` (48 h) en orange/rouge, une fois par evenement (nouvel envoi si escalade en rouge, fin apres la meme attente) ; Pessac sans point depuis 3 h ou aucun score stocke depuis 2 h (une alerte, un retablissement). Etat persistant en JSON dans la table PostgreSQL `notifier_state` (Redis non persistant en prod) ; une transition n'est acquittee qu'une fois le message delivre (reessai a l'execution suivante), un redemarrage ne renvoie rien. Messages en francais (niveau, score, Pessac, pluie 72 h, prochaine pleine mer, lien `FRONTEND_URL`). `POST /api/notify/test` envoie un message de test. En prod : cles `NTFY_*` dans le secret Scaleway `lidoire-external-apis` (`externalApis.enabled=true`).
+
 ### Stations surveillees
 
-Distances a vol d'oiseau depuis le moulin (haversine sur `lat`/`lon` du config) ; delais et poids de `config.hubeau_stations`. Le champ `distance_km` du config est uniquement affiche et ne correspond pas a ces valeurs.
+Distances a vol d'oiseau depuis le moulin (haversine sur `lat`/`lon` du config) ; delais et poids de `config.hubeau_stations`. `distance_km` n'est jamais code en dur : un validateur de `Settings` le calcule depuis `lat`/`lon` (`app/geo.py`, arrondi a 0.1 km), et toutes les routes (cartes du dashboard, `/api/timeline/sources`, `/api/sources-detail`) le reprennent. Affichage uniquement, jamais lu par le modele.
 
 | Station | Code Hub'Eau | Riviere | Distance | Delai | Poids |
 |---------|-------------|---------|----------|-------|-------|
@@ -208,10 +215,15 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 - **Niveaux rivieres** : Hub'Eau temps reel (30 derniers jours), Hydroportail pour l'historique, Vigicrues pour Libourne (metres)
 - **Meteo prevue** : Open-Meteo (modeles AROME/ARPEGE), timestamps UTC
 - **Meteo locale** : Netatmo (stations citoyennes du bassin Lidoire), Infoclimat StatIC
-- **Sol** : Open-Meteo (humidite, temperature, ET0) + Meteo Agricole (bilan hydrique)
+- **Sol** : Open-Meteo (humidite, temperature, ET0) + Meteo Agricole (bilan hydrique). Deux modeles distincts en "best match" : le temps reel (`/api/realtime` `soil`, entree du modele) lit les couches 0-1/1-3/3-9 cm et 9-27/27-81 cm servies par DWD ICON ; la Timeline (`soil_timeline`) lit 0-7/7-28/28-100 cm servies par ECMWF IFS (ERA5 en archive), nettement plus humides (ex. 0.195 vs 0.311 m3/m3 a la meme heure). Les series Timeline ne melangent jamais les deux (seul ET0 peut venir du temps reel).
 - **Camera** : Flux RTSP configurable via `CAMERA_RTSP_URL`
 
-Jobs du scheduler : rivieres et Netatmo 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, camera si configuree.
+Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), camera si configuree.
+
+APIs externes hors du chemin des requetes :
+- Netatmo, Infoclimat, Meteo Agricole et nowcast ne sont jamais appeles par une route ni par `gather_realtime_inputs` : lecture seule des caches remplis par les jobs (`peek_*`, perimes au-dela de 1 h pour Netatmo/Infoclimat, 15 min pour le nowcast, 12 h pour Meteo Agricole ; au-dela => indisponible, comme un echec).
+- Hub'Eau, Open-Meteo, marees et Vigicrues restent en cache-through, timeout 10 s (`EXTERNAL_TIMEOUT_S`) ; les backfills historiques gardent 30-60 s.
+- `CircuitBreaker` (`cache.py`) : apres un timeout / erreur de connexion / 5xx, l'API est sautee 15 min (Hub'Eau 5 min, sur un tour sans aucune station), un seul WARNING avec le `repr` de l'exception. Les 4xx n'ouvrent pas le disjoncteur.
 
 ### API Hub'Eau
 
@@ -249,7 +261,10 @@ GET /api/episodes/station-extremes?start_date=2020-01-01&end_date=2024-12-31
 POST /api/episodes/backfill?start_date=2022-11-01&end_date=2026-01-28
 
 # Detection automatique (threshold 0-100, defaut 35 ; retenu si >= 6 h au-dessus de 35 ou >= 2 h au-dessus de 55)
-POST /api/episodes/detect?start_date=2022-11-01&end_date=2025-12-31&threshold=45
+# Toute la periode en un appel : lecture Influx par fenetres de 30 jours (DETECTION_CHUNK_DAYS), etat des episodes
+# reporte d'une fenetre a l'autre => memoire bornee, resultat identique a une passe unique. Seuls les points
+# risk_score model_version=3.3 (et anciens sans tag) sont lus, jamais les series shadow (3.3-gate).
+POST /api/episodes/detect?start_date=2022-11-01&end_date=2026-10-26&threshold=45
 ```
 
 Tous les POST/PUT/DELETE ci-dessus exigent `X-API-Key` quand `API_KEY` est defini.
@@ -331,8 +346,11 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 
 ### Contrats d'API a respecter
 
+- Dates : tous les `datetime` des schemas Pydantic (`UtcDatetime`) sortent en ISO 8601 UTC avec `Z` (naifs = UTC en interne). Quelques payloads dict anciens restent naifs : le frontend les lit en UTC (`parseApiDate`) et affiche tout en Europe/Paris (`formatParis`). Vigicrues est en UTC (`+00:00`) et sur le meme zero que Hub'Eau.
+- Netatmo : `/api/realtime/basin-rainfall` expose `available`/`stations_count` (moyennes 0.0 = valeurs de remplissage si `available=false`) ; `/api/timeline/sources` marque les stations Netatmo `available=false` tant que Netatmo n'est pas autorise. La Timeline part par defaut sur Open-Meteo (Moulin) + Infoclimat.
+
 - `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`.
-- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`.
+- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score v3.3 temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives. `services.collectors` reste une declaration statique (compatibilite).
 - `/api/episodes/confirm/{id}` : `outcome` (`flooded`, `false_positive`, `near_miss`, `unknown`) ou ancien `was_flooded` ; remplace l'issue precedente.
 
 ## Variables d'environnement
@@ -344,6 +362,7 @@ Fichier `.env` a la racine (voir `.env.example`) :
 - `DATABASE_URL`, `INFLUXDB_URL`, `REDIS_URL` : construits par compose, a definir seulement hors Docker
 - `SHOM_API_KEY`, `METEOFRANCE_API_KEY`, `INFOCLIMAT_API_KEY` (optionnels)
 - `NETATMO_CLIENT_ID`, `NETATMO_CLIENT_SECRET`, `NETATMO_REFRESH_TOKEN` (optionnels)
+- `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` (optionnels, notifications) ; reglages `NOTIFY_*` (voir `config.py`)
 - `CAMERA_RTSP_URL` (optionnel), `LOG_LEVEL`
 
 Installation existante : conserver l'ancien mot de passe Postgres et l'ancien jeton Influx (`INFLUXDB_ADMIN_TOKEN` = ancien `INFLUXDB_TOKEN`) pour les volumes existants, puis `docker compose run --rm --user root backend chown -R 10001:10001 /app/data`. Detail dans le README.

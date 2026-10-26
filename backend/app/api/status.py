@@ -3,13 +3,16 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable, Optional
 
 import httpx
 from fastapi import APIRouter
 
 from app.config import get_settings
+from app.services import influx_client
+from app.services.cache import TTLCache
+from app.services.risk_core import MODEL_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -81,18 +84,181 @@ async def check_dependencies() -> dict[str, dict]:
     return dict(zip(checks, results))
 
 
+# ---------------------------------------------------------------------------
+# Data freshness: newest stored point of each source
+# ---------------------------------------------------------------------------
+
+SOURCES_CACHE_TTL_S = 60
+_sources_cache = TTLCache(ttl_seconds=SOURCES_CACHE_TTL_S, max_entries=4)
+
+# Tide points are high/low water times stored ahead of time: the newest one
+# is searched up to this far in the future and must not be in the past.
+TIDE_HORIZON = timedelta(days=8)
+
+
+def _netatmo_note(settings) -> Optional[str]:
+    if not (settings.netatmo_client_id and settings.netatmo_client_secret):
+        return "non configure (NETATMO_CLIENT_ID/SECRET)"
+    try:
+        from app.api.auth import get_netatmo_tokens
+        stored = get_netatmo_tokens() or {}
+    except Exception:
+        stored = {}
+    if not (stored.get("refresh_token") or settings.netatmo_refresh_token):
+        return "aucun jeton : autoriser via /api/auth/netatmo"
+    return None
+
+
+def source_specs() -> dict[str, dict]:
+    """Sources whose freshness /api/status reports.
+
+    ``max_age_hours``: older newest point = "stale". ``critical`` sources make
+    the overall status "degraded" when stale or unavailable.
+    """
+    settings = get_settings()
+    primary = settings.hubeau_primary_station
+    primary_name = next(
+        (s["name"] for s in settings.hubeau_stations if s["id"] == primary), primary,
+    )
+    return {
+        "river_primary": {
+            "label": f"Niveau {primary_name} (Hub'Eau)",
+            "measurement": "river_level",
+            "tags": {"station_id": [primary]},
+            "field": "height_m",
+            "max_age_hours": settings.risk_level_max_age_hours,
+            "critical": True,
+        },
+        "rain_openmeteo": {
+            "label": "Pluie Open-Meteo",
+            "measurement": "rainfall",
+            "tags": {"source": ["open-meteo"]},
+            "field": "precipitation_mm_h",
+            "max_age_hours": 3.0,
+        },
+        "infoclimat": {
+            "label": "Pluie Infoclimat",
+            "measurement": "rainfall",
+            "tags": {"source": ["infoclimat"]},
+            "max_age_hours": 3.0,
+            "note": None if settings.infoclimat_api_key else "non configure (INFOCLIMAT_API_KEY)",
+        },
+        "netatmo": {
+            "label": "Pluie Netatmo",
+            "measurement": "rainfall",
+            "tags": {"source": ["netatmo", "netatmo-lidoire"]},
+            "max_age_hours": 1.0,
+            "note": _netatmo_note(settings),
+        },
+        "tide": {
+            "label": "Marees (PM/BM a venir)",
+            "measurement": "tide",
+            "max_age_hours": 0.0,
+            "horizon": TIDE_HORIZON,
+        },
+        "soil": {
+            "label": "Sol (Open-Meteo)",
+            "measurement": "soil_moisture",
+            "tags": {"location": ["moulin"]},
+            "max_age_hours": 3.0,
+        },
+        "risk_score": {
+            "label": f"Score de risque v{MODEL_VERSION} (temps reel)",
+            "measurement": "risk_score",
+            "tags": {"model_version": [MODEL_VERSION], "source": [influx_client.RISK_SOURCE_REALTIME]},
+            "field": "score",
+            "max_age_hours": 2.0,
+            "critical": True,
+        },
+    }
+
+
+def _freshness_entry(spec: dict, now: datetime, last: Optional[datetime], error: Optional[str]) -> dict:
+    entry = {
+        "label": spec["label"],
+        "status": "unknown",
+        "last_timestamp": last.isoformat() if last else None,
+        # Negative for points ahead of now (tide forecasts)
+        "age_hours": round((now - last).total_seconds() / 3600, 2) if last else None,
+        "max_age_hours": spec["max_age_hours"],
+        "critical": spec.get("critical", False),
+    }
+    if error:
+        entry["error"] = error
+    elif last is None:
+        entry["status"] = "unavailable"
+    else:
+        entry["status"] = "stale" if entry["age_hours"] > spec["max_age_hours"] else "ok"
+    if spec.get("note"):
+        entry["note"] = spec["note"]
+    return entry
+
+
+async def _last_time(spec: dict, now: datetime) -> Optional[datetime]:
+    return await influx_client.query_last_time(
+        spec["measurement"],
+        tags=spec.get("tags"),
+        field=spec.get("field"),
+        stop=now + spec.get("horizon", timedelta(0)),
+    )
+
+
+async def check_sources(influx_ok: bool = True) -> dict[str, dict]:
+    """Freshness of each source ("ok" | "stale" | "unavailable" | "unknown").
+
+    One cheap ``last()`` query per source, in parallel, each bounded by
+    HEALTH_CHECK_TIMEOUT_S; the result is cached SOURCES_CACHE_TTL_S seconds.
+    "unavailable" = no point in the last 30 days, "unknown" = the query
+    failed or InfluxDB is down (not cached).
+    """
+    cached = _sources_cache.get("sources")
+    if cached is not None:
+        return cached
+
+    specs = source_specs()
+    now = _utcnow()
+    if not influx_ok:
+        return {k: _freshness_entry(s, now, None, "influxdb not connected") for k, s in specs.items()}
+
+    async def one(spec: dict) -> tuple[Optional[datetime], Optional[str]]:
+        try:
+            last = await asyncio.wait_for(_last_time(spec, now), timeout=HEALTH_CHECK_TIMEOUT_S)
+            return last, None
+        except asyncio.TimeoutError:
+            return None, f"no answer within {HEALTH_CHECK_TIMEOUT_S}s"
+        except Exception as e:
+            logger.warning("Freshness check failed: %r", e)
+            return None, type(e).__name__
+
+    results = await asyncio.gather(*(one(s) for s in specs.values()))
+    sources = {
+        key: _freshness_entry(spec, now, last, error)
+        for (key, spec), (last, error) in zip(specs.items(), results)
+    }
+    if not any("error" in e for e in sources.values()):
+        _sources_cache.set("sources", sources)
+    return sources
+
+
 @router.get("/status")
 async def get_status():
     """Get API status and health information.
 
     ``services.database`` / ``services.influxdb`` / ``services.redis`` are real
     checks ("connected" | "error" | "timeout"); details (latency, error type)
-    are under ``services.checks``. Overall status is "degraded" when any
-    dependency is not connected.
+    are under ``services.checks``. ``sources`` gives the freshness of each data
+    source (see :func:`check_sources`). Overall status is "degraded" when any
+    dependency is not connected or a critical source (``river_primary``,
+    ``risk_score``) is stale or unavailable; other sources are informative
+    only. ``services.collectors`` is a static declaration kept for
+    compatibility.
     """
     settings = get_settings()
     checks = await check_dependencies()
-    healthy = all(c["status"] == "connected" for c in checks.values())
+    sources = await check_sources(influx_ok=checks["influxdb"]["status"] == "connected")
+    healthy = all(c["status"] == "connected" for c in checks.values()) and not any(
+        s["critical"] and s["status"] in ("stale", "unavailable") for s in sources.values()
+    )
     return {
         "status": "healthy" if healthy else "degraded",
         "timestamp": _utcnow().isoformat(),
@@ -114,6 +280,7 @@ async def get_status():
                 "camera": "running" if settings.camera_rtsp_url else "disabled",
             },
         },
+        "sources": sources,
     }
 
 
@@ -203,7 +370,7 @@ async def get_sources_detail():
                 "configured": bool(settings.infoclimat_api_key),
                 "search_radius_km": 40,
                 "max_stations": 5,
-                "note": "API restreinte par IP — l'IP du serveur doit etre whitelistee",
+                "note": "Cle API requise ; seules les 5 stations les plus proches sont interrogees",
             },
             "open_meteo": {
                 "name": "Open-Meteo",
@@ -212,7 +379,8 @@ async def get_sources_detail():
                 "api_archive": "https://archive-api.open-meteo.com/v1/archive",
                 "fields": [
                     "precipitation", "temperature", "humidity", "wind",
-                    "soil_moisture (0-7cm, 7-100cm)", "soil_temperature",
+                    "soil_moisture (temps reel : ICON 0-9 / 9-81 cm ; timeline : ECMWF 0-7 / 7-100 cm)",
+                    "soil_temperature",
                     "evapotranspiration (ET0)",
                 ],
                 "basin_points": basin_points,

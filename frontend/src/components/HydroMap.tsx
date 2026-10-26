@@ -16,6 +16,7 @@ import type {
   TideForecast,
   Tendency,
 } from '../types'
+import { formatDistanceKm } from '../utils/format'
 
 interface HydroMapProps {
   stations: StationData[]
@@ -326,7 +327,7 @@ export default function HydroMap({
                 <span className="font-medium">{ic.name}</span>
                 <br />
                 {ic.distance_km != null && (
-                  <span className="text-gray-500">{ic.distance_km} km</span>
+                  <span className="text-gray-500">{formatDistanceKm(ic.distance_km)}</span>
                 )}
                 <br />
                 <span className="text-gray-400">{ic.source}</span>

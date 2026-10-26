@@ -1,7 +1,10 @@
 """Application configuration."""
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+
+from app.geo import display_distance_km
 
 
 class Settings(BaseSettings):
@@ -78,7 +81,9 @@ class Settings(BaseSettings):
     ]
 
     # Hub'Eau hydrometric stations - comprehensive monitoring network
-    # Stations ordered by proximity to moulin and importance for flood prediction
+    # Stations ordered by river and importance for flood prediction.
+    # ``distance_km`` (display only) is computed from lat/lon by
+    # ``_station_distances`` below: never hard-code it here.
     #
     # NOTE v2.2 (Jan 2026): Libourne weight=0 — excluded from risk calculation.
     # Libourne is tidally modulated (~4m oscillation) which masks the flood signal.
@@ -91,7 +96,6 @@ class Settings(BaseSettings):
             "id": "P577001001",
             "name": "Libourne",
             "river": "Dordogne",
-            "distance_km": 5,
             "delay_hours": 0,
             "weight": 0.0,  # Excluded: tidal oscillation ~4m masks flood signal
             "lat": 44.9167,
@@ -103,7 +107,6 @@ class Settings(BaseSettings):
             "id": "P555001001",
             "name": "Pessac-sur-Dordogne",
             "river": "Dordogne",
-            "distance_km": 30,
             "delay_hours": 4,
             "weight": 0.30,  # Primary non-tidal Dordogne station
             "lat": 44.8131,
@@ -114,7 +117,6 @@ class Settings(BaseSettings):
             "id": "P514001001",
             "name": "Bergerac",
             "river": "Dordogne",
-            "distance_km": 60,
             "delay_hours": 8,
             "weight": 0.15,  # Upstream Dordogne, good lead time
             "lat": 44.8531,
@@ -126,7 +128,6 @@ class Settings(BaseSettings):
             "id": "P726151001",
             "name": "Abzac",
             "river": "Isle",
-            "distance_km": 15,
             "delay_hours": 2,
             "weight": 0.25,  # Closest non-tidal station (Isle)
             "lat": 44.8789,
@@ -137,7 +138,6 @@ class Settings(BaseSettings):
             "id": "P704151001",
             "name": "Périgueux",
             "river": "Isle",
-            "distance_km": 80,
             "delay_hours": 12,
             "weight": 0.10,  # Far upstream Isle
             "lat": 45.1837,
@@ -149,7 +149,6 @@ class Settings(BaseSettings):
             "id": "P846251001",
             "name": "Coutras",
             "river": "Dronne",
-            "distance_km": 25,
             "delay_hours": 3,
             "weight": 0.15,  # Dronne at confluence
             "lat": 45.0411,
@@ -160,7 +159,6 @@ class Settings(BaseSettings):
             "id": "P816251001",
             "name": "Ribérac",
             "river": "Dronne",
-            "distance_km": 70,
             "delay_hours": 10,
             "weight": 0.05,  # Far upstream Dronne, early warning
             "lat": 45.2461,
@@ -219,6 +217,27 @@ class Settings(BaseSettings):
     # Frontend
     frontend_url: str = "http://localhost:3000"
 
+    # Notifications (app/services/notifier.py). ntfy: POST <ntfy_url>/<ntfy_topic>.
+    # Empty URL or topic = notifications disabled (one info log at startup).
+    # On a public server the topic acts as a password: anyone knowing it can subscribe.
+    ntfy_url: str = ""
+    ntfy_topic: str = ""
+    ntfy_token: str = ""  # Optional bearer token (access-controlled topic)
+    # Observed level: rising to orange/red is sent at once; a lower level is
+    # sent only once it has held notify_downgrade_hold_hours (the score
+    # oscillates around the thresholds with the tide).
+    notify_yellow: bool = False  # Also notify green <-> yellow transitions
+    notify_downgrade_hold_hours: float = 3.0
+    # Forecast heads-up: max score over the next N hours reaches orange/red
+    notify_forecast_hours: int = 48
+    # Data staleness: primary station last point / last stored realtime score
+    notify_station_stale_hours: float = 3.0
+    notify_score_stale_hours: float = 2.0
+
+    @property
+    def notifications_enabled(self) -> bool:
+        return bool(self.ntfy_url.strip() and self.ntfy_topic.strip())
+
     # extra="ignore": the shared .env also holds compose-only variables
     # (POSTGRES_PASSWORD, REDIS_PASSWORD...) that are not settings.
     model_config = SettingsConfigDict(
@@ -226,6 +245,21 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def _station_distances(self) -> "Settings":
+        """Fill each station's display ``distance_km`` from its lat/lon.
+
+        Single source for every distance shown by the API (dashboard cards,
+        /timeline/sources, /sources-detail): the haversine distance from the
+        moulin, rounded to 0.1 km. Never used by the risk model.
+        """
+        for station in self.hubeau_stations:
+            distance = display_distance_km(
+                self.moulin_lat, self.moulin_lon, station.get("lat"), station.get("lon")
+            )
+            station["distance_km"] = distance if distance is not None else 0.0
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

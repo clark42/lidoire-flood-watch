@@ -14,6 +14,8 @@ import { getForecast } from '../api'
 import type { ForecastData, ForecastPoint, RiskLevel } from '../types'
 import InfoTooltip from './InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
+import { formatParis, parisHour } from '../utils/time'
+import { riskLevelLabel } from '../utils/format'
 
 const LEVEL_COLORS: Record<RiskLevel, string> = {
   green: '#22c55e',
@@ -36,10 +38,7 @@ interface ForecastPanelProps {
 }
 
 function formatHour(timestamp: string): string {
-  const d = new Date(timestamp)
-  const day = d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric' })
-  const hour = d.getHours().toString().padStart(2, '0') + 'h'
-  return `${day} ${hour}`
+  return formatParis(timestamp, 'EEE d HHh')
 }
 
 function CustomTooltip({ active, payload }: { active?: boolean; payload?: { payload: ForecastPoint }[] }) {
@@ -58,7 +57,7 @@ function CustomTooltip({ active, payload }: { active?: boolean; payload?: { payl
             style={{ backgroundColor: levelColor }}
           />
           <span className="font-bold">{data.score.toFixed(0)}/100</span>
-          <span className="text-gray-500 capitalize">({data.level})</span>
+          <span className="text-gray-500">({riskLevelLabel(data.level)})</span>
         </div>
         <div className="flex items-center gap-2 text-gray-600">
           <CloudRain className="w-4 h-4" />
@@ -220,12 +219,9 @@ export default function ForecastPanel({
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
             <XAxis
               dataKey="timestamp"
-              tickFormatter={(ts) => {
-                const d = new Date(ts)
-                return d.getHours() === 0
-                  ? d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })
-                  : d.getHours() + 'h'
-              }}
+              tickFormatter={(ts) =>
+                parisHour(ts) === 0 ? formatParis(ts, 'dd/MM') : `${parisHour(ts)}h`
+              }
               tick={{ fontSize: 10 }}
               interval="preserveStartEnd"
               minTickGap={40}

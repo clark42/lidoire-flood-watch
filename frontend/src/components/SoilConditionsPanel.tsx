@@ -84,7 +84,7 @@ export default function SoilConditionsPanel({ soil, loading }: SoilConditionsPan
             <div className="flex items-center justify-between mb-1">
               <span className="text-sm text-gray-600 flex items-center gap-1">
                 <Droplets className="w-3 h-3" />
-                Humidite 0-9cm
+                Humidite 0-9 cm (ICON)
                 <InfoTooltip {...TOOLTIPS.soilMoisture} />
               </span>
               <span className="text-sm font-medium">{soil.soil_moisture.toFixed(3)} m3/m3</span>
@@ -99,12 +99,17 @@ export default function SoilConditionsPanel({ soil, loading }: SoilConditionsPan
             <div className="flex items-center justify-between mb-1">
               <span className="text-sm text-gray-600 flex items-center gap-1">
                 <Droplets className="w-3 h-3" />
-                Humidite profonde (9-81cm)
+                Humidite profonde 9-81 cm (ICON)
               </span>
               <span className="text-sm font-medium">{soil.moisture_deep.toFixed(3)} m3/m3</span>
             </div>
             <MoistureBar value={soil.moisture_deep} />
           </div>
+        )}
+        {(soil.soil_moisture != null || soil.moisture_deep != null) && (
+          <p className="text-[10px] text-gray-400 -mt-2">
+            Open-Meteo, modele DWD ICON. La Timeline utilise ECMWF (0-7 / 7-100 cm) : valeurs differentes.
+          </p>
         )}
 
         {/* Temperature & ET0 row */}
@@ -113,7 +118,7 @@ export default function SoilConditionsPanel({ soil, loading }: SoilConditionsPan
             <div className="flex items-center gap-2">
               <Thermometer className="w-4 h-4 text-orange-500" />
               <div>
-                <div className="text-xs text-gray-500">Temp. sol</div>
+                <div className="text-xs text-gray-500">Temp. sol (surface)</div>
                 <div className="font-medium text-sm">
                   {soil.soil_temperature_0cm.toFixed(1)}°C
                   {soil.soil_temperature_0cm < 0 && (

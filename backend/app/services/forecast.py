@@ -409,6 +409,7 @@ def summarize_forecast(forecasts: list[dict], hours: int, data_sources: dict) ->
 async def _fetch_past_hourly_rain_utc(lat: float, lon: float, past_days: int = 7) -> dict[datetime, float]:
     """Past observed hourly rain from Open-Meteo, keyed by hour END (naive UTC)."""
     import httpx
+    from app.services.cache import EXTERNAL_TIMEOUT_S
     from app.services.collectors.weather import OPEN_METEO_CURRENT
 
     async with httpx.AsyncClient() as client:
@@ -422,7 +423,7 @@ async def _fetch_past_hourly_rain_utc(lat: float, lon: float, past_days: int = 7
                 "forecast_days": 1,
                 "timezone": "UTC",
             },
-            timeout=30.0,
+            timeout=EXTERNAL_TIMEOUT_S,
         )
         response.raise_for_status()
         hourly = response.json().get("hourly", {})

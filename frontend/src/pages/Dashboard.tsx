@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { format } from 'date-fns'
-import { fr } from 'date-fns/locale'
 import {
   Droplets,
   Waves,
@@ -22,6 +20,7 @@ import {
   getBasinRainfall,
   getRealtimeDataAt,
   getEpisodesList,
+  getUnifiedTimeline,
 } from '../api'
 import type {
   RealtimeData,
@@ -31,6 +30,7 @@ import type {
   DataSource,
   BasinRainfallData,
   FloodEpisode,
+  UnifiedTimelineData,
 } from '../types'
 import RiskGauge from '../components/RiskGauge'
 import DataCard from '../components/DataCard'
@@ -47,7 +47,8 @@ import SoilConditionsPanel from '../components/SoilConditionsPanel'
 import NowcastRainChart from '../components/NowcastRainChart'
 import InfoTooltip from '../components/InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
-import { formatAge, parseApiDate } from '../utils/time'
+import { formatAge, formatParis, parseApiDate } from '../utils/time'
+import { riskLevelLabel } from '../utils/format'
 
 const RISK_BG_COLORS: Record<RiskLevel, string> = {
   green: 'bg-green-50 border-green-200',
@@ -68,6 +69,44 @@ const POLL_INTERVAL_MS = 60_000
 // shorter threshold would flag normal operation.
 const STALE_AFTER_MS = 3 * 60 * 60_000
 const PESSAC_STATION_ID = 'P555001001'
+
+// Sparklines: last 24 h from /api/timeline/unified (re-seeded every 30 min),
+// live points appended between seeds.
+const SPARKLINE_WINDOW_MS = 24 * 3600_000
+const SPARKLINE_SEED_EVERY_MS = 30 * 60_000
+const SPARKLINE_SEED_RETRY_MS = 5 * 60_000
+const SPARKLINE_RAIN_SOURCE = 'open-meteo:Moulin-Lidoire'
+const SPARKLINE_SERIES = {
+  river: `river:${PESSAC_STATION_ID}`,
+  tide: 'tide:LIBOURNE',
+  rain: `rainfall:${SPARKLINE_RAIN_SOURCE}`,
+  risk: 'risk:score',
+} as const
+
+type SparkPoint = { t: number; v: number }
+type SparklineKey = keyof typeof SPARKLINE_SERIES
+type SparklineSet = Record<SparklineKey, SparkPoint[]>
+
+const EMPTY_SPARKLINES: SparklineSet = { river: [], tide: [], rain: [], risk: [] }
+
+/** Union by timestamp (newest value wins), limited to the last 24 h, sorted. */
+function mergeSparkPoints(prev: SparkPoint[], added: SparkPoint[], now: number): SparkPoint[] {
+  const byTime = new Map<number, number>()
+  for (const p of prev) byTime.set(p.t, p.v)
+  for (const p of added) byTime.set(p.t, p.v)
+  return Array.from(byTime, ([t, v]) => ({ t, v }))
+    .filter(p => p.t >= now - SPARKLINE_WINDOW_MS)
+    .sort((a, b) => a.t - b.t)
+}
+
+function seriesSparkPoints(data: UnifiedTimelineData, key: string): SparkPoint[] {
+  const points: SparkPoint[] = []
+  for (const p of data.series[key]?.data ?? []) {
+    const date = parseApiDate(p.timestamp)
+    if (date && p.value != null) points.push({ t: date.getTime(), v: p.value })
+  }
+  return points
+}
 
 /**
  * Time of the newest underlying measurement. RealtimeData.timestamp is the
@@ -138,19 +177,47 @@ export default function Dashboard() {
     timeMachineActiveRef.current = timeMachineActive
   }, [timeMachineActive])
 
-  // Sparkline accumulation
-  const [sparklineData, setSparklineData] = useState<{
-    river: { t: number; v: number }[]
-    tide: { t: number; v: number }[]
-    rain: { t: number; v: number }[]
-    risk: { t: number; v: number }[]
-  }>({ river: [], tide: [], rain: [], risk: [] })
+  // Sparklines: seeded with the last 24 h, then live points appended
+  const [sparklineData, setSparklineData] = useState<SparklineSet>(EMPTY_SPARKLINES)
+  const nextSeedAtRef = useRef(0)
+
+  const seedSparklines = useCallback(async () => {
+    const now = Date.now()
+    try {
+      const { data } = await getUnifiedTimeline(
+        new Date(now - SPARKLINE_WINDOW_MS).toISOString(),
+        new Date(now).toISOString(),
+        [PESSAC_STATION_ID],
+        [SPARKLINE_RAIN_SOURCE],
+        true, // tide
+        true, // risk score
+        '1h',
+        false, // soil
+        false, // infoclimat
+      )
+      setSparklineData(prev => {
+        const next = { ...prev }
+        for (const key of Object.keys(SPARKLINE_SERIES) as SparklineKey[]) {
+          next[key] = mergeSparkPoints(prev[key], seriesSparkPoints(data, SPARKLINE_SERIES[key]), now)
+        }
+        return next
+      })
+    } catch (err) {
+      // Non blocking: live points keep accumulating, retry sooner
+      console.error('Sparkline history unavailable:', err)
+      nextSeedAtRef.current = now + SPARKLINE_SEED_RETRY_MS
+    }
+  }, [])
 
   const fetchData = useCallback(async () => {
     // In-flight guard: a slow backend must not stack overlapping polls
     if (inFlightRef.current) return
     inFlightRef.current = true
     try {
+      if (Date.now() >= nextSeedAtRef.current) {
+        nextSeedAtRef.current = Date.now() + SPARKLINE_SEED_EVERY_MS
+        void seedSparklines()
+      }
       setLoading(true)
 
       // Fetch all data in parallel
@@ -185,17 +252,20 @@ export default function Dashboard() {
           setSelectedStation(prev => prev ?? primaryId)
         }
 
-        // Accumulate sparkline data
+        // Append live points (the tide curve comes from the seed only:
+        // /realtime has no current tide height)
         const t = Date.now()
         const pessac = d.stations?.stations.find(s => s.station_id === PESSAC_STATION_ID)
+        const pessacAt = parseApiDate(pessac?.current_level?.timestamp)
         setSparklineData(prev => ({
           // "Dordogne" reference is Pessac (Hub'Eau), not Libourne (tidal)
-          river: pessac
-            ? [...prev.river, { t, v: pessac.current_level.height_m }].slice(-60)
+          river: pessac && pessacAt
+            ? mergeSparkPoints(prev.river, [{ t: pessacAt.getTime(), v: pessac.current_level.height_m }], t)
             : prev.river,
-          tide: [...prev.tide, { t, v: d.tide.current_coefficient || 0 }].slice(-60),
-          rain: [...prev.rain, { t, v: d.rainfall.last_24h_mm }].slice(-60),
-          risk: [...prev.risk, { t, v: d.risk.score }].slice(-60),
+          tide: prev.tide,
+          // Hourly rain (mm/h), same unit as the Open-Meteo history
+          rain: mergeSparkPoints(prev.rain, [{ t, v: d.rainfall.last_hour_mm }], t),
+          risk: mergeSparkPoints(prev.risk, [{ t, v: d.risk.score }], t),
         }))
       } else {
         setError(errorMessage(realtimeResult.reason))
@@ -218,7 +288,7 @@ export default function Dashboard() {
       inFlightRef.current = false
       setLoading(false)
     }
-  }, [])
+  }, [seedSparklines])
 
   const handleTimeMachineToggle = useCallback(() => {
     if (timeMachineActive) {
@@ -364,7 +434,7 @@ export default function Dashboard() {
             {error && (
               <p className="mt-1">
                 Echec du chargement temps reel
-                {lastFailureAt ? ` (${format(lastFailureAt, 'HH:mm:ss', { locale: fr })})` : ''}
+                {lastFailureAt ? ` (${formatParis(lastFailureAt, 'HH:mm:ss')})` : ''}
                 {' '}: {error}. Les valeurs affichees peuvent etre perimees.
               </p>
             )}
@@ -480,7 +550,7 @@ export default function Dashboard() {
           value={`Coef ${data.tide.current_coefficient || '-'}`}
           subtitle={
             data.tide.next_high_tide
-              ? `PM ${format(new Date(data.tide.next_high_tide.timestamp), 'HH:mm', { locale: fr })}`
+              ? `PM ${formatParis(data.tide.next_high_tide.timestamp, 'HH:mm')} · hauteur 24 h`
               : undefined
           }
           data={sparklineData.tide}
@@ -489,8 +559,13 @@ export default function Dashboard() {
         />
         <MetricSparkline
           title="Pluie bassin"
-          value={`${basinRainfall?.weighted_average_24h_mm?.toFixed(1) || data.rainfall.last_24h_mm.toFixed(1)} mm`}
-          subtitle={basinRainfall ? "24h Netatmo Lidoire" : "24h Open-Meteo"}
+          value={`${(basinRainfall?.available
+            ? basinRainfall.weighted_average_24h_mm
+            : data.rainfall.last_24h_mm
+          ).toFixed(1)} mm`}
+          subtitle={basinRainfall?.available
+            ? `24h Netatmo Lidoire (${basinRainfall.stations_count} st.)`
+            : '24h modele · Netatmo indisponible'}
           data={sparklineData.rain}
           color="#6366f1"
           icon={<CloudRain className="w-4 h-4" />}
@@ -498,7 +573,7 @@ export default function Dashboard() {
         <MetricSparkline
           title="Risque"
           value={`${data.risk.score.toFixed(0)}/100`}
-          subtitle={data.risk.level}
+          subtitle={riskLevelLabel(data.risk.level)}
           data={sparklineData.risk}
           color={
             data.risk.level === 'red'
@@ -578,11 +653,7 @@ export default function Dashboard() {
                   Prochaine PM
                   <InfoTooltip {...TOOLTIPS.tidePhaseBmPm} />
                 </span>
-                <span>
-                  {format(new Date(data.tide.next_high_tide.timestamp), 'HH:mm', {
-                    locale: fr,
-                  })}
-                </span>
+                <span>{formatParis(data.tide.next_high_tide.timestamp, 'HH:mm')}</span>
               </div>
             )}
             {data.tide.next_low_tide && (
@@ -590,11 +661,7 @@ export default function Dashboard() {
                 <span className="text-gray-500 flex items-center gap-1">
                   Prochaine BM
                 </span>
-                <span>
-                  {format(new Date(data.tide.next_low_tide.timestamp), 'HH:mm', {
-                    locale: fr,
-                  })}
-                </span>
+                <span>{formatParis(data.tide.next_low_tide.timestamp, 'HH:mm')}</span>
               </div>
             )}
           </div>
@@ -691,8 +758,8 @@ export default function Dashboard() {
           <Clock className="w-4 h-4" />
           <span>
             {timeMachineActive && timeMachineDate
-              ? `Mode TimeMachine - ${format(timeMachineDate, 'dd/MM/yyyy HH:mm', { locale: fr })}`
-              : `Derniere mesure : ${dataDate ? `${format(dataDate, 'dd/MM/yyyy HH:mm:ss', { locale: fr })} (${formatAge(dataDate, now)})` : '-'}`}
+              ? `Mode TimeMachine - ${formatParis(timeMachineDate, 'dd/MM/yyyy HH:mm')}`
+              : `Derniere mesure : ${dataDate ? `${formatParis(dataDate, 'dd/MM/yyyy HH:mm:ss')} (${formatAge(dataDate, now)})` : '-'}`}
           </span>
           {isStale && <span className="text-red-600 font-medium">perimees</span>}
         </div>
