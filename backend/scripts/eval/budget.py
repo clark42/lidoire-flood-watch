@@ -206,12 +206,18 @@ def default_points() -> list[OperatingPoint]:
         all_of(above("v3.4", 55), above("v4a_joint", 15)),
         all_of(above("v3.4", 35), above("3.4-gate", 35)),
     ]
-    return v3 + gate + v4 + combos
+    # v4-beta (pre-registered 2026-10-27): primary at 15 / 25 / 35 / 45 / 55, V1 at orange, combinations
+    v4b = [above("v4b", t) for t in (15, 25, 35, 45, 55)] + [above("v4b_fc", 35)]
+    v4b_combos = [
+        any_of(above("v3.4", 55), above("v4b", 35)),
+        all_of(above("v3.4", 35), above("v4b", 35)),
+    ]
+    return v3 + gate + v4 + combos + v4b + v4b_combos
 
 
 def replay_series(dataset) -> dict[str, list[Optional[float]]]:
     from app.services import risk_v4
-    from app.services.models_experimental import V33BackwaterModel, V4AlphaModel
+    from app.services.models_experimental import V33BackwaterModel, V4AlphaModel, V4BetaModel
     from scripts.eval.models import V33Model, replay
 
     out = {}
@@ -219,6 +225,8 @@ def replay_series(dataset) -> dict[str, list[Optional[float]]]:
         ("v3.4", V33Model()),
         ("3.4-gate", V33BackwaterModel()),
         ("v4a_joint", V4AlphaModel(risk_v4.default_v4_params(), "q_eyraud", name="v4a_joint")),
+        ("v4b", V4BetaModel("primary", name="v4b")),
+        ("v4b_fc", V4BetaModel("fc", name="v4b_fc")),
     ):
         t0 = time.time()
         out[name] = replay(model, dataset)
