@@ -550,7 +550,7 @@ export interface SourcesDetail {
     camera?: { name: string; description: string; configured: boolean }
   }
   risk_model?: {
-    version: string
+    version?: string // risk_core.MODEL_VERSION
     weights: Record<string, string>
     conjunction_multiplier?: string
     stability_dampener?: string
