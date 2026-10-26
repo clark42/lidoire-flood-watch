@@ -798,12 +798,16 @@ async def get_available_sources():
         for station_id, info in RIVER_STATIONS.items()
     ]
 
+    from app.services.collectors.netatmo import is_authorised
+
+    netatmo_available = is_authorised()
     rainfall_stations = [
         RainfallStationInfo(
             id=source_id,
             name=info["name"],
             position=info["position"],
             color=info["color"],
+            available=netatmo_available if source_id.startswith(f"{NETATMO_SOURCE}:") else True,
         )
         for source_id, info in RAINFALL_STATIONS.items()
     ]
@@ -1021,19 +1025,19 @@ async def get_unified_timeline(
         soil_series_config = {
             "moisture_shallow": {
                 "type": "soil_moisture",
-                "name": "Humidite sol (0-7cm)",
+                "name": "Humidite sol 0-7 cm (ECMWF)",
                 "unit": "m³/m³",
                 "color": "#7c3aed",
             },
             "moisture_deep": {
                 "type": "soil_moisture",
-                "name": "Humidite sol (7-100cm)",
+                "name": "Humidite sol 7-100 cm (ECMWF)",
                 "unit": "m³/m³",
                 "color": "#6366f1",
             },
             "soil_temp": {
                 "type": "soil_temperature",
-                "name": "Temperature sol",
+                "name": "Temperature sol 0-7 cm",
                 "unit": "°C",
                 "color": "#f97316",
             },

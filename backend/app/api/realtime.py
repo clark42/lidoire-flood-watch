@@ -375,11 +375,14 @@ async def get_basin_rainfall_summary():
         cnt = by_position[pos]["count"]
         by_position[pos]["avg"] = round(by_position[pos]["total"] / cnt, 1) if cnt > 0 else 0.0
 
-    # Weighted average: amont 30%, milieu 40%, aval 30%
+    # Weighted average: amont 30%, milieu 40%, aval 30%, renormalised over
+    # the positions that have stations (an empty position is not 0 mm)
+    position_weights = {"amont": 0.3, "milieu": 0.4, "aval": 0.3}
+    covered = {p: w for p, w in position_weights.items() if by_position[p]["count"] > 0}
+    total_weight = sum(covered.values())
     weighted = (
-        by_position["amont"].get("avg", 0) * 0.3 +
-        by_position["milieu"].get("avg", 0) * 0.4 +
-        by_position["aval"].get("avg", 0) * 0.3
+        sum(by_position[p]["avg"] * w for p, w in covered.items()) / total_weight
+        if total_weight > 0 else 0.0
     )
 
     # Get sparkline data
@@ -387,6 +390,8 @@ async def get_basin_rainfall_summary():
 
     return BasinRainfallSummary(
         timestamp=_utcnow(),
+        available=station_count > 0,
+        stations_count=station_count,
         basin_average_1h_mm=round(basin_1h, 1),
         basin_average_24h_mm=round(basin_24h, 1),
         weighted_average_24h_mm=round(weighted, 1),

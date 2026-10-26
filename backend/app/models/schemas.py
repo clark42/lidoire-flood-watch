@@ -1,9 +1,24 @@
 """Pydantic schemas for API data models."""
 
-from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+from typing import Annotated, Optional
+from pydantic import BaseModel, Field, PlainSerializer
 from enum import Enum
+
+
+def utc_isoformat(dt: datetime) -> str:
+    """ISO 8601 UTC with an explicit "Z" (naive values are UTC by convention)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+# Datetimes are handled as naive UTC internally; the JSON API always states
+# the offset so clients never read them as local time. Python-mode dumps
+# (model_dump()) keep the datetime object unchanged.
+UtcDatetime = Annotated[datetime, PlainSerializer(utc_isoformat, return_type=str, when_used="json")]
 
 
 class TideType(str, Enum):
@@ -30,7 +45,7 @@ class Tendency(str, Enum):
 # Tide data
 class TideData(BaseModel):
     """Tide data point."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     port: str
     tide_type: TideType
     height_m: float
@@ -60,7 +75,7 @@ class TideForecast(BaseModel):
 # River level data
 class RiverLevel(BaseModel):
     """River level measurement."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     station_id: str
     station_name: str
     river: str
@@ -100,7 +115,7 @@ class StationLevel(BaseModel):
 
 class MultiStationData(BaseModel):
     """Aggregated data from all monitoring stations."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     stations: list[StationLevel] = []
     primary_station_id: str = "P555001001"  # Pessac-sur-Dordogne (non-tidal)
 
@@ -108,7 +123,7 @@ class MultiStationData(BaseModel):
 # Weather data
 class WeatherForecast(BaseModel):
     """Weather forecast data point."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     point_id: str
     point_name: str
     precipitation_mm: float
@@ -121,7 +136,7 @@ class WeatherForecast(BaseModel):
 
 class RainfallObservation(BaseModel):
     """Observed rainfall data."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     source: str  # radar, station, comephore
     precipitation_mm_h: float
     precipitation_mm_24h: Optional[float] = None
@@ -144,8 +159,15 @@ class RainfallSummary(BaseModel):
 
 
 class BasinRainfallSummary(BaseModel):
-    """Aggregated rainfall data for the Lidoire basin."""
-    timestamp: datetime
+    """Aggregated rainfall data for the Lidoire basin (Netatmo stations).
+
+    ``available`` is False when no basin station reported (Netatmo not
+    authorised or down): the 0.0 averages are then placeholders, not
+    measurements.
+    """
+    timestamp: UtcDatetime
+    available: bool = False
+    stations_count: int = 0
     basin_average_1h_mm: float = 0.0
     basin_average_24h_mm: float = 0.0
     weighted_average_24h_mm: float = 0.0
@@ -156,7 +178,7 @@ class BasinRainfallSummary(BaseModel):
 # Video analysis
 class VideoAnalysis(BaseModel):
     """Video analysis result from cascade camera."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     water_level_index: float = Field(..., ge=0, le=100, description="Water level index 0-100")
     delta_from_baseline: Optional[float] = None
     anomaly_detected: bool = False
@@ -235,7 +257,7 @@ class RiskFactors(BaseModel):
 
 class RiskScore(BaseModel):
     """Overall risk score and breakdown."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     level: RiskLevel
     score: float = Field(..., ge=0, le=100, description="Risk score 0-100")
     factors: RiskFactors
@@ -266,16 +288,16 @@ class EpisodeOutcome(str, Enum):
 class FloodEpisode(BaseModel):
     """Historical flood episode record."""
     id: Optional[int] = None
-    start_time: datetime
-    peak_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
+    start_time: UtcDatetime
+    peak_time: Optional[UtcDatetime] = None
+    end_time: Optional[UtcDatetime] = None
     severity: int = Field(..., ge=1, le=5, description="Severity 1-5")
     description: Optional[str] = None
     notes: Optional[str] = None
-    created_at: Optional[datetime] = None
+    created_at: Optional[UtcDatetime] = None
     # Structured ground truth (null outcome = not labelled yet)
     outcome: Optional[EpisodeOutcome] = None
-    observed_at: Optional[datetime] = Field(
+    observed_at: Optional[UtcDatetime] = Field(
         None, description="Observed peak time at the mill"
     )
     water_height_cm: Optional[float] = Field(
@@ -293,14 +315,14 @@ class FloodEpisodeCreate(BaseModel):
     outcome_source) are only changed when explicitly present in the payload,
     so legacy clients that omit them do not wipe existing labels.
     """
-    start_time: datetime
-    peak_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
+    start_time: UtcDatetime
+    peak_time: Optional[UtcDatetime] = None
+    end_time: Optional[UtcDatetime] = None
     severity: int = Field(..., ge=1, le=5)
     description: Optional[str] = None
     notes: Optional[str] = None
     outcome: Optional[EpisodeOutcome] = None
-    observed_at: Optional[datetime] = None
+    observed_at: Optional[UtcDatetime] = None
     water_height_cm: Optional[float] = Field(None, ge=0)
     outcome_source: Optional[str] = Field(None, max_length=100)
 
@@ -308,7 +330,7 @@ class FloodEpisodeCreate(BaseModel):
 class EpisodeLabel(BaseModel):
     """One annotated reference episode (from app/data/episodes_labels.json)."""
     key: str = Field(..., description="Stable key: peak date YYYY-MM-DD")
-    peak_time: datetime = Field(..., description="Approximate peak time (naive, UTC assumed)")
+    peak_time: UtcDatetime = Field(..., description="Approximate peak time (naive, UTC assumed)")
     outcome: EpisodeOutcome
     severity: int = Field(..., ge=1, le=5)
     water_height_cm: Optional[float] = Field(None, ge=0)
@@ -366,9 +388,12 @@ class EpisodeAnalysis(BaseModel):
 # Soil conditions
 class SoilConditions(BaseModel):
     """Soil and agricultural conditions."""
-    soil_moisture: Optional[float] = None  # m³/m³ (0-9cm average)
-    moisture_deep: Optional[float] = None  # m³/m³ (9-81cm average)
-    soil_temperature_0cm: Optional[float] = None  # °C
+    # Open-Meteo forecast API, layers served by DWD ICON in "best match".
+    # The timeline series (soil_timeline) use the ECMWF IFS / ERA5 layers
+    # 0-7 / 7-28 / 28-100 cm instead: another model, values differ.
+    soil_moisture: Optional[float] = None  # m³/m³ (0-9cm average, ICON)
+    moisture_deep: Optional[float] = None  # m³/m³ (9-81cm average, ICON)
+    soil_temperature_0cm: Optional[float] = None  # °C (surface)
     et0_mm: Optional[float] = None  # Evapotranspiration mm/day
     soil_saturation_factor: float = 1.0  # 1.0 (dry) to 1.5 (saturated)
     precip_probability: Optional[float] = None  # %
@@ -389,7 +414,7 @@ class WindData(BaseModel):
 # Meteo Agricole data
 class NowcastRainData(BaseModel):
     """Nowcast rain data from La Meteo Agricole minute-by-minute radar."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     commune: str = "Belves-de-Castillon"
     total_60min_mm: float = 0.0
     max_intensity_mm: float = 0.0
@@ -399,7 +424,7 @@ class NowcastRainData(BaseModel):
 
 class MeteoAgricoleData(BaseModel):
     """Data scraped from La Meteo Agricole."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     commune: str = "Castillon-la-Bataille"
     rain_min_mm: float = 0.0
     rain_max_mm: float = 0.0
@@ -417,7 +442,7 @@ class MeteoAgricoleData(BaseModel):
 # Realtime dashboard data
 class RealtimeData(BaseModel):
     """Real-time dashboard data."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     risk: RiskScore
     tide: TideForecast
     river: RiverLevelForecast
@@ -437,7 +462,7 @@ class RealtimeData(BaseModel):
 # Timeline data
 class TimelinePoint(BaseModel):
     """Single point on the timeline."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     tide_height_m: Optional[float] = None
     river_level_m: Optional[float] = None
     rainfall_mm_h: Optional[float] = None
@@ -447,8 +472,8 @@ class TimelinePoint(BaseModel):
 
 class TimelineData(BaseModel):
     """Timeline data for charts."""
-    start: datetime
-    end: datetime
+    start: UtcDatetime
+    end: UtcDatetime
     resolution: str  # "1h", "15m", "1d"
     points: list[TimelinePoint]
     episodes: list[FloodEpisode] = []
@@ -457,7 +482,7 @@ class TimelineData(BaseModel):
 # Unified Timeline Data (Multi-Source Comparison)
 class TimelineDataPoint(BaseModel):
     """Single data point in a timeline series."""
-    timestamp: datetime
+    timestamp: UtcDatetime
     value: float
 
 
@@ -472,8 +497,8 @@ class TimelineSeries(BaseModel):
 
 class UnifiedTimelineData(BaseModel):
     """Unified timeline data combining river levels and rainfall."""
-    start: datetime
-    end: datetime
+    start: UtcDatetime
+    end: UtcDatetime
     resolution: str
     series: dict[str, TimelineSeries] = {}  # key: source_id
 
@@ -494,6 +519,9 @@ class RainfallStationInfo(BaseModel):
     name: str  # City name
     position: str  # "amont", "milieu", "aval"
     color: str
+    # False when the source is not collecting (Netatmo not authorised): its
+    # series only holds what was stored before, usually nothing.
+    available: bool = True
 
 
 class AvailableSources(BaseModel):
