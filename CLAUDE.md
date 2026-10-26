@@ -69,11 +69,15 @@ app/
 │   ├── episodes.py      # /api/episodes : CRUD, labels, confirm, analyse, backfill, detection
 │   ├── risk.py          # /api/risk : score, previsions, simulation
 │   ├── notify.py        # /api/notify/test (message de test, X-API-Key)
+│   ├── forecast_ensemble.py  # /api/forecast/ensemble (pluie d'ensemble + GloFAS, hors score)
+│   ├── geo.py           # /api/geo/basin (polygone du bassin)
 │   └── auth.py          # /api/auth/netatmo (OAuth2)
 ├── data/
-│   └── episodes_labels.json  # Verite terrain des 14 episodes (source unique)
+│   ├── episodes_labels.json  # Verite terrain des 14 episodes (source unique)
+│   └── lidoire_basin.geojson # Bassin versant topographique (BD TOPAGE, 230.8 km2)
 ├── models/
 │   ├── schemas.py       # Modeles Pydantic (RiskScore, EpisodeOutcome, EpisodeLabelSet...)
+│   ├── probabilistic.py # api_json (dates UTC Z) des routes radar/ensemble
 │   └── orm.py           # Tables PostgreSQL
 └── services/
     ├── risk_core.py     # Coeur de scoring PUR, modele v3.4 (compute_risk, aucune I/O)
@@ -91,6 +95,9 @@ app/
     ├── notifier.py      # Notifications ntfy (niveau, prevision, donnees perimees)
     ├── video_analyzer.py    # Detection niveau d'eau via camera
     ├── models_experimental.py  # Modeles candidats, importes par AUCUN code de production
+    ├── basin.py         # Polygone du bassin, point dans polygone (PUR)
+    ├── probabilistic_store.py  # Lectures Influx radar_rain / glofas_forecast / ensemble_rain
+    ├── probabilistic_jobs.py   # Jobs radar (15 min), GloFAS et ensemble (6 h)
     └── collectors/
         ├── hubeau.py        # Hub'Eau (temps reel) + Hydroportail (historique)
         ├── vigicrues.py     # Vigicrues (Libourne, metres)
@@ -98,7 +105,10 @@ app/
         ├── weather.py       # Open-Meteo (pluie, vent, sol), UTC
         ├── netatmo.py       # Netatmo (stations citoyennes du bassin)
         ├── infoclimat.py    # Infoclimat StatIC
-        └── meteo_agricole.py # Meteo Agricole (bilan hydrique, nowcast)
+        ├── meteo_agricole.py # Meteo Agricole (bilan hydrique, nowcast)
+        ├── opera_radar.py   # Radar OPERA ACRR (COG lu par plages HTTP, numpy + zlib)
+        ├── glofas.py        # GloFAS v4 maille Lidoire (Open-Meteo Flood)
+        └── ensemble_rain.py # Open-Meteo Ensemble, pluie bassin et probabilites
 ```
 
 ### Scripts et tests (`backend/`)
@@ -116,7 +126,7 @@ scripts/eval/            # Harnais d'evaluation (python -m scripts.eval build|re
 └── candidates.py        # Comparaison des modeles candidats (LOEO bloque)
 tests/
 ├── risk/  storage/  security/  collectors/
-├── groundtruth/  evaluation/  models/  followups/  notifier/
+├── groundtruth/  evaluation/  models/  followups/  notifier/  probabilistic/ (fixtures/)
 ```
 
 Supprimes : `services/risk.py` (modele v1), `validate_model.py`, `analyze_episodes.py` (remplaces par `scripts/eval/`).
@@ -141,6 +151,8 @@ src/
     ├── ForecastPanel.tsx, BasinRainfallGauge.tsx, SoilConditionsPanel.tsx, NowcastRainChart.tsx
     ├── HydroMap.tsx, MetricSparkline.tsx, TimeMachineBanner.tsx, TimelineSourceSelector.tsx
     ├── InfoTooltip.tsx, DataCard.tsx, DataSourcesStatus.tsx
+    ├── EnsemblePanel.tsx  # Radar bassin, probabilites de pluie, eventail GloFAS (hors score)
+    ├── BasinLayer.tsx   # Polygone du bassin sur HydroMap
     └── ApiKeyPanel.tsx  # Saisie de la cle API (localStorage)
 ```
 
@@ -190,6 +202,16 @@ Service dans `backend/app/services/forecast.py` :
 - Nombre de stations en hausse : decroissance lineaire sur 48 h, plus apport de la pluie projetee
 - Cache Redis 30 min ; overlay Timeline via `include_forecast=true`
 
+### Previsions probabilistes et pluie radar (hors score)
+
+Nouvelles series et routes, JAMAIS lues par le modele v3.4 (test `test_risk_model_never_reads_the_new_series`). Reglages `RADAR_ENABLED`, `GLOFAS_ENABLED`, `ENSEMBLE_RAIN_ENABLED` (vrais par defaut, job non enregistre sinon). Toutes les sources sont en HTTPS, sans cle.
+- **Bassin** : `app/data/lidoire_basin.geojson`, union des 5 bassins elementaires BD TOPAGE (Sandre WFS `BassinVersantTopographique_FXX`, Lidoire + Lechout), 230.8 km2, simplifie a 25 m ; source et licence (Licence Ouverte) dans `properties`. Servi par `GET /api/geo/basin`, trace sur HydroMap.
+- **Radar OPERA** (`opera_radar.py`, CC BY 4.0, attribution affichee) : composite ACRR (cumul 1 h finissant a l'heure du fichier) toutes les 15 min, 2 km, LAEA, COG `s3.waw3-1.cloudferro.com/openradar-24h` (24 h glissantes, ~10-20 min de latence, des creneaux manquent). Listing S3, en-tete + seules tuiles sous le bassin par requetes Range (64 Ko + une tuile de ~100-200 Ko au lieu de 4 Mo), lecteur TIFF maison (deflate, predicteurs 1/2/3) et LAEA ellipsoidale (Snyder, ecart < 1 mm avec pyproj) : aucune dependance ajoutee. Moyenne ponderee par la part de chaque pixel dans le polygone (8 x 8 sous-points), NaN = pas d'echo (0 mm), -9999000 = hors couverture (`coverage`). Mesure `radar_rain` (tags `source=opera`, `basin=LIDOIRE`, `product=ACRR` ; champs `basin_mean_mm`, `max_pixel_mm`, `coverage`, `quality`, `pixels`), images manquantes des 6 dernieres heures reprises (12 max par passage). `GET /api/realtime/radar` : cumuls 1/3/6/24 h = somme des images aux heures pleines depuis la derniere, `complete` si aucune heure manque, heure et age de la derniere image.
+- **GloFAS** (`glofas.py`) : Open-Meteo Flood `forecast_v4&ensemble=true`, 51 membres, 30 j, maille 44.875/-0.025 (proxy modelise, aucune jauge). Par jour : p10/p50/p90, min/max, P(> p95) et P(> p99) de la reanalyse `consolidated_v4` de la meme maille (1997-2025 : p95 3.12, p99 6.35 m3/s), climatologie calculee une fois (`glofas_climatology`). Chaque run est stocke (`glofas_forecast`, tags `cell`, `run` = date d'init via `meta.json`, `lead` en jours ; pas d'archive amont).
+- **Pluie d'ensemble** (`ensemble_rain.py`) : Open-Meteo Ensemble, `icon_d2` (20 membres, ~2.5 j), `icon_eu` (40, ~5.5 j), `ecmwf_ifs025` (51, 15 j), 3 points du bassin ponderes par l'aire des sous-bassins (`ensemble_rain_points`). Pluie horaire = cumul de l'heure precedente, fenetre (debut, fin]. P(24 h > 25/40/60 mm) et P(72 h > 50/80/120 mm) (seuils lus dans `get_model_params`), quantiles ; `blend` = moyenne des modeles couvrant la fenetre. Stockage de chaque run (`ensemble_rain`, tags `model`, `run` = `YYYY-MM-DDTHHZ`, `window` = `24h`/`72h`/`run`, `lead` en heures), fenetres ancrees sur l'init du run ; `meta.json` DWD perime => run ancre sur l'heure de collecte (`run_init_known=0`).
+- `GET /api/forecast/ensemble` : `rain.horizons["24h"|"72h"]` (fenetres depuis l'heure courante, par modele + `blend`) et `glofas.days` ; cache-through 3 h en memoire, la route n'ecrit jamais. Frontend `EnsemblePanel` (tableau des probabilites, eventail GloFAS, bande radar) sous `ForecastPanel`.
+- Timeline : `include_radar=true` (`radar:LIDOIRE`, images aux heures pleines, sommes par fenetre au-dela de 1 h) et `include_glofas=true` (`glofas:LIDOIRE`, mediane du run le plus recent par jour) ; series stockees seulement, pas de cache-through.
+
 ### Notifications
 
 `services/notifier.py`, job `notifier` (toutes les heures, 5 min apres `risk_scorer`), canal ntfy (`POST <NTFY_URL>/<NTFY_TOPIC>`, bearer `NTFY_TOKEN` optionnel, interface `Channel` pour d'autres canaux). Sans `NTFY_URL`/`NTFY_TOPIC` : aucun job, un log info au demarrage. Declencheurs : dernier score temps reel stocke passant en orange/rouge (immediat ; jaune seulement si `NOTIFY_YELLOW`), baisse envoyee apres `NOTIFY_DOWNGRADE_HOLD_HOURS` (3 h, le score oscille avec la maree) vers le plus haut niveau vu pendant l'attente ; max de la prevision sur `NOTIFY_FORECAST_HOURS` (48 h) en orange/rouge, une fois par evenement (nouvel envoi si escalade en rouge, fin apres la meme attente) ; Pessac sans point depuis 3 h ou aucun score stocke depuis 2 h (une alerte, un retablissement). Etat persistant en JSON dans la table PostgreSQL `notifier_state` (Redis non persistant en prod) ; une transition n'est acquittee qu'une fois le message delivre (reessai a l'execution suivante), un redemarrage ne renvoie rien. Messages en francais (niveau, score, Pessac, pluie 72 h, prochaine pleine mer, lien `FRONTEND_URL`). `POST /api/notify/test` envoie un message de test. En prod : cles `NTFY_*` dans le secret Scaleway `lidoire-external-apis` (`externalApis.enabled=true`).
@@ -219,7 +241,7 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 - **Sol** : Open-Meteo (humidite, temperature, ET0) + Meteo Agricole (bilan hydrique). Deux modeles distincts en "best match" : le temps reel (`/api/realtime` `soil`, entree du modele) lit les couches 0-1/1-3/3-9 cm et 9-27/27-81 cm servies par DWD ICON ; la Timeline (`soil_timeline`) lit 0-7/7-28/28-100 cm servies par ECMWF IFS (ERA5 en archive), nettement plus humides (ex. 0.195 vs 0.311 m3/m3 a la meme heure). Les series Timeline ne melangent jamais les deux (seul ET0 peut venir du temps reel).
 - **Camera** : Flux RTSP configurable via `CAMERA_RTSP_URL`
 
-Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), camera si configuree.
+Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, `notifier` 1 h (5 min apres `risk_scorer`, si ntfy configure), radar OPERA 15 min, GloFAS et pluie d'ensemble 6 h (premier passage 1 min apres le demarrage), camera si configuree.
 
 APIs externes hors du chemin des requetes :
 - Netatmo, Infoclimat, Meteo Agricole et nowcast ne sont jamais appeles par une route ni par `gather_realtime_inputs` : lecture seule des caches remplis par les jobs (`peek_*`, perimes au-dela de 1 h pour Netatmo/Infoclimat, 15 min pour le nowcast, 12 h pour Meteo Agricole ; au-dela => indisponible, comme un echec).
@@ -352,7 +374,7 @@ Chart `deploy/helm/lidoire-flood-watch/` (cluster Scaleway Kapsule `sharedhostin
 - Netatmo : `/api/realtime/basin-rainfall` expose `available`/`stations_count` (moyennes 0.0 = valeurs de remplissage si `available=false`) ; `/api/timeline/sources` marque les stations Netatmo `available=false` tant que Netatmo n'est pas autorise. La Timeline part par defaut sur Open-Meteo (Moulin) + Infoclimat.
 
 - `/api/timeline/unified` : 422 si `start >= end`, periode > 400 jours ou id inconnu (detail `{error, unknown, valid}`) ; attente max 5 s des backfills, ceux en cours listes dans `X-Backfill-Pending`.
-- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives. `services.collectors` reste une declaration statique (compatibilite).
+- `/api/status` : `services.database|influxdb|redis` = `connected` | `error` | `timeout` (2 s), detail dans `services.checks`, `status` = `healthy` | `degraded`. `sources.{river_primary, rain_openmeteo, infoclimat, netatmo, tide, soil, risk_score}` = fraicheur du dernier point stocke (`last()` Flux sur 30 jours, cache 60 s) : `last_timestamp`, `age_hours`, `max_age_hours`, `critical`, `status` = `ok` | `stale` | `unavailable` (aucun point en 30 j) | `unknown` (requete en echec ou Influx down, non cache), `note` (non configure, jeton Netatmo absent). Seuils : Pessac 3 h (`risk_level_max_age_hours`), risk_score temps reel 2 h, Netatmo 1 h, Open-Meteo/Infoclimat/sol 3 h, maree : la derniere PM/BM stockee doit etre dans le futur. `degraded` si une dependance n'est pas `connected` OU si une source critique (`river_primary`, `risk_score`) est `stale`/`unavailable` ; les autres sources sont informatives, dont `radar_opera` (1 h), `glofas` (point lead 0 du dernier run, 48 h) et `ensemble_rain` (ligne `window=run`, 12 h). `services.collectors` reste une declaration statique (compatibilite).
 - `/api/episodes/confirm/{id}` : `outcome` (`flooded`, `false_positive`, `near_miss`, `unknown`) ou ancien `was_flooded` ; remplace l'issue precedente.
 
 ## Variables d'environnement
@@ -366,12 +388,14 @@ Fichier `.env` a la racine (voir `.env.example`) :
 - `NETATMO_CLIENT_ID`, `NETATMO_CLIENT_SECRET`, `NETATMO_REFRESH_TOKEN` (optionnels)
 - `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` (optionnels, notifications) ; reglages `NOTIFY_*` (voir `config.py`)
 - `CAMERA_RTSP_URL` (optionnel), `LOG_LEVEL`
+- `RADAR_ENABLED`, `GLOFAS_ENABLED`, `ENSEMBLE_RAIN_ENABLED` (optionnels, vrais par defaut ; previsions probabilistes et radar, hors score)
 
 Installation existante : conserver l'ancien mot de passe Postgres et l'ancien jeton Influx (`INFLUXDB_ADMIN_TOKEN` = ancien `INFLUXDB_TOKEN`) pour les volumes existants, puis `docker compose run --rm --user root backend chown -R 10001:10001 /app/data`. Detail dans le README.
 
 ## Pistes
 
 - Capteur de niveau au moulin (seule mesure directe possible).
-- Pluie radar (COMEPHORE, ANTILOPE) comme entree d'un modele pluie-debit.
+- Pluie radar (COMEPHORE, ANTILOPE) comme entree d'un modele pluie-debit. OPERA est collecte en temps reel (`radar_rain`) : le comparer a Lamothe-Montravel et a COMEPHORE avant tout usage dans un modele.
+- Evaluer les runs stockes `ensemble_rain` / `glofas_forecast` (Brier, fiabilite) contre `radar_rain` et les episodes avant d'en faire une entree.
 - Gate de remous sur v3.4 en mode shadow pendant une saison : en place (serie `risk_score_shadow`, version `3.4-gate`, voir Stockage) ; comparer les deux courbes et labelliser les periodes ci-dessus avant toute bascule.
 - Regression logistique / GR4H seulement quand davantage d'episodes seront labellises.
