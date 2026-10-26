@@ -10,7 +10,6 @@ import type {
   MultiStationData,
   NetatmoData,
   InfoclimatData,
-  DataSource,
   ForecastData,
   AvailableSources,
   UnifiedTimelineData,
@@ -277,11 +276,6 @@ export async function getNetatmoData(): Promise<NetatmoData> {
 // Infoclimat
 export async function getInfoclimatData(): Promise<InfoclimatData> {
   return fetchJson<InfoclimatData>(`${API_BASE}/realtime/infoclimat`)
-}
-
-// Data sources status
-export async function getDataSourcesStatus(): Promise<{ sources: DataSource[] }> {
-  return fetchJson<{ sources: DataSource[] }>(`${API_BASE}/realtime/sources`)
 }
 
 // Forecast
