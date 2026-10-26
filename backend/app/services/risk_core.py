@@ -897,8 +897,7 @@ def backwater_level(
     """Max level over ``[t - window_h, t]`` (points <= t), None without points.
 
     Applied to the primary station (Pessac): the 12.5 h max removes its own
-    tidal oscillation. Same semantics as ``risk_shadow.backwater_level``
-    (backwater gate shadow scoring): dedupe when both exist.
+    tidal oscillation. Also the H_aval of the shadow model (``risk_shadow``).
     """
     if not _is_level_point_sequence(points):
         points = as_level_points(points)

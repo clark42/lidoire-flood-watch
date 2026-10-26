@@ -476,6 +476,22 @@ RISK_SOURCE_REALTIME = "realtime"
 RISK_SOURCE_BACKFILL = "backfill"
 RISK_SOURCE_UNKNOWN = "unknown"
 
+# Shadow models (e.g. "3.3-gate", risk_shadow.py) are stored in their own
+# measurement, same tags and fields: every reader of the displayed score
+# filters on ``_measurement == "risk_score"``. A version with a suffix is a
+# shadow version and is also dropped by those readers (defense in depth).
+RISK_MEASUREMENT = "risk_score"
+RISK_SHADOW_MEASUREMENT = "risk_score_shadow"
+
+
+def is_shadow_risk_version(version: Optional[str]) -> bool:
+    """True for a shadow model version ("3.3-gate"), never for "3.3" or legacy."""
+    return bool(version) and "-" in str(version)
+
+
+def _drop_shadow_rows(rows: list[dict]) -> list[dict]:
+    return [r for r in rows if not is_shadow_risk_version(r.get("model_version"))]
+
 
 def make_risk_point(
     score: float,
@@ -484,9 +500,13 @@ def make_risk_point(
     factors: Optional[dict] = None,
     model_version: Optional[str] = None,
     source: Optional[str] = None,
+    measurement: str = RISK_MEASUREMENT,
 ) -> Point:
-    """Build a ``risk_score`` point (same shape as :func:`write_risk_score`)."""
-    point = Point("risk_score").field("score", float(score)).field("level", str(level))
+    """Build a ``risk_score`` point (same shape as :func:`write_risk_score`).
+
+    ``measurement=RISK_SHADOW_MEASUREMENT`` builds a shadow-model point.
+    """
+    point = Point(measurement).field("score", float(score)).field("level", str(level))
     if model_version:
         point = point.tag("model_version", str(model_version))
     if source:
@@ -602,6 +622,45 @@ async def query_all_stations_levels(
     except Exception as e:
         logger.error("Error querying all stations from InfluxDB: %s", e)
         return {}
+
+
+async def query_station_heights(
+    start: datetime,
+    end: datetime,
+    station_ids: Iterable[str],
+) -> dict[str, list[tuple[datetime, float]]]:
+    """Compact river heights for long scans: station_id -> [(time, height_m)].
+
+    Same points as :func:`query_all_stations_levels` (full resolution,
+    ``[start, end)``) restricted to ``station_ids``, with only ``_time``,
+    ``_value`` and ``station_id`` kept server side. Times are naive UTC,
+    sorted. Query errors propagate: a long scan must not mistake a failed
+    chunk for "no data".
+    """
+    ids = validate_station_ids(station_ids)
+    if not ids:
+        return {}
+
+    query = f'''
+    from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
+        |> filter(fn: (r) => r._measurement == "river_level")
+        |> filter(fn: (r) => r._field == "height_m")
+        {_or_filter("station_id", ids)}
+        |> keep(columns: ["_time", "_value", "station_id"])
+    '''
+
+    tables = await _run_query(query)
+    results: dict[str, list[tuple[datetime, float]]] = {}
+    for table in tables:
+        for record in table.records:
+            station_id = record.values.get("station_id", "unknown")
+            results.setdefault(station_id, []).append(
+                (to_naive_utc(record.get_time()), record.get_value())
+            )
+    for points in results.values():
+        points.sort(key=lambda p: p[0])
+    return results
 
 
 async def query_tides(
@@ -1036,11 +1095,55 @@ async def query_risk_scores(
 
     try:
         tables = await _run_query(query)
-        rows = select_risk_rows_by_version(_risk_rows_from_tables(tables), preferred)
+        rows = _drop_shadow_rows(_risk_rows_from_tables(tables))
+        rows = select_risk_rows_by_version(rows, preferred)
         return prefer_realtime_risk_rows(rows)
     except Exception as e:
         logger.error("Error querying risk scores from InfluxDB: %s", e)
         return []
+
+
+async def query_risk_score_values(
+    start: datetime,
+    end: datetime,
+    model_version: Optional[str] = None,
+) -> list[dict]:
+    """Lean risk scores for long scans: timestamp, score, model_version, source.
+
+    Only the ``score`` field is read (no pivot, no factor_* fields) and only
+    ``model_version`` (default: current model) or untagged/legacy points are
+    kept server side: other series such as shadow models (e.g. "3.3-gate")
+    never enter detection. Rows then go through the same selection as
+    :func:`query_risk_scores` (one row per timestamp, realtime over backfill
+    within an hour). Query errors propagate (see :func:`query_station_heights`).
+    """
+    version = model_version or _current_risk_model_version()
+    version_filter = "(not exists r.model_version)"
+    for v in (version, LEGACY_RISK_VERSION):
+        if v:
+            version_filter += f" or r.model_version == {flux_string(v)}"
+
+    query = f'''
+    from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
+        |> filter(fn: (r) => r._measurement == "risk_score" and r._field == "score")
+        |> filter(fn: (r) => {version_filter})
+        |> keep(columns: ["_time", "_value", "model_version", "source"])
+    '''
+
+    tables = await _run_query(query)
+    rows = [
+        {
+            "timestamp": record.get_time(),
+            "score": record.get_value(),
+            "model_version": record.values.get("model_version"),
+            "source": record.values.get("source"),
+        }
+        for table in tables
+        for record in table.records
+        if record.get_value() is not None
+    ]
+    return prefer_realtime_risk_rows(select_risk_rows_by_version(rows, version))
 
 
 async def get_data_stats() -> dict:
@@ -1435,13 +1538,46 @@ async def query_risk_scores_timeline(
     version (default: current model), else the newest one, and within a
     version the realtime series over the backfilled one.
     """
-    settings = get_settings()
     preferred = model_version or _current_risk_model_version()
+    rows = await _query_risk_timeline_rows(RISK_MEASUREMENT, start, end, resolution)
+    return [
+        {"timestamp": r["timestamp"], "value": r["value"]}
+        for r in select_risk_window_rows(_drop_shadow_rows(rows), preferred)
+    ]
+
+
+async def query_risk_shadow_timeline(
+    start: datetime,
+    end: datetime,
+    model_version: str,
+    resolution: str = "1h",
+) -> list[dict]:
+    """Shadow-model scores (``risk_score_shadow``) of ONE version, for the timeline.
+
+    Same aggregation as :func:`query_risk_scores_timeline` (realtime series
+    preferred over the backfilled one per window); other versions dropped.
+    """
+    rows = await _query_risk_timeline_rows(RISK_SHADOW_MEASUREMENT, start, end, resolution)
+    rows = [r for r in rows if r.get("model_version") == model_version]
+    return [
+        {"timestamp": r["timestamp"], "value": r["value"]}
+        for r in select_risk_window_rows(rows, model_version)
+    ]
+
+
+async def _query_risk_timeline_rows(
+    measurement: str,
+    start: datetime,
+    end: datetime,
+    resolution: str,
+) -> list[dict]:
+    """Windowed mean score per (model_version, source) series of ``measurement``."""
+    settings = get_settings()
 
     query = f'''
     from(bucket: "{settings.influxdb_bucket}")
         |> range(start: {_flux_ts(start)}, stop: {_flux_ts(end)})
-        |> filter(fn: (r) => r._measurement == "risk_score")
+        |> filter(fn: (r) => r._measurement == {flux_string(measurement)})
         |> filter(fn: (r) => r._field == "score")
         |> map(fn: (r) => ({{r with model_version: if exists r.model_version then r.model_version else "{LEGACY_RISK_VERSION}"}}))
         |> map(fn: (r) => ({{r with source: if exists r.source then r.source else "{RISK_SOURCE_UNKNOWN}"}}))
@@ -1462,13 +1598,9 @@ async def query_risk_scores_timeline(
                     "model_version": record.values.get("model_version"),
                     "source": record.values.get("source"),
                 })
-
-        return [
-            {"timestamp": r["timestamp"], "value": r["value"]}
-            for r in select_risk_window_rows(results, preferred)
-        ]
+        return results
     except Exception as e:
-        logger.error("Error querying risk scores timeline from InfluxDB: %s", e)
+        logger.error("Error querying %s timeline from InfluxDB: %s", measurement, e)
         return []
 
 
@@ -1596,7 +1728,9 @@ async def query_historical_snapshot(target_time: datetime, window_hours: int = 1
                         "port": record.values.get("port"),
                         "tide_type": record.values.get("tide_type"),
                     })
-                elif measurement == "risk_score":
+                elif measurement == "risk_score" and not is_shadow_risk_version(
+                    record.values.get("model_version")
+                ):
                     snapshot["risk_scores"].append({
                         "timestamp": record.get_time().isoformat(),
                         "score": record.get_value() if record.get_field() == "score" else None,
@@ -1624,6 +1758,47 @@ async def query_latest_point(
         Dict of field values or None if no recent data
     """
     return await query_latest_measurement(measurement, {"location": location}, max_age_hours)
+
+
+async def query_last_time(
+    measurement: str,
+    tags: Optional[dict[str, Iterable[str]]] = None,
+    field: Optional[str] = None,
+    start: Optional[datetime] = None,
+    stop: Optional[datetime] = None,
+) -> Optional[datetime]:
+    """Naive UTC time of the newest point of ``measurement`` in [start, stop).
+
+    ``tags`` maps a tag key to accepted values (OR). Cheap: ``last()`` per
+    series (pushed down to the storage engine), then the max in Python. The
+    defaults read the last 30 days up to now. Query errors propagate.
+    """
+    validate_identifier(measurement, "measurement")
+    now = _utcnow()
+    start = start or now - timedelta(days=30)
+    stop = stop or now
+    filters = [f"|> filter(fn: (r) => r._measurement == {flux_string(measurement)})"]
+    for key, values in (tags or {}).items():
+        filters.append(_or_filter(
+            validate_identifier(key, "tag key"),
+            [validate_tag_value(str(v), key) for v in values],
+        ))
+    if field:
+        filters.append(f"|> filter(fn: (r) => r._field == {flux_string(validate_identifier(field, 'field'))})")
+    filter_lines = "\n        ".join(f for f in filters if f)
+
+    query = f'''
+    from(bucket: {_bucket()})
+        |> range(start: {_flux_ts(start)}, stop: {_flux_ts(stop)})
+        {filter_lines}
+        |> last()
+        |> keep(columns: ["_time"])
+    '''
+
+    tables = await _run_query(query)
+    times = [record.get_time() for table in tables for record in table.records]
+    times = [to_naive_utc(t) for t in times if t is not None]
+    return max(times) if times else None
 
 
 async def query_latest_measurement(
@@ -1675,11 +1850,13 @@ async def query_latest_measurement(
 
 
 _SOIL_FIELDS = ("moisture_shallow", "moisture_deep", "soil_temp", "et0_mm")
-# Realtime field -> (measurement, timeline field)
+# Realtime field -> (measurement, timeline field), used only when soil_timeline
+# has nothing. Only ET0 (daily FAO sum, same product) may be substituted: the
+# realtime moisture/temperature come from other Open-Meteo layers (ICON
+# 0-9 cm / 9-81 cm / surface, "best match") than soil_timeline (ECMWF IFS or
+# ERA5 0-7 cm / 7-100 cm / 0-7 cm), and mixing them made the series jump
+# (e.g. 0.195 vs 0.311 m3/m3 at the same hour).
 _SOIL_REALTIME_FIELDS = {
-    "moisture": ("soil_moisture", "moisture_shallow"),
-    "moisture_deep": ("soil_agricultural", "moisture_deep"),
-    "temperature_0cm": ("soil_agricultural", "soil_temp"),
     "et0_mm": ("soil_agricultural", "et0_mm"),
 }
 
@@ -1714,11 +1891,10 @@ async def query_soil_timeline(
 ) -> dict[str, list[dict]]:
     """Query soil timeline data from InfluxDB.
 
-    Queries both:
-    - 'soil_timeline' measurement (historical backfilled data)
-    - 'soil_moisture' + 'soil_agricultural' measurements (realtime accumulated data)
-
-    Merges and deduplicates by timestamp.
+    Queries:
+    - 'soil_timeline' measurement (backfilled Open-Meteo ECMWF layers)
+    - 'soil_agricultural' (realtime) for ET0 only, when soil_timeline has none
+      (see ``_SOIL_REALTIME_FIELDS``: the realtime moisture is another model).
 
     Args:
         start: Start datetime

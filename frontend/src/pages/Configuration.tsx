@@ -21,10 +21,14 @@ import type {
   DependencyName,
   DependencyState,
   RiskSimulationResult,
+  SourceFreshness,
+  SourceFreshnessState,
   SourcesDetail,
   SystemStatus,
 } from '../types'
+import { formatAge, parseApiDate } from '../utils/time'
 import ApiKeyPanel from '../components/ApiKeyPanel'
+import { formatDistanceKm } from '../utils/format'
 import ActionError from '../components/ActionError'
 
 const DEPENDENCIES: { key: DependencyName; label: string }[] = [
@@ -45,10 +49,61 @@ function statusBadgeClass(status: string): string {
   return 'bg-red-100 text-red-800'
 }
 
-function collectorBadgeClass(state: string): string {
-  if (state === 'running') return 'bg-green-100 text-green-700'
-  if (state === 'disabled') return 'bg-gray-100 text-gray-600'
-  return 'bg-red-100 text-red-700'
+const FRESHNESS_BADGE: Record<SourceFreshnessState, { label: string; className: string }> = {
+  ok: { label: 'a jour', className: 'bg-green-100 text-green-700' },
+  stale: { label: 'perime', className: 'bg-orange-100 text-orange-700' },
+  unavailable: { label: 'indisponible', className: 'bg-red-100 text-red-700' },
+  unknown: { label: 'inconnu', className: 'bg-gray-100 text-gray-600' },
+}
+
+function freshnessText(source: SourceFreshness): string {
+  const last = parseApiDate(source.last_timestamp)
+  if (!last) return source.status === 'unknown' ? 'non verifie' : 'aucune donnee (30 j)'
+  if (last.getTime() > Date.now()) {
+    const until = last.toLocaleString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+    return `jusqu'au ${until}`
+  }
+  return formatAge(last)
+}
+
+function SourceFreshnessRow({ source }: { source: SourceFreshness }) {
+  const badge = FRESHNESS_BADGE[source.status] ?? FRESHNESS_BADGE.unknown
+  const limit =
+    source.max_age_hours > 0 ? `perime au-dela de ${source.max_age_hours} h` : 'doit couvrir le futur'
+  const detail = source.error ?? source.note
+  return (
+    <div className="text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0">
+          {source.label}
+          {source.critical && (
+            <span className="ml-1 text-xs text-gray-400" title="Perime ou indisponible : statut degrade">
+              (critique)
+            </span>
+          )}
+        </span>
+        <span className="flex items-center gap-2 shrink-0">
+          <span
+            className="text-xs text-gray-400"
+            title={`${source.last_timestamp ? `${source.last_timestamp} UTC, ` : ''}${limit}`}
+          >
+            {freshnessText(source)}
+          </span>
+          <span className={`px-2 py-0.5 rounded ${badge.className}`}>{badge.label}</span>
+        </span>
+      </div>
+      {detail && (
+        <p className={`text-xs mt-0.5 text-right break-words ${source.error ? 'text-red-600' : 'text-gray-500'}`}>
+          {detail}
+        </p>
+      )}
+    </div>
+  )
 }
 
 function DependencyRow({
@@ -218,24 +273,17 @@ export default function Configuration() {
 
                 <div className="pt-4 border-t">
                   <h4 className="text-sm font-medium text-gray-500 mb-2">
-                    Collecteurs (declares)
+                    Fraicheur des donnees
                   </h4>
-                  <div className="space-y-2">
-                    {status.services?.collectors &&
-                      Object.entries(status.services.collectors).map(
-                        ([name, state]) => (
-                          <div
-                            key={name}
-                            className="flex items-center justify-between text-sm"
-                          >
-                            <span className="capitalize">{name}</span>
-                            <span className={`px-2 py-0.5 rounded ${collectorBadgeClass(state)}`}>
-                              {state}
-                            </span>
-                          </div>
-                        )
+                  {status.sources ? (
+                    <div className="space-y-2">
+                      {Object.entries(status.sources).map(([name, source]) =>
+                        source ? <SourceFreshnessRow key={name} source={source} /> : null
                       )}
-                  </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-400">Non fournie par cette version du backend</p>
+                  )}
                 </div>
               </div>
             ) : loading ? (
@@ -345,7 +393,7 @@ export default function Configuration() {
                           {s.id}
                         </td>
                         <td className="py-2 pr-3">{s.river}</td>
-                        <td className="py-2 pr-3 text-right">{s.distance_km} km</td>
+                        <td className="py-2 pr-3 text-right">{formatDistanceKm(s.distance_km)}</td>
                         <td className="py-2 pr-3 text-right">{s.delay_hours}h</td>
                         <td className="py-2 pr-3 text-right font-medium">
                           {(s.weight * 100).toFixed(0)}%

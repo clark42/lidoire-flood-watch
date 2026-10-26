@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { format, subDays, addDays, parseISO } from 'date-fns'
-import { fr } from 'date-fns/locale'
 import {
   LineChart,
   Line,
@@ -29,11 +28,15 @@ import type {
   FloodEpisode,
 } from '../types'
 import TimelineSourceSelector from '../components/TimelineSourceSelector'
+import { formatParis, parseApiDate } from '../utils/time'
 
 type Resolution = '15m' | '1h' | '6h' | '12h' | '1d'
 
-// Rain source ids follow the backend config city names (settings.lidoire_netatmo_priority)
-const DEFAULT_RAIN_SOURCE = 'netatmo-lidoire:Saint-Rémy'
+// Default rain source: the Open-Meteo point at the moulin (always collected).
+// Infoclimat is on by default too; Netatmo ids follow the backend config city
+// names (settings.lidoire_netatmo_priority) and stay empty while Netatmo is
+// not authorised (RainfallStationInfo.available === false).
+const DEFAULT_RAIN_SOURCE = 'open-meteo:Moulin-Lidoire'
 
 // Old ids (misspelled city names) that may still be in bookmarked URLs
 const LEGACY_RAIN_SOURCE_IDS: Record<string, string> = {
@@ -82,6 +85,8 @@ export default function Timeline() {
   const [infoclimatEnabled, setInfoclimatEnabled] = useState(() => searchParams.get('infoclimat') !== '0')
   const [windEnabled, setWindEnabled] = useState(() => searchParams.get('wind') === '1')
   const [forecastEnabled, setForecastEnabled] = useState(() => searchParams.get('forecast') === '1')
+  // Shadow model 3.4-gate (v3.4 + backwater gate), compared with the displayed score
+  const [riskShadowEnabled, setRiskShadowEnabled] = useState(() => searchParams.get('risk_shadow') === '1')
 
   // Data
   const [unifiedData, setUnifiedData] = useState<UnifiedTimelineData | null>(null)
@@ -120,13 +125,14 @@ export default function Timeline() {
       params.rain = selectedRainfallStations.join(',')
     }
     if (!tideEnabled) params.tide = '0'
-    if (riskEnabled) params.risk = '1'
+    if (!riskEnabled) params.risk = '0'
     if (soilEnabled) params.soil = '1'
     if (!infoclimatEnabled) params.infoclimat = '0'
     if (windEnabled) params.wind = '1'
     if (forecastEnabled) params.forecast = '1'
+    if (riskShadowEnabled) params.risk_shadow = '1'
     setSearchParams(params, { replace: true })
-  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, setSearchParams])
+  }, [startDate, endDate, resolution, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, setSearchParams])
 
   // Fetch available sources and episodes on mount
   useEffect(() => {
@@ -170,8 +176,9 @@ export default function Timeline() {
         windEnabled,
         forecastEnabled,
         signal,
+        riskShadowEnabled,
       ),
-    [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, resolution],
+    [startDate, endDate, selectedRiverStations, selectedRainfallStations, tideEnabled, riskEnabled, soilEnabled, infoclimatEnabled, windEnabled, forecastEnabled, riskShadowEnabled, resolution],
   )
 
   // Each run aborts the previous one, so a slow response (uncached period,
@@ -277,10 +284,9 @@ export default function Timeline() {
   }
 
   const goToEpisode = (ep: FloodEpisode) => {
-    const epStart = new Date(ep.start_time)
-    const epEnd = ep.end_time
-      ? new Date(ep.end_time)
-      : new Date(epStart.getTime() + 5 * 24 * 60 * 60 * 1000)
+    const epStart = parseApiDate(ep.start_time) ?? new Date()
+    const epEnd = parseApiDate(ep.end_time)
+      ?? new Date(epStart.getTime() + 5 * 24 * 60 * 60 * 1000)
     // Add 3-day buffer before/after
     setStartDate(subDays(epStart, 3))
     setEndDate(addDays(epEnd, 1))
@@ -307,7 +313,7 @@ export default function Timeline() {
       for (const point of series.data) {
         const ts = point.timestamp
         if (!timestampMap.has(ts)) {
-          timestampMap.set(ts, { time: new Date(ts).getTime() })
+          timestampMap.set(ts, { time: parseApiDate(ts)?.getTime() ?? 0 })
         }
         const row = timestampMap.get(ts)!
         row[seriesKey] = point.value
@@ -315,10 +321,10 @@ export default function Timeline() {
     }
 
     return Array.from(timestampMap.entries())
-      .sort((a, b) => new Date(a[0]).getTime() - new Date(b[0]).getTime())
+      .sort((a, b) => (a[1].time ?? 0) - (b[1].time ?? 0))
       .map(([ts, values]) => ({
         ...values,
-        displayTime: format(new Date(ts), 'dd/MM HH:mm', { locale: fr }),
+        displayTime: formatParis(ts, 'dd/MM HH:mm'),
       }))
   }, [unifiedData])
 
@@ -340,7 +346,11 @@ export default function Timeline() {
       }
       if (series.type === 'river_level' || series.type === 'tide' || series.type === 'forecast_level') {
         level.push(info)
-      } else if (series.type === 'risk_score' || series.type === 'forecast_risk_score') {
+      } else if (
+        series.type === 'risk_score' ||
+        series.type === 'risk_score_shadow' ||
+        series.type === 'forecast_risk_score'
+      ) {
         risk.push(info)
       } else if (series.type === 'forecast_rainfall') {
         rain.push(info)
@@ -489,6 +499,8 @@ export default function Timeline() {
               riskEnabled={riskEnabled}
               onTideToggle={() => setTideEnabled((v) => !v)}
               onRiskToggle={() => setRiskEnabled((v) => !v)}
+              riskShadowEnabled={riskShadowEnabled}
+              onRiskShadowToggle={() => setRiskShadowEnabled((v) => !v)}
               soilEnabled={soilEnabled}
               onSoilToggle={() => setSoilEnabled((v) => !v)}
               infoclimatEnabled={infoclimatEnabled}
@@ -511,9 +523,9 @@ export default function Timeline() {
               Episodes
             </span>
             {episodes.map((ep) => {
-              const epDate = new Date(ep.peak_time || ep.start_time)
+              const epDate = parseApiDate(ep.peak_time || ep.start_time)
               const isActive =
-                epDate >= startDate && epDate <= endDate
+                epDate !== null && epDate >= startDate && epDate <= endDate
               return (
                 <button
                   key={ep.id}
@@ -530,7 +542,7 @@ export default function Timeline() {
                     : ep.severity >= 3 ? 'bg-orange-500'
                     : 'bg-yellow-500'
                   }`} />
-                  {format(epDate, 'dd MMM yyyy', { locale: fr })}
+                  {formatParis(epDate, 'dd MMM yyyy')}
                   <span className="text-gray-400">({ep.severity}/5)</span>
                 </button>
               )
@@ -825,6 +837,7 @@ export default function Timeline() {
                             strokeDasharray={
                               info.type === 'tide' ? '8 4'
                               : info.type === 'risk_score' ? '5 5'
+                              : info.type === 'risk_score_shadow' ? '2 3'
                               : info.type.startsWith('forecast_') ? '6 3'
                               : undefined
                             }

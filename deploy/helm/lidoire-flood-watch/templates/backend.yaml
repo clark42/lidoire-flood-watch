@@ -140,7 +140,7 @@ spec:
             {{- end }}
           {{- if .Values.externalApis.enabled }}
           envFrom:
-            # Netatmo / Infoclimat / SHOM / Meteo-France keys (optional)
+            # Netatmo / Infoclimat / SHOM / Meteo-France / ntfy keys (optional)
             - secretRef:
                 name: {{ include "lfw.externalApisSecret" $ }}
                 optional: true

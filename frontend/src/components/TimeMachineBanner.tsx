@@ -1,7 +1,11 @@
 import { format } from 'date-fns'
-import { fr } from 'date-fns/locale'
 import { Clock, History, Play, Loader2 } from 'lucide-react'
 import type { FloodEpisode } from '../types'
+import { formatParis, parseApiDate } from '../utils/time'
+
+function episodeDate(episode: FloodEpisode): Date {
+  return parseApiDate(episode.peak_time || episode.start_time) ?? new Date(NaN)
+}
 
 interface TimeMachineBannerProps {
   active: boolean
@@ -45,7 +49,7 @@ export default function TimeMachineBanner({
   }
 
   const sortedEpisodes = [...episodes]
-    .sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime())
+    .sort((a, b) => (parseApiDate(b.start_time)?.getTime() ?? 0) - (parseApiDate(a.start_time)?.getTime() ?? 0))
   const displayedEpisodes = sortedEpisodes.slice(0, 6)
   const hasMore = sortedEpisodes.length > 6
 
@@ -96,15 +100,13 @@ export default function TimeMachineBanner({
             {displayedEpisodes.map((episode) => (
               <button
                 key={episode.id ?? episode.start_time}
-                onClick={() => onDateChange(new Date(episode.peak_time || episode.start_time))}
+                onClick={() => onDateChange(episodeDate(episode))}
                 className="flex items-center gap-1.5 px-2 py-1 text-xs rounded-full bg-white border border-amber-200 hover:bg-amber-50 transition"
               >
                 <span
                   className={`w-2 h-2 rounded-full inline-block ${getSeverityDotClass(episode.severity)}`}
                 />
-                {format(new Date(episode.peak_time || episode.start_time), 'dd/MM/yyyy HH:mm', {
-                  locale: fr,
-                })}
+                {formatParis(episodeDate(episode), 'dd/MM/yyyy HH:mm')}
               </button>
             ))}
             {hasMore && (

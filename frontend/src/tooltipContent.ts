@@ -51,7 +51,7 @@ export const TOOLTIPS = {
 
   // Risque
   riskScore: {
-    text: 'Score composite 0-100 combinant 10 facteurs ponderes (rivieres, pluie, maree, vent, sol). Vert (0-25) = normal. Jaune (25-50) = vigilance. Orange (50-75) = alerte. Rouge (75-100) = danger.',
+    text: 'Score composite 0-100 (modele v3.4) combinant 11 facteurs ponderes (rivieres, pluie, maree, vent, sol, video). La maree ne compte que si la Dordogne est haute (Pessac au-dessus de 3.0 m sur 12.5 h). Vert < 15 = normal. Jaune 15-35 = vigilance. Orange 35-55 = alerte. Rouge >= 55 = danger.',
   },
   conjunctionMultiplier: {
     text: "Bonus de risque (x1.0 a x1.5) quand maree haute + niveau eleve + montee des eaux se combinent. Ces conditions ensemble sont bien plus dangereuses que separement.",
@@ -59,7 +59,7 @@ export const TOOLTIPS = {
 
   // Facteurs de risque (pour le tableau de detail)
   factorRiver: {
-    text: "Niveaux d'eau sur 7 stations ponderes par distance au moulin. C'est le facteur dominant (45% du score).",
+    text: "Niveaux d'eau des stations Hub'Eau, moyenne ponderee par station (Pessac 30%, Libourne exclue car soumise a la maree). C'est le facteur dominant (28% du score).",
   },
   factorRain24h: {
     text: 'Pluie cumulee sur 24h. Contribue au ruissellement immediat vers les rivieres.',
@@ -95,7 +95,7 @@ export const TOOLTIPS = {
 
   // Sol & Conditions agricoles
   soilMoisture: {
-    text: "Humidite volumetrique du sol (m3/m3). 0.15 = sec, 0.25 = normal, 0.35 = humide, 0.45 = sature. Mesure Open-Meteo couche 0-9cm.",
+    text: "Humidite volumetrique du sol (m3/m3). 0.15 = sec, 0.25 = normal, 0.35 = humide, 0.45 = sature. Modele DWD ICON via Open-Meteo, couches 0-9 cm et 9-81 cm (entree du modele de risque). La Timeline affiche un autre modele (ECMWF, 0-7 / 7-100 cm), plus humide : les valeurs ne sont pas comparables.",
     link: { url: 'https://open-meteo.com/en/docs', label: 'Open-Meteo Soil API' },
   },
   soilSaturationFactor: {
@@ -135,10 +135,10 @@ export const TOOLTIPS = {
     link: { url: 'https://open-meteo.com/', label: 'Open-Meteo' },
   },
   timelineRisk: {
-    text: "Score de risque composite (0-100) calcule toutes les 15 minutes. Combine niveaux de rivieres (50%), pluie (20%), maree (20%) et autres facteurs. Vert < 25, Jaune < 50, Orange < 75, Rouge >= 75.",
+    text: "Score de risque composite (0-100, modele v3.4) calcule toutes les heures. Combine niveaux de rivieres (28%), pluie (28%), tendance et momentum (21%), maree (10%) et autres facteurs. Vert < 15, Jaune < 35, Orange < 55, Rouge >= 55.",
   },
   timelineSoilMoisture: {
-    text: "Humidite volumetrique du sol en m3/m3. Couche superficielle (0-7cm) et profonde (7-100cm). Un sol sature (> 0.40) ne peut plus absorber la pluie, augmentant le ruissellement vers la Lidoire.",
+    text: "Humidite volumetrique du sol en m3/m3, modele ECMWF (IFS, ERA5 pour l'historique) via Open-Meteo. Couche superficielle (0-7cm) et profonde (7-100cm). Le Dashboard affiche le modele ICON (0-9 cm), plus sec : valeurs non comparables. Un sol sature (> 0.40) ne peut plus absorber la pluie.",
     link: { url: 'https://open-meteo.com/en/docs', label: 'Open-Meteo Soil API' },
   },
   timelineSoilTemp: {
@@ -154,7 +154,7 @@ export const TOOLTIPS = {
 
   // Bassin
   basinHeader: {
-    text: "Moyenne ponderee de la pluie sur le bassin versant de la Lidoire, calculee a partir des stations Netatmo situees sur le trace de la riviere. Amont pese plus car l'eau met du temps a descendre.",
+    text: "Moyenne ponderee de la pluie sur le bassin versant de la Lidoire, calculee a partir des stations Netatmo situees sur le trace de la riviere (amont 30%, milieu 40%, aval 30%, sur les positions qui ont des stations). Indisponible tant que Netatmo n'est pas autorise.",
   },
 
   // Previsions

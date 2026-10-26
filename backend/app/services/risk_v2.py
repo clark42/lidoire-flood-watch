@@ -11,7 +11,9 @@ This module:
 - persists scores to InfluxDB (``store_risk_score``) - computing and storing
   are separate: nothing is written unless ``store=True`` is requested;
 - recomputes historical scores (``backfill_risk_scores``) from stored series
-  with no future data.
+  with no future data;
+- stores the shadow model "3.4-gate" (``store_shadow_risk_score``, see
+  risk_shadow.py) next to each realtime score, in its own measurement.
 
 Model history (weights and mechanisms unchanged since v3.2, calibrated on
 14 annotated episodes, 5 confirmed floods):
@@ -53,7 +55,7 @@ from app.models.schemas import (
     TideForecast,
     TideType,
 )
-from app.services import risk_core
+from app.services import risk_core, risk_shadow
 from app.services.risk_core import (
     MODEL_VERSION,
     RISING_RATE_CM_H,
@@ -628,31 +630,32 @@ async def load_primary_levels(now: datetime) -> list[risk_core.LevelPoint]:
 
 
 async def gather_realtime_inputs(now: Optional[datetime] = None) -> RealtimeInputs:
-    """Fetch every realtime source in parallel and fuse them (I/O)."""
+    """Fetch every realtime source in parallel and fuse them (I/O).
+
+    Netatmo, Infoclimat and Meteo Agricole are only read from the caches the
+    scheduler jobs fill (``peek_*``): a slow or dead optional API never delays
+    a request. The other sources are cache-through with short timeouts.
+    """
     from app.services.collectors.hubeau import get_multi_station_data
-    from app.services.collectors.infoclimat import get_basin_rainfall_infoclimat
-    from app.services.collectors.meteo_agricole import get_meteo_agricole_cached
-    from app.services.collectors.netatmo import get_basin_rainfall
+    from app.services.collectors.infoclimat import peek_basin_rainfall_infoclimat
+    from app.services.collectors.meteo_agricole import peek_meteo_agricole
+    from app.services.collectors.netatmo import peek_basin_rainfall
     from app.services.collectors.tide import get_current_tide_data
     from app.services.collectors.weather import get_rainfall_summary, get_soil_wind_cached
 
     now = now or _utcnow()
 
-    (
-        tide, rainfall, stations, soil_wind, meteo_agricole, netatmo, infoclimat, stored_primary,
-    ) = await asyncio.gather(
+    tide, rainfall, stations, soil_wind, stored_primary = await asyncio.gather(
         get_current_tide_data(),
         get_rainfall_summary(),
         get_multi_station_data(),
         _safe(get_soil_wind_cached(), {}, "soil/wind"),
-        _safe(get_meteo_agricole_cached(), None, "meteo agricole"),
-        _safe(get_basin_rainfall(), {}, "netatmo"),
-        _safe(get_basin_rainfall_infoclimat(), {}, "infoclimat"),
         _safe(load_primary_levels(now), [], "stored primary levels"),
     )
     soil_wind = soil_wind or {}
-    netatmo = netatmo or {}
-    infoclimat = infoclimat or {}
+    meteo_agricole = peek_meteo_agricole()
+    netatmo = peek_basin_rainfall() or {}
+    infoclimat = peek_basin_rainfall_infoclimat() or {}
 
     fused = fuse_rainfall(rainfall, netatmo, infoclimat)
     return RealtimeInputs(
@@ -684,6 +687,7 @@ async def compute_current_risk(store: bool = False) -> tuple[RiskScore, Realtime
     risk = risk_from_inputs(inputs)
     if store:
         await store_risk_score(risk)
+        await store_shadow_risk_score(risk, inputs)
     return risk, inputs
 
 
@@ -871,6 +875,56 @@ _store_risk_to_influx = store_risk_score
 
 
 # ---------------------------------------------------------------------------
+# Shadow model 3.4-gate (stored for comparison, never displayed or alerted on)
+# ---------------------------------------------------------------------------
+
+def shadow_risk_point(
+    features: RiskFeatures,
+    risk: RiskScore,
+    h_aval: Optional[float],
+    source: str,
+):
+    """``risk_score_shadow`` point of the gated score, None when not scored."""
+    from app.services import influx_client
+
+    score = risk_shadow.gated_score(features, risk.score, h_aval)
+    if score is None:
+        return None
+    factors = {"base_score": risk.score, "gate": risk_shadow.backwater_gate(h_aval)}
+    if h_aval is not None:
+        factors["h_aval_m"] = h_aval
+    return influx_client.make_risk_point(
+        score=score,
+        level=risk_shadow.shadow_level(score).value,
+        timestamp=risk.timestamp,
+        factors=factors,
+        model_version=risk_shadow.SHADOW_MODEL_VERSION,
+        source=source,
+        measurement=influx_client.RISK_SHADOW_MEASUREMENT,
+    )
+
+
+async def store_shadow_risk_score(risk: RiskScore, inputs: RealtimeInputs) -> bool:
+    """Store the shadow score of a realtime production score (never raises).
+
+    H_aval is the backwater level of the production features (v3.4 tide
+    gate input): max of the primary station over the trailing 12.5 h,
+    stored river levels plus the realtime Hub'Eau level, points <= t only.
+    """
+    try:
+        from app.services import influx_client
+
+        features = inputs.features()
+        point = shadow_risk_point(features, risk, features.backwater_level_m, influx_client.RISK_SOURCE_REALTIME)
+        if point is None:
+            return False
+        return await influx_client.write_points_batch([point]) == 1
+    except Exception as e:
+        logger.error("Error storing shadow risk score: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Historical backfill
 # ---------------------------------------------------------------------------
 
@@ -961,6 +1015,7 @@ async def backfill_risk_scores(
     end: datetime,
     store: bool = True,
     skip_live_hours: bool = False,
+    shadow: bool = False,
 ) -> int:
     """Recompute (and store) risk scores from historical data in InfluxDB.
 
@@ -974,8 +1029,11 @@ async def backfill_risk_scores(
     an hour that has both (``influx_client.prefer_realtime_risk_rows``). With
     ``skip_live_hours`` (anonymous timeline cache-through), hours that
     already hold a realtime score of the current model are not recomputed.
+    With ``shadow``, the shadow model "3.4-gate" is also written for every
+    scored step (``risk_score_shadow``, source=backfill), from the same
+    inputs.
 
-    Returns the number of scores computed (stored when ``store=True``).
+    Returns the number of v3.3 scores computed (stored when ``store=True``).
     """
     from app.services import influx_client
 
@@ -993,6 +1051,7 @@ async def backfill_risk_scores(
 
     max_age = settings.risk_level_max_age_hours
     rate_window = settings.risk_rate_window_hours
+    # The backwater level (v3.4 tide gate, shadow gate) needs 12.5 h of history
     lookback = timedelta(hours=max(max_age, rate_window, risk_core.BACKWATER_WINDOW_H) + 1)
 
     logger.info("Risk backfill v%s: loading data for %s -> %s (step=%s)", MODEL_VERSION, s, e, step)
@@ -1034,6 +1093,7 @@ async def backfill_risk_scores(
     computed = 0
     skipped = 0
     points = []
+    shadow_points = []
     current = _ceil_hour(s)
     while current <= e:
         if current in live_hours:
@@ -1050,9 +1110,19 @@ async def backfill_risk_scores(
             computed += 1
             if store:
                 points.append(risk_point(risk, influx_client.RISK_SOURCE_BACKFILL))
+            if shadow:
+                sp = shadow_risk_point(features, risk, features.backwater_level_m, influx_client.RISK_SOURCE_BACKFILL)
+                if sp is not None:
+                    shadow_points.append(sp)
         current += step
 
     stored = await influx_client.write_points_batch(points) if points else 0
+    if shadow:
+        shadow_stored = await influx_client.write_points_batch(shadow_points) if store and shadow_points else 0
+        logger.info(
+            "Risk backfill %s (shadow): computed %d, stored %d scores",
+            risk_shadow.SHADOW_MODEL_VERSION, len(shadow_points), shadow_stored,
+        )
     logger.info(
         "Risk backfill v%s: computed %d, stored %d scores (%d hours kept from realtime)",
         MODEL_VERSION, computed, stored, skipped,

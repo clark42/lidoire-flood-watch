@@ -23,6 +23,7 @@ import httpx
 
 from app.config import get_settings
 from app.models.schemas import RiverLevel, Tendency, MultiStationData, StationLevel
+from app.services.cache import EXTERNAL_TIMEOUT_S, CircuitBreaker, describe_error
 # Single (pure) implementation of the regression rate, shared with the risk
 # model backfill/replay/forecast. Re-exported here for existing callers.
 from app.services.risk_core import rate_cm_per_hour, to_utc_naive
@@ -47,6 +48,9 @@ _stations_lock = asyncio.Lock()
 CACHE_DURATION_MINUTES = 5
 # Bounded concurrency towards Hub'Eau
 MAX_CONCURRENT_REQUESTS = 4
+# A round where no station answered is not cached, but Hub'Eau is then skipped
+# for this cool-down (request paths fetch on a cache miss)
+_realtime_breaker = CircuitBreaker("Hub'Eau realtime", cooldown_s=CACHE_DURATION_MINUTES * 60)
 
 # Hub'Eau obs_elab height grandeurs. Hub'Eau has no daily *minimum height*
 # (QINnJ is a minimum *discharge*), so no "daily_min" granularity is offered.
@@ -95,6 +99,7 @@ async def fetch_realtime_observations(
     station_id: str,
     hours_back: int = 48,
     client: Optional[httpx.AsyncClient] = None,
+    timeout: float = 30.0,
 ) -> list[RiverLevel]:
     """
     Fetch real-time observations from Hub'Eau for a specific station.
@@ -103,6 +108,7 @@ async def fetch_realtime_observations(
         station_id: Hub'Eau station code (e.g., P577001001)
         hours_back: Number of hours of history to fetch (max ~720 = 30 days)
         client: Optional shared httpx client (a temporary one is created otherwise)
+        timeout: httpx timeout (EXTERNAL_TIMEOUT_S on the realtime read path)
 
     Returns:
         List of RiverLevel observations sorted by timestamp
@@ -127,10 +133,10 @@ async def fetch_realtime_observations(
 
     try:
         if client is not None:
-            response = await client.get(url, params=params, timeout=30.0)
+            response = await client.get(url, params=params, timeout=timeout)
         else:
             async with httpx.AsyncClient() as own_client:
-                response = await own_client.get(url, params=params, timeout=30.0)
+                response = await own_client.get(url, params=params, timeout=timeout)
         response.raise_for_status()
         return parse_observations_tr(response.json(), station_id, station_config)
 
@@ -138,7 +144,7 @@ async def fetch_realtime_observations(
         logger.warning(f"Hub'Eau API error for station {station_id}: {e.response.status_code}")
         return []
     except Exception as e:
-        logger.warning(f"Error fetching Hub'Eau data for station {station_id}: {e}")
+        logger.warning("Error fetching Hub'Eau data for station %s: %s", station_id, describe_error(e))
         return []
 
 
@@ -345,6 +351,8 @@ async def fetch_all_stations_realtime(hours_back: int = 48) -> dict[str, list[Ri
         cached = _stations_cache_by_hours.get(hours_back)
         if cached and cached[0] > now:
             return cached[1]
+        if not _realtime_breaker.allow():
+            return {}
 
         settings = get_settings()
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
@@ -353,7 +361,7 @@ async def fetch_all_stations_realtime(hours_back: int = 48) -> dict[str, list[Ri
             async def _one(station_id: str) -> tuple[str, list[RiverLevel]]:
                 async with semaphore:
                     return station_id, await fetch_realtime_observations(
-                        station_id, hours_back, client=client
+                        station_id, hours_back, client=client, timeout=EXTERNAL_TIMEOUT_S,
                     )
 
             fetched = await asyncio.gather(
@@ -362,11 +370,14 @@ async def fetch_all_stations_realtime(hours_back: int = 48) -> dict[str, list[Ri
 
         results = {station_id: levels for station_id, levels in fetched if levels}
 
-        # Do not cache a total failure: retry on next call
+        # Do not cache a total failure, but skip Hub'Eau for the cool-down
         if results:
+            _realtime_breaker.record_success()
             _stations_cache_by_hours[hours_back] = (
                 now + timedelta(minutes=CACHE_DURATION_MINUTES), results
             )
+        else:
+            _realtime_breaker.record_failure("no station answered")
 
         return results
 
@@ -414,6 +425,8 @@ async def get_multi_station_data() -> MultiStationData:
                 threshold_yellow=thresholds.get("yellow", 3.0),
                 threshold_orange=thresholds.get("orange", 4.0),
                 threshold_red=thresholds.get("red", 5.0),
+                lat=station_config.get("lat"),
+                lon=station_config.get("lon"),
             )
         )
 

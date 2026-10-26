@@ -364,7 +364,7 @@ export interface TimelineDataPoint {
 }
 
 export interface TimelineSeries {
-  type: 'river_level' | 'rainfall' | 'rainfall_cumul' | 'tide' | 'risk_score' | 'soil_moisture' | 'soil_temperature' | 'evapotranspiration' | 'wind_speed' | 'wind_westerly' | 'forecast_risk_score' | 'forecast_rainfall' | 'forecast_level'
+  type: 'river_level' | 'rainfall' | 'rainfall_cumul' | 'tide' | 'risk_score' | 'risk_score_shadow' | 'soil_moisture' | 'soil_temperature' | 'evapotranspiration' | 'wind_speed' | 'wind_westerly' | 'forecast_risk_score' | 'forecast_rainfall' | 'forecast_level'
   name: string
   unit: string
   color: string
@@ -392,6 +392,8 @@ export interface RainfallStationInfo {
   name: string
   position: 'amont' | 'milieu' | 'aval'
   color: string
+  /** False while the source is not collecting (Netatmo not authorised) */
+  available?: boolean
 }
 
 export interface AvailableSources {
@@ -407,6 +409,9 @@ export interface AvailableSources {
 // Basin Rainfall (aggregated Lidoire basin)
 export interface BasinRainfallData {
   timestamp: string
+  /** False when no Netatmo basin station reported: the averages are 0.0 placeholders */
+  available?: boolean
+  stations_count?: number
   basin_average_1h_mm: number
   basin_average_24h_mm: number
   weighted_average_24h_mm: number
@@ -425,6 +430,29 @@ export interface DependencyCheck {
 
 export type DependencyName = 'database' | 'influxdb' | 'redis'
 
+// /api/status `sources`: newest stored point of each data source
+export type SourceFreshnessState = 'ok' | 'stale' | 'unavailable' | 'unknown'
+
+export type SourceFreshnessName =
+  | 'river_primary'
+  | 'rain_openmeteo'
+  | 'infoclimat'
+  | 'netatmo'
+  | 'tide'
+  | 'soil'
+  | 'risk_score'
+
+export interface SourceFreshness {
+  label: string
+  status: SourceFreshnessState
+  last_timestamp: string | null // naive UTC
+  age_hours: number | null // negative = point ahead of now (tide forecasts)
+  max_age_hours: number
+  critical: boolean // stale/unavailable => status "degraded"
+  note?: string
+  error?: string
+}
+
 export interface SystemStatus {
   status: 'healthy' | 'degraded'
   timestamp: string
@@ -435,8 +463,9 @@ export interface SystemStatus {
     influxdb: DependencyState
     redis: DependencyState
     checks: Partial<Record<DependencyName, DependencyCheck>>
-    collectors: Record<string, string>
+    collectors: Record<string, string> // static declaration (compatibility)
   }
+  sources?: Partial<Record<SourceFreshnessName, SourceFreshness>>
 }
 
 // POST /api/risk/simulate
