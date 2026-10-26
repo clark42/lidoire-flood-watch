@@ -82,7 +82,7 @@ app/
     ├── episode_detector.py  # Detection automatique d'episodes par seuil
     ├── episode_analyzer.py / episode_analyzer_v2.py  # Contexte hydro-meteo des episodes
     ├── labels.py        # Chargement des labels, parsing des anciens prefixes [CONFIRMED: ...]
-    ├── cache.py         # get_redis() partage + TTLCache en memoire
+    ├── cache.py         # get_redis() partage, TTLCache en memoire, CircuitBreaker, EXTERNAL_TIMEOUT_S
     ├── influx_client.py # InfluxDB non bloquant, ecritures par lot, validation Flux
     ├── data_store.py    # Acces InfluxDB/PostgreSQL de plus haut niveau
     ├── scheduler.py     # APScheduler (collectes + score horaire)
@@ -208,7 +208,12 @@ Pessac (~7 km en amont de la confluence) est la station primaire (`hubeau_primar
 - **Sol** : Open-Meteo (humidite, temperature, ET0) + Meteo Agricole (bilan hydrique)
 - **Camera** : Flux RTSP configurable via `CAMERA_RTSP_URL`
 
-Jobs du scheduler : rivieres et Netatmo 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, camera si configuree.
+Jobs du scheduler : rivieres, Netatmo et Infoclimat 15 min, meteo 1 h, marees et Meteo Agricole 6 h, nowcast 5 min, `risk_scorer` 1 h, camera si configuree.
+
+APIs externes hors du chemin des requetes :
+- Netatmo, Infoclimat, Meteo Agricole et nowcast ne sont jamais appeles par une route ni par `gather_realtime_inputs` : lecture seule des caches remplis par les jobs (`peek_*`, perimes au-dela de 1 h pour Netatmo/Infoclimat, 15 min pour le nowcast, 12 h pour Meteo Agricole ; au-dela => indisponible, comme un echec).
+- Hub'Eau, Open-Meteo, marees et Vigicrues restent en cache-through, timeout 10 s (`EXTERNAL_TIMEOUT_S`) ; les backfills historiques gardent 30-60 s.
+- `CircuitBreaker` (`cache.py`) : apres un timeout / erreur de connexion / 5xx, l'API est sautee 15 min (Hub'Eau 5 min, sur un tour sans aucune station), un seul WARNING avec le `repr` de l'exception. Les 4xx n'ouvrent pas le disjoncteur.
 
 ### API Hub'Eau
 

@@ -24,6 +24,12 @@ import httpx
 
 from app.config import get_settings
 from app.models.schemas import RiverLevel, RiverLevelForecast, Tendency
+from app.services.cache import (
+    EXTERNAL_TIMEOUT_S,
+    CircuitBreaker,
+    describe_error,
+    is_upstream_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,17 @@ STALE_MAX_AGE = timedelta(hours=6)
 # Cache for river data
 _river_cache: dict = {}
 _cache_expiry: Optional[datetime] = None
+
+# /api/realtime fetches on a cache miss: after a timeout/5xx, Vigicrues is
+# skipped (stale or unavailable result) instead of being awaited per request.
+_breaker = CircuitBreaker("Vigicrues")
+
+
+def _fetch_failed(what: str, station_id: str, e: Exception) -> None:
+    if is_upstream_failure(e):
+        _breaker.record_failure(e)
+    else:
+        logger.warning("Error fetching Vigicrues %s for station %s: %s", what, station_id, describe_error(e))
 
 
 def _utcnow() -> datetime:
@@ -135,6 +152,8 @@ async def fetch_station_data(station_id: str) -> list[RiverLevel]:
     Station IDs use the 10-character Hydro code shared with Hub'Eau
     (e.g. P577001001 for Libourne). Returns [] on any error.
     """
+    if not _breaker.allow():
+        return []
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(
@@ -144,30 +163,34 @@ async def fetch_station_data(station_id: str) -> list[RiverLevel]:
                     "GrdSerie": "H",  # Hauteur (height)
                     "FormatDate": "iso",
                 },
-                timeout=30.0,
+                timeout=EXTERNAL_TIMEOUT_S,
             )
             response.raise_for_status()
-            return parse_observations(response.json(), station_id)
+            levels = parse_observations(response.json(), station_id)
+        _breaker.record_success()
+        return levels
 
     except Exception as e:
-        logger.warning("Error fetching Vigicrues data for station %s: %s", station_id, e)
+        _fetch_failed("data", station_id, e)
         return []
 
 
 async def fetch_station_forecast(station_id: str) -> list[dict]:
     """Fetch forecast levels from Vigicrues (see parse_forecast). Returns [] on error."""
+    if not _breaker.allow():
+        return []
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(
                 VIGICRUES_FORECAST_URL,
                 params={"CdStationHydro": station_id},
-                timeout=30.0,
+                timeout=EXTERNAL_TIMEOUT_S,
             )
             response.raise_for_status()
             return parse_forecast(response.json())
 
     except Exception as e:
-        logger.warning("Error fetching Vigicrues forecast for station %s: %s", station_id, e)
+        _fetch_failed("forecast", station_id, e)
         return []
 
 
