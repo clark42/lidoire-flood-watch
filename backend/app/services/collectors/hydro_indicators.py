@@ -358,6 +358,10 @@ def _record(breaker: CircuitBreaker, errors: list[BaseException], successes: int
     """Open the breaker when nothing answered and the cause is upstream."""
     if successes:
         breaker.record_success()
+        upstream = [e for e in errors if is_upstream_failure(e)]
+        if upstream:
+            logger.info("%s: %d request(s) failed this round: %s",
+                        label, len(upstream), describe_error(upstream[0]))
     for e in errors:
         if not is_upstream_failure(e):
             logger.warning("%s rejected a request: %s", label, describe_error(e))
