@@ -165,6 +165,20 @@ export const TOOLTIPS = {
     text: "Prevision de risque sur 72h combinant : pluie horaire (Open-Meteo AROME), marees avec coefficients, et projection des niveaux de riviere basee sur les stations amont avec leurs delais de propagation. Cache 30 min, actualisation automatique.",
     link: { url: 'https://open-meteo.com/', label: 'Open-Meteo' },
   },
+
+  // Previsions probabilistes (indicatives, hors score v3.4)
+  ensembleRain: {
+    text: "Part des membres des ensembles meteo (ECMWF 51, ICON-EU 40, ICON-D2 20) dont la pluie moyenne sur le bassin depasse chaque seuil du modele (24 h : 25/40/60 mm ; 72 h : 50/80/120 mm). Moyenne des modeles disponibles pour la fenetre. N'entre pas dans le score.",
+    link: { url: 'https://open-meteo.com/en/docs/ensemble-api', label: 'Open-Meteo Ensemble' },
+  },
+  glofas: {
+    text: "Debit modelise par GloFAS v4 (Copernicus) sur la maille Lidoire : mediane, bandes p10-p90 et min-max des 51 membres. Seuils p95/p99 de la reanalyse 1997-2025 de la meme maille. Aucune station ne mesure la Lidoire : c'est un indicateur, pas une mesure.",
+    link: { url: 'https://open-meteo.com/en/docs/flood-api', label: 'Open-Meteo Flood (GloFAS)' },
+  },
+  radarBasin: {
+    text: "Pluie observee par le composite radar europeen OPERA (2 km, cumul 1 h toutes les 15 min), moyennee sur le bassin versant de la Lidoire. Les cumuls 3/6/24 h additionnent les cumuls horaires ; * = heures manquantes.",
+    link: { url: 'https://eumetnet.github.io/openradardata-documentation/', label: 'OPERA Open Radar Data' },
+  },
 } as const
 
 export type TooltipKey = keyof typeof TOOLTIPS

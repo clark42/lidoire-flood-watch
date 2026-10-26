@@ -18,6 +18,9 @@ import type {
   RiskSimulationResult,
   SystemStatus,
   SourcesDetail,
+  EnsembleForecast,
+  RadarBasinRain,
+  BasinGeoJson,
 } from './types'
 
 const API_BASE = '/api'
@@ -403,4 +406,19 @@ export async function confirmEpisode(
 // Reference labels of the annotated episodes (ground truth for evaluation)
 export async function getEpisodeLabels(): Promise<EpisodeLabelSet> {
   return fetchJson<EpisodeLabelSet>(`${API_BASE}/episodes/labels`)
+}
+
+// Probabilistic forecasts: ensemble rain + GloFAS (informative, not in the score)
+export async function getEnsembleForecast(): Promise<EnsembleForecast> {
+  return fetchJson<EnsembleForecast>(`${API_BASE}/forecast/ensemble`)
+}
+
+// Observed basin rain from the OPERA radar
+export async function getRadarBasinRain(): Promise<RadarBasinRain> {
+  return fetchJson<RadarBasinRain>(`${API_BASE}/realtime/radar`)
+}
+
+// Lidoire topographic catchment (GeoJSON, Sandre BD TOPAGE)
+export async function getBasinGeoJson(): Promise<BasinGeoJson> {
+  return fetchJson<BasinGeoJson>(`${API_BASE}/geo/basin`)
 }
