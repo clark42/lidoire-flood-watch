@@ -78,6 +78,37 @@ export function formatParis(value: Date | string | null | undefined, pattern: st
   return pattern.replace(TOKENS, (token) => parts[token as keyof ParisParts])
 }
 
+/** Calendar day in Europe/Paris, "yyyy-MM-dd". */
+export function parisDayKey(value: Date | string): string {
+  return formatParis(value, 'yyyy-MM-dd')
+}
+
+function dayIndex(key: string): number {
+  const [y, m, d] = key.split('-').map(Number)
+  return Date.UTC(y, m - 1, d) / 86_400_000
+}
+
+/**
+ * Time relative to the Paris calendar day of `now`: "aujourd'hui à 14:00",
+ * "demain à 03:00", "hier à 23:00", else "mer. 29 à 10:00". `compact`
+ * (horizon tiles) drops the "à" and shortens today to "auj.".
+ */
+export function formatParisRelative(
+  value: Date | string | null | undefined,
+  now: Date = new Date(),
+  { compact = false }: { compact?: boolean } = {},
+): string {
+  const date = typeof value === 'string' ? parseApiDate(value) : value
+  if (!date || Number.isNaN(date.getTime())) return '-'
+  const offset = dayIndex(parisDayKey(date)) - dayIndex(parisDayKey(now))
+  const time = formatParis(date, 'HH:mm')
+  const sep = compact ? ' ' : ' à '
+  if (offset === 0) return `${compact ? 'auj.' : "aujourd'hui"}${sep}${time}`
+  if (offset === 1) return `demain${sep}${time}`
+  if (offset === -1) return `hier${sep}${time}`
+  return `${formatParis(date, 'EEE d')}${sep}${time}`
+}
+
 /** Hour of the day (0-23) in Europe/Paris. */
 export function parisHour(value: Date | string): number {
   const formatted = formatParis(value, 'HH')

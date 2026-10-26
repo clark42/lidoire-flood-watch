@@ -40,8 +40,11 @@ npm ci
 npm run dev                             # Port 3000, proxy /api -> http://localhost:8000
 npm run lint                            # ESLint 9
 npx tsc --noEmit -p .                   # Verification des types
+npm test                                # Vitest (helpers, contrastes des jetons, rendu serveur du verdict)
 npm run build                           # tsc + vite build
 ```
+
+Tests : `frontend/src/**/*.test.{ts,tsx}` a cote du module (environnement node, pas de DOM : composants testes via `renderToStaticMarkup`), fixture de prod `src/test-fixtures/outlook.json`.
 
 ### Evaluation hors ligne
 ```bash
@@ -164,18 +167,27 @@ src/
 ├── App.tsx              # Router principal, navigation, pages en React.lazy (un chunk par route)
 ├── api.ts               # Client API (fetchJson, X-API-Key depuis localStorage 'lfw_api_key')
 ├── types.ts             # Types TypeScript (miroir des schemas backend)
-├── utils/time.ts        # parseApiDate (UTC) + formatParis : tout l'affichage en Europe/Paris
-├── utils/format.ts      # Libelles FR des niveaux de risque, formatDistanceKm
+├── utils/time.ts        # parseApiDate (UTC) + formatParis, formatParisRelative ("demain a 11:33") : tout en Europe/Paris
+├── utils/format.ts      # Libelles FR des niveaux, formatDistanceKm, formatNumber / formatQuantity (fr-FR, "–" si absent)
+├── utils/levels.ts      # Ordre et rang des niveaux, levelFromScore (15/35/55), buildVerdict (pire niveau 0-72 h)
+├── utils/confidence.ts  # Raisons de confiance (Pessac a jour, notes de l'outlook, "cale sur 5 crues")
+├── utils/scale.ts       # linearScale / logScale / niceTicks pour les SVG maison
 ├── utils/observations.ts # Libelles et couleurs des types d'observation
+├── theme/               # theme.ts (preference systeme/clair/sombre, localStorage 'lfw_theme'), contrast.ts (WCAG)
+├── styles/tokens.css    # Jetons clair/sombre (source unique), styles/fonts.css (@font-face woff2)
+├── hooks/useRiskOutlook.ts # GET /api/risk/outlook toutes les 10 min (verdict + liste)
 ├── tooltipContent.ts    # Dictionnaire centralise des textes de tooltips
 ├── pages/
-│   ├── Dashboard.tsx    # Vue temps reel avec score de risque + TimeMachine ; fraicheur = station primaire (Pessac), HydroMap (leaflet) en lazy
+│   ├── Dashboard.tsx    # Sections (dashboardSections.ts) : Maintenant, Pourquoi, 72 h, Agir, Replay, Carte, Pluie et sol, Fiabilite ; TimeMachine (bandeau en haut une fois actif) ; fraicheur = Pessac ; recharts et leaflet en lazy
 │   ├── Timeline.tsx     # Graphiques historiques multi-sources + forecast overlay
 │   ├── Episodes.tsx     # Liste/creation/analyse/issue des episodes
 │   └── Configuration.tsx # Statut, simulation, cle API ; version du modele lue dans l'API (`risk_model.version`, sinon `RiskScore.model_version`)
 └── components/
-    ├── RiskGauge.tsx, RiskBreakdownPanel.tsx (contributions = poids x score / denominateur x conjonction x amortisseur, gate maree), StationsPanel.tsx, RainfallPanel.tsx
-    ├── OutlookPanel.tsx (haut du Dashboard), ForecastSkillPanel.tsx (Configuration)
+    ├── VerdictHero.tsx  # Haut du Dashboard : verdict, tuiles 6/24/72 h, pourquoi, confiance, vigilances (slot)
+    ├── ActionChecklist.tsx (liste du moulin, outlook.checklist), SectionNav.tsx (barre collante), DashboardSection.tsx, ThemeToggle.tsx
+    ├── ui/LevelMeter.tsx (4 pastilles + mot), ui/ValueTag.tsx (+ ValueTagLegend, libelles dans ui/valueKinds.ts)
+    ├── RiskBreakdownPanel.tsx (contributions = poids x score / denominateur x conjonction x amortisseur, gate maree), StationsPanel.tsx, RainfallPanel.tsx
+    ├── ForecastSkillPanel.tsx (Configuration)
     ├── ForecastPanel.tsx, BasinRainfallGauge.tsx, SoilConditionsPanel.tsx, NowcastRainChart.tsx
     ├── HydroMap.tsx, MetricSparkline.tsx, TimeMachineBanner.tsx, TimelineSourceSelector.tsx
     ├── InfoTooltip.tsx, DataCard.tsx, DataSourcesStatus.tsx (bandeau des sources = `/api/status.sources`)
@@ -454,6 +466,18 @@ Profil RGE ALTI (API altimetrie IGN, sans cle, min de 5 points sur +/- 20 m tous
 Apport de Pessac (`scripts/eval/added_value.py`, regressions L2 emboitees, LOEO bloque) : Eyraud + pluie 72 h AUC 0.902, pAUC (FPR <= 5%) 0.536 ; + H_aval 0.902 / 0.510 (IC 90% de la difference d'AUC -0.003 a +0.001) ; + Z_c, + API lente, + piezo : idem. Sans 2023-03-11 : 0.973 -> 0.972, pAUC 0.661 -> 0.629. Sans Eyraud, H_aval aide (pluie 72 h 0.908 -> 0.927) : Pessac est un indicateur d'humidite regionale, redondant avec le debit de l'Eyraud. Par episode, le max de l'Eyraud (sans latence) separe seul les crues (>= 25.9 m3/s) des negatives labellisees (<= 25.3 m3/s, 2023-12-11), marge tres faible ; H_aval ne les separe pas (2024-05-09 a 5.4 m sans crue). Consequence pour v4 : un mecanisme ruissellement (debit Lidoire/Eyraud, pluie observee et prevue pour l'avance) en tete, Pessac au plus comme modulateur aux tres hautes eaux (>= ~5.7 m, noyage du seuil a 3.1 km) ; pas de ET remous / ruissellement. A pre-enregistrer avant toute metrique (v4-beta).
 
 `app/services/models_experimental.py` (gate remous, regles backwater, regression logistique, GR4H, wrapper v4-alpha) n'est importe par aucun code de production ; `risk_v4.py` n'est importe que par le wrapper et par le shadow `risk_shadow_v4.py` : un test (`test_models_experimental_not_imported_by_production`) l'impose.
+
+## Theme, polices, grammaire visuelle (refonte "Lidoire 360")
+
+- **Jetons** : `src/styles/tokens.css` (`--bg`, `--surface*`, `--ink*`, `--line*`, `--accent*`, `--water*`, `--silt*`, `--lv-*`, `--seq-1..5`), branches sur Tailwind (`bg-canvas`, `bg-surface`, `text-ink-2`, `border-line`, `bg-lv-orange`...). Sombre concu a part : `prefers-color-scheme` sauf `data-theme="light"`, ou `data-theme="dark"` force ; les deux blocs sombres doivent rester identiques (test). Pas de modificateur d'opacite sur ces couleurs `var()`.
+- **Bascule** : `ThemeToggle` (systeme -> clair -> sombre), `localStorage` `lfw_theme` sous try/catch ; `public/theme-init.js` (script classique, la CSP interdit l'inline) pose `data-theme` avant le premier rendu ; nginx le sert en `no-cache`.
+- **Compatibilite** des panneaux non refaits (`tailwind.config.js`) : `gray`/`slate` suivent les neutres des jetons (`--gray-*`), `bg-white` = surface ; en sombre, fonds pales et bordures colores deviennent profonds, textes colores eclaircis. A retirer quand tous les panneaux utilisent les jetons. Graphiques recharts : couleurs en dur, non adaptees au sombre.
+- **Contraste** : `src/styles/tokens.test.ts` verifie WCAG AA (4,5:1) des paires texte/fond des deux themes et 3:1 pour l'anneau de focus. Les couleurs de niveau ne servent qu'aux marques et fonds pales, jamais au texte.
+- **Polices** auto-hebergees (`@fontsource/*`, latin, woff2 seul, `src/styles/fonts.css`) : Barlow Condensed (chiffres, titres, `font-display` / `.num` / `.eyebrow`), Atkinson Hyperlegible (texte, `font-sans`), IBM Plex Mono (horodatages, `font-mono`). Jamais Google Fonts (`font-src 'self'`).
+- **Niveaux** : `LevelMeter` (pastilles 1 a 4 + mot + couleur), jamais la couleur seule. **Valeurs** : `ValueTag` `measured` | `estimated` (≈) | `model` (~) | `analog` | `mockup` | `unavailable` ; une prevision sans bande d'incertitude le dit ("sans bande").
+- **Verdict** : pire niveau entre maintenant et 72 h (horizons de l'outlook + score temps reel) -> "Rien a faire" / "Surveiller" / "Preparer le moulin" / "Agir maintenant" ; pourquoi = facteurs du pic 72 h ; confiance = liste de raisons, jamais un pourcentage.
+- **Mobile** : 375 px, goutiere 16 px (`.page-gutter`, safe-area), cibles 44 px, barre de sections collante et defilante ; deux colonnes a partir de 960 px. `prefers-reduced-motion` coupe animations, transitions et defilement doux.
+- **Bundle** : chemin critique du Dashboard ~115 Ko gzip (entree + Dashboard + CSS) ; recharts (~96 Ko) et leaflet (~48 Ko) en chunks differes.
 
 ## Tooltips pedagogiques
 

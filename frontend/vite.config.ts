@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -13,5 +14,12 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  test: {
+    // Pure helpers and server-rendered markup: no DOM environment needed
+    environment: 'node',
+    include: ['src/**/*.test.{ts,tsx}'],
+    // Vitest empties CSS modules by default; the token tests read tokens.css?raw
+    css: { include: [/tokens\.css/] },
   },
 })

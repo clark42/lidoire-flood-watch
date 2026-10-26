@@ -598,7 +598,7 @@ export default function Episodes() {
                     <button
                       onClick={() => handleConfirm('false_positive')}
                       disabled={saving}
-                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50"
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-ink-2 text-canvas rounded-lg hover:bg-ink disabled:opacity-50"
                     >
                       <X className="w-4 h-4" />
                       Non, faux positif

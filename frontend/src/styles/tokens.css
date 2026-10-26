@@ -1,0 +1,170 @@
+/*
+ * Design tokens of the "Lidoire 360" redesign (hydrologist's notebook):
+ * grey-green neutrals, teal water, silt-brown flood water, Vigicrues levels.
+ *
+ * Light by default; the dark theme is designed separately (not inverted):
+ * the sequential ramp gets lighter towards high values and level tints get
+ * deep. It applies when the OS asks for it (prefers-color-scheme) unless the
+ * user forced the light theme, or when the user forced it
+ * (<html data-theme="dark">, see src/theme/theme.ts). Both dark blocks must
+ * stay identical: src/styles/tokens.test.ts checks it, and the WCAG AA
+ * contrast of the text pairs.
+ *
+ * Colours are hex, except the --gray-* scale and --surface-rgb, which are
+ * "r g b" channels so that Tailwind opacity modifiers work (bg-white/90).
+ * The --gray-* scale re-skins the Tailwind gray/slate classes of the panels
+ * not yet redesigned (tailwind.config.js).
+ */
+:root {
+  --bg: #f2f5f4;
+  --surface: #fbfcfc;
+  --surface-rgb: 251 252 252;
+  --surface-2: #e7eeed;
+  --surface-3: #dbe5e4;
+  --ink: #13232a;
+  --ink-2: #465a61;
+  --ink-3: #5c6e74;
+  --line: #d3dddc;
+  --line-2: #bccbca;
+  --accent: #0d6672;
+  --accent-ink: #ffffff;
+  --accent-soft: #d3e8ea;
+  --water: #3b86a3;
+  --water-soft: #b9d8e3;
+  --silt: #7a4e24;
+  --silt-soft: #ead9c6;
+  --lv-green: #2a8756;
+  --lv-yellow: #c89400;
+  --lv-orange: #d9661a;
+  --lv-red: #b3261e;
+  --lv-green-soft: #d9eee2;
+  --lv-yellow-soft: #f6ebc6;
+  --lv-orange-soft: #f8dcc8;
+  --lv-red-soft: #f4d3cf;
+  --seq-1: #dbe9ee;
+  --seq-2: #a9cddb;
+  --seq-3: #6aa9c2;
+  --seq-4: #2f7f9f;
+  --seq-5: #135a75;
+  --hatch: rgba(19, 35, 42, 0.1);
+  --night: rgba(19, 35, 42, 0.05);
+  --shadow: 0 1px 2px rgba(19, 35, 42, 0.06), 0 4px 16px rgba(19, 35, 42, 0.05);
+
+  --gray-50: 242 245 244;
+  --gray-100: 231 238 237;
+  --gray-200: 211 221 220;
+  --gray-300: 188 203 202;
+  --gray-400: 92 110 116;
+  --gray-500: 82 99 105;
+  --gray-600: 70 90 97;
+  --gray-700: 52 71 78;
+  --gray-800: 34 52 58;
+  --gray-900: 19 35 42;
+  --gray-950: 11 23 28;
+
+  --f-display: 'Barlow Condensed', 'Roboto Condensed', 'Arial Narrow', system-ui, sans-serif;
+  --f-body: 'Atkinson Hyperlegible', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --f-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --radius: 10px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0d1416;
+    --surface: #141f23;
+    --surface-rgb: 20 31 35;
+    --surface-2: #1b2a2f;
+    --surface-3: #22343a;
+    --ink: #e3ecec;
+    --ink-2: #a7b7ba;
+    --ink-3: #8c9ea3;
+    --line: #26363b;
+    --line-2: #344a50;
+    --accent: #55bcc6;
+    --accent-ink: #06282c;
+    --accent-soft: #16383d;
+    --water: #4f9fbd;
+    --water-soft: #1f4655;
+    --silt: #cf9a64;
+    --silt-soft: #3d2c1c;
+    --lv-green: #3fb67a;
+    --lv-yellow: #e5bb2f;
+    --lv-orange: #f08b3d;
+    --lv-red: #f0604f;
+    --lv-green-soft: #173326;
+    --lv-yellow-soft: #352c10;
+    --lv-orange-soft: #3a2312;
+    --lv-red-soft: #3d1a17;
+    --seq-1: #1d3a44;
+    --seq-2: #25566a;
+    --seq-3: #2f7f9f;
+    --seq-4: #5ba9c6;
+    --seq-5: #a3d4e6;
+    --hatch: rgba(227, 236, 236, 0.1);
+    --night: rgba(0, 0, 0, 0.22);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.25);
+
+    --gray-50: 27 42 47;
+    --gray-100: 34 52 58;
+    --gray-200: 44 64 71;
+    --gray-300: 59 82 89;
+    --gray-400: 140 158 163;
+    --gray-500: 150 167 171;
+    --gray-600: 167 183 186;
+    --gray-700: 194 207 209;
+    --gray-800: 212 222 224;
+    --gray-900: 227 236 236;
+    --gray-950: 240 245 245;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0d1416;
+  --surface: #141f23;
+  --surface-rgb: 20 31 35;
+  --surface-2: #1b2a2f;
+  --surface-3: #22343a;
+  --ink: #e3ecec;
+  --ink-2: #a7b7ba;
+  --ink-3: #8c9ea3;
+  --line: #26363b;
+  --line-2: #344a50;
+  --accent: #55bcc6;
+  --accent-ink: #06282c;
+  --accent-soft: #16383d;
+  --water: #4f9fbd;
+  --water-soft: #1f4655;
+  --silt: #cf9a64;
+  --silt-soft: #3d2c1c;
+  --lv-green: #3fb67a;
+  --lv-yellow: #e5bb2f;
+  --lv-orange: #f08b3d;
+  --lv-red: #f0604f;
+  --lv-green-soft: #173326;
+  --lv-yellow-soft: #352c10;
+  --lv-orange-soft: #3a2312;
+  --lv-red-soft: #3d1a17;
+  --seq-1: #1d3a44;
+  --seq-2: #25566a;
+  --seq-3: #2f7f9f;
+  --seq-4: #5ba9c6;
+  --seq-5: #a3d4e6;
+  --hatch: rgba(227, 236, 236, 0.1);
+  --night: rgba(0, 0, 0, 0.22);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.25);
+
+  --gray-50: 27 42 47;
+  --gray-100: 34 52 58;
+  --gray-200: 44 64 71;
+  --gray-300: 59 82 89;
+  --gray-400: 140 158 163;
+  --gray-500: 150 167 171;
+  --gray-600: 167 183 186;
+  --gray-700: 194 207 209;
+  --gray-800: 212 222 224;
+  --gray-900: 227 236 236;
+  --gray-950: 240 245 245;
+  color-scheme: dark;
+}
