@@ -53,6 +53,8 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from typing import Iterator, Mapping, Optional, Sequence
 
+import numpy as np
+
 from app.config import get_settings
 from app.services import risk_core
 from app.services.risk_core import (
@@ -125,6 +127,10 @@ class RawInputs:
     # v4-alpha: daily groundwater level (m NGF) and GloFAS discharge (m3/s)
     piezo_daily: list[tuple[date, float]] = field(default_factory=list)
     glofas_daily: list[tuple[date, float]] = field(default_factory=list)
+    # v4-beta: ERA5 hourly rain per basin point (observed-rain stand-in of the nowcast)
+    rain_era5_by_point: dict[str, dict[datetime, float]] = field(default_factory=dict)
+    # v4-beta: archived forecasts (Previous Runs API), {"day1"|"day2": {point: {label: mm}}}
+    rain_prev_runs: dict[str, dict[str, dict[datetime, float]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -357,13 +363,69 @@ def hydro_values(raw: RawInputs, t: datetime, primary_pts: Sequence[LevelPoint])
             # sensitivity / timing analysis only: no publication lag (optimistic)
             out[f"q_{name}_lag0_m3s"] = _latest_value(pts, t, CAUSAL_MAX_AGE_HOURS)
             out[f"q_{name}_lag0_max_12h"] = _window_max(pts, t, ROLLING_WINDOW_H)
+            out[f"q_{name}_lag3_m3s"] = _latest_value(pts, t - timedelta(hours=3), CAUSAL_MAX_AGE_HOURS)
     out["libourne_h"] = _latest_value(raw.libourne_points, t, CAUSAL_MAX_AGE_HOURS)
     lib_env = _window_max(raw.libourne_points, t, ROLLING_WINDOW_H)
     out["libourne_max_12h"] = lib_env
     out["z_conf_ngf"] = confluence_stage(_window_max(primary_pts, t, ROLLING_WINDOW_H), lib_env)
     out["piezo_ngf"] = daily_value_at(raw.piezo_daily, t, PIEZO_LAG_AFTER_DAY_H)
     out["glofas_lidoire_m3s"] = daily_value_at(raw.glofas_daily, t, GLOFAS_LAG_AFTER_DAY_H)
+    # v4-beta nowcast: second Eyraud point (rise between t - 10 h and t - 7 h)
+    eyraud_lag = HYDRO_Q_SERIES["eyraud"][1]
+    out["q_eyraud_lag10_m3s"] = _latest_value(
+        raw.discharge.get("eyraud") or [], t - timedelta(hours=eyraud_lag + V4B_RISE_EXTRA_LAG_H),
+        CAUSAL_MAX_AGE_HOURS,
+    )
     return out
+
+
+# v4-beta: the Eyraud rise is read between t - 10 h and t - 7 h
+V4B_RISE_EXTRA_LAG_H = 3.0
+# Open-Meteo Previous Runs archive starts on 2024-01-19 (previous_day1)
+V4B_PREV_RUNS_START = date(2024, 1, 1)
+V4B_ERA5_WINDOWS_H = (6, 24, 72, 720)
+
+
+def v4b_rain_values(raw: RawInputs, times: Sequence[datetime]) -> list[dict[str, Optional[float]]]:
+    """ERA5 basin rain windows and the archived 24 h forecast per row (v4-beta inputs).
+
+    Past windows only use labels <= t (NaN -> None if an hour is missing).
+    ``fc_rain_24h_prev`` = rain over (t, t + 24 h] forecast BEFORE t
+    (:func:`scripts.eval.runoff_nowcast.previous_runs_forward_sum`), None
+    where the archive does not cover the window (before 2024-01-20).
+    """
+    from scripts.eval import runoff_nowcast as rn
+
+    if not times:
+        return []
+    out: list[dict[str, Optional[float]]] = [dict() for _ in times]
+    if raw.rain_era5_by_point:
+        start = times[0] - timedelta(hours=max(V4B_ERA5_WINDOWS_H))
+        grid = rn.hourly_grid(start, times[-1])
+        rain = rn.basin_rain_array(raw.rain_era5_by_point, grid)
+        sums = {h: rn.past_window_sums(rain, h) for h in V4B_ERA5_WINDOWS_H}
+        idx = {t: i for i, t in enumerate(grid.astype("datetime64[s]").astype(object))}
+        for k, t in enumerate(times):
+            i = idx.get(t)
+            for h in V4B_ERA5_WINDOWS_H:
+                v = sums[h][i] if i is not None else float("nan")
+                out[k][f"era5_rain_{h}h"] = None if np.isnan(v) else float(v)
+    day1 = _basin_mean(raw.rain_prev_runs.get("day1") or {})
+    day2 = _basin_mean(raw.rain_prev_runs.get("day2") or {})
+    for k, t in enumerate(times):
+        out[k]["fc_rain_24h_prev"] = rn.previous_runs_forward_sum(day1, day2, t) if day1 and day2 else None
+    return out
+
+
+def _basin_mean(by_point: Mapping[str, Mapping[datetime, float]]) -> dict[datetime, float]:
+    """Mean across the points present at each label."""
+    acc: dict[datetime, list[float]] = {}
+    for series in by_point.values():
+        for ts, v in series.items():
+            acc.setdefault(ts, []).append(v)
+    n = len(by_point)
+    # a label counts only when every point has it (same basin mean as the fit)
+    return {ts: sum(v) / len(v) for ts, v in acc.items() if len(v) == n}
 
 
 def build_rows(
@@ -398,9 +460,12 @@ def build_rows(
     )
     cfg_by_id = {c.station_id: c for c in station_configs}
     primary_pts = points.get(primary_station_id, [])
+    t_first = risk_core.floor_hour(start)
+    n_hours = int((end - t_first).total_seconds() // 3600) + 1 if end >= t_first else 0
+    v4b_values = v4b_rain_values(raw, [t_first + timedelta(hours=k) for k in range(n_hours)])
 
     rows: list[FeatureRow] = []
-    t = risk_core.floor_hour(start)
+    t = t_first
     while t <= end:
         tide = tide_index.at(t) if options.use_tide else risk_core.TideState(False, None, None)
         rain_7d_ok = risk_core.rain_window_count(rain_hourly, t, 168) >= 150
@@ -463,6 +528,7 @@ def build_rows(
         )
         values["hours_to_high_tide"] = feats.hours_to_high_tide
         values.update(hydro_values(raw, t, primary_pts))
+        values.update(v4b_values[len(rows)])
 
         rows.append(FeatureRow(timestamp=t, features=feats, values=values))
         t += timedelta(hours=1)
@@ -578,11 +644,36 @@ def collect_raw_inputs(
                                 "lag": f"day D used from D+1 + {GLOFAS_LAG_AFTER_DAY_H:g} h",
                                 "source": "Open-Meteo Flood seamless_v4 (consolidated reanalysis to 2025-05, "
                                           "then archived forecast_v4)"}
+        # v4-beta: ERA5 basin rain (30-day antecedent window) and archived rain forecasts
+        from scripts.eval import runoff_nowcast
+
+        raw.rain_era5_by_point = sources.download_era5_rain(
+            settings.lidoire_basin_points, fetch_start - timedelta(days=31), end, cache, client, refresh,
+        )
+        prev = sources.download_previous_runs_rain(
+            settings.lidoire_basin_points, runoff_nowcast.PREV_RUNS_MODEL, max(fetch_start, V4B_PREV_RUNS_START),
+            end + timedelta(days=2), cache, client, refresh,
+        ) if end >= V4B_PREV_RUNS_START else {}
+        raw.rain_prev_runs = {
+            "day1": prev.get("precipitation_previous_day1") or {},
+            "day2": prev.get("precipitation_previous_day2") or {},
+        }
+        hydro_meta["era5_rain"] = {
+            "points": [p["id"] for p in settings.lidoire_basin_points],
+            "n_hours": {k: len(v) for k, v in raw.rain_era5_by_point.items()},
+            "source": "Open-Meteo archive (ERA5), v4-beta observed-rain stand-in",
+        }
+        hydro_meta["prev_runs_rain"] = {
+            "model": runoff_nowcast.PREV_RUNS_MODEL,
+            "n_hours_day1": {k: len(v) for k, v in raw.rain_prev_runs["day1"].items()},
+            "rule": f"labels t+1..t+{runoff_nowcast.DAY1_MAX_LEAD_H} from previous_day1, then previous_day2",
+        }
         meta["hydro"] = hydro_meta
         # warm the cache of the climatology series (a-priori v4 thresholds)
         from scripts.eval import climatology
 
         climatology.download_series(cache, client, refresh)
+        runoff_nowcast.training_series(cache, client, refresh, settings)
 
         from app.services.collectors.tide import MARINE_LAT, MARINE_LON
 
@@ -651,6 +742,7 @@ def coverage_summary(rows: Sequence[FeatureRow], configs: Sequence[StationConfig
     out["tide_available"] = round(sum(1 for r in rows if r.features.tide_available) / n, 4)
     out["rain_72h_complete"] = round(sum(1 for r in rows if (r.values.get("rain_hours_72h") or 0) >= 72) / n, 4)
     out["daily_max_fallback_hours"] = sum(1 for r in rows if (r.values.get("n_daily_fallback") or 0) > 0)
-    for key in ("q_eyraud_m3s", "q_caudeau_m3s", "q_pessac_m3s", "z_conf_ngf", "piezo_ngf", "glofas_lidoire_m3s"):
+    for key in ("q_eyraud_m3s", "q_caudeau_m3s", "q_pessac_m3s", "z_conf_ngf", "piezo_ngf", "glofas_lidoire_m3s",
+                "q_eyraud_lag10_m3s", "era5_rain_720h", "fc_rain_24h_prev"):
         out[key] = round(sum(1 for r in rows if r.values.get(key) is not None) / n, 4)
     return out
