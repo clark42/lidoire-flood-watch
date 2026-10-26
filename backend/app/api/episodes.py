@@ -354,6 +354,7 @@ async def _run_backfill_task(
     skip_soil: bool,
     skip_risk: bool,
     risk_shadow: bool = False,
+    indicators: bool = False,
 ):
     """Background task for backfill."""
     global _backfill_status
@@ -367,6 +368,7 @@ async def _run_backfill_task(
             skip_soil=skip_soil,
             skip_risk=skip_risk,
             risk_shadow=risk_shadow,
+            indicators=indicators,
         )
         _backfill_status["result"] = results
         _backfill_status["finished_at"] = _utcnow().isoformat()
@@ -388,6 +390,7 @@ async def trigger_backfill(
     skip_soil: bool = Query(False, description="Skip soil data backfill"),
     skip_risk: bool = Query(False, description="Skip risk score recalculation"),
     risk_shadow: bool = Query(False, description="Also backfill the shadow model 3.4-gate"),
+    indicators: bool = Query(False, description="Also backfill the hydrological indicators (flows, groundwater, observed tide)"),
 ):
     """
     Trigger comprehensive data backfill as a background task.
@@ -434,6 +437,7 @@ async def trigger_backfill(
         skip_soil=skip_soil,
         skip_risk=skip_risk,
         risk_shadow=risk_shadow,
+        indicators=indicators,
     ))
 
     return {
