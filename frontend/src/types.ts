@@ -430,6 +430,29 @@ export interface DependencyCheck {
 
 export type DependencyName = 'database' | 'influxdb' | 'redis'
 
+// /api/status `sources`: newest stored point of each data source
+export type SourceFreshnessState = 'ok' | 'stale' | 'unavailable' | 'unknown'
+
+export type SourceFreshnessName =
+  | 'river_primary'
+  | 'rain_openmeteo'
+  | 'infoclimat'
+  | 'netatmo'
+  | 'tide'
+  | 'soil'
+  | 'risk_score'
+
+export interface SourceFreshness {
+  label: string
+  status: SourceFreshnessState
+  last_timestamp: string | null // naive UTC
+  age_hours: number | null // negative = point ahead of now (tide forecasts)
+  max_age_hours: number
+  critical: boolean // stale/unavailable => status "degraded"
+  note?: string
+  error?: string
+}
+
 export interface SystemStatus {
   status: 'healthy' | 'degraded'
   timestamp: string
@@ -440,8 +463,9 @@ export interface SystemStatus {
     influxdb: DependencyState
     redis: DependencyState
     checks: Partial<Record<DependencyName, DependencyCheck>>
-    collectors: Record<string, string>
+    collectors: Record<string, string> // static declaration (compatibility)
   }
+  sources?: Partial<Record<SourceFreshnessName, SourceFreshness>>
 }
 
 // POST /api/risk/simulate

@@ -20,6 +20,12 @@ from typing import Optional
 
 from app.config import get_settings
 from app.models.schemas import MeteoAgricoleData, NowcastRainData
+from app.services.cache import (
+    EXTERNAL_TIMEOUT_S,
+    CircuitBreaker,
+    describe_error,
+    is_upstream_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +46,22 @@ _nowcast_cache_expiry: Optional[datetime] = None
 NOWCAST_CACHE_MINUTES = 5
 NOWCAST_URL = "https://www.lameteoagricole.net/meteo-minute-par-minute/Belves-de-Castillon-33350.html"
 
+# Request paths never scrape: the scheduler jobs fill the memory caches above
+# and peek_meteo_agricole() / peek_nowcast_rain() serve them, stale by at most
+# these grace periods past their expiry.
+STALE_GRACE = timedelta(hours=6)
+NOWCAST_STALE_GRACE = timedelta(minutes=10)
+
+# One breaker for lameteoagricole.net (daily page + nowcast page)
+_breaker = CircuitBreaker("Meteo Agricole")
+
+
+def _scrape_failed(what: str, e: Exception) -> None:
+    if is_upstream_failure(e):
+        _breaker.record_failure(e)
+    else:
+        logger.warning("Error scraping %s: %s", what, describe_error(e))
+
 
 async def fetch_meteo_agricole() -> Optional[MeteoAgricoleData]:
     """
@@ -50,6 +72,8 @@ async def fetch_meteo_agricole() -> Optional[MeteoAgricoleData]:
     """
     settings = get_settings()
     url = settings.meteo_agricole_url
+    if not _breaker.allow():
+        return None
 
     try:
         from bs4 import BeautifulSoup
@@ -57,7 +81,7 @@ async def fetch_meteo_agricole() -> Optional[MeteoAgricoleData]:
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 url,
-                timeout=30.0,
+                timeout=EXTERNAL_TIMEOUT_S,
                 headers={
                     "User-Agent": "Mozilla/5.0 (compatible; LidoireFloodWatch/1.0)",
                 },
@@ -65,6 +89,7 @@ async def fetch_meteo_agricole() -> Optional[MeteoAgricoleData]:
             )
             response.raise_for_status()
             html = response.text
+        _breaker.record_success()
 
         soup = BeautifulSoup(html, "html.parser")
         text_content = soup.get_text(separator=" ", strip=True)
@@ -138,7 +163,7 @@ async def fetch_meteo_agricole() -> Optional[MeteoAgricoleData]:
         logger.warning("Meteo Agricole: beautifulsoup4 not installed, skipping")
         return None
     except Exception as e:
-        logger.warning("Error scraping Meteo Agricole: %s", e)
+        _scrape_failed("Meteo Agricole", e)
         return None
 
 
@@ -235,6 +260,17 @@ async def collect_and_store_meteo_agricole() -> int:
     return 1 if data else 0
 
 
+def peek_meteo_agricole() -> Optional[MeteoAgricoleData]:
+    """Memory-cached Meteo Agricole data for request paths (never scrapes).
+
+    Filled by the scheduler job; served up to STALE_GRACE past its expiry,
+    None otherwise (same as a failed scrape).
+    """
+    if _cache is not None and _cache_expiry and _cache_expiry + STALE_GRACE > _utcnow():
+        return _cache
+    return None
+
+
 async def fetch_nowcast_rain() -> Optional[NowcastRainData]:
     """Scrape La Meteo Agricole minute-by-minute rain nowcast.
 
@@ -246,13 +282,16 @@ async def fetch_nowcast_rain() -> Optional[NowcastRainData]:
     """
     import json
 
+    if not _breaker.allow():
+        return None
+
     try:
         from bs4 import BeautifulSoup
 
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 NOWCAST_URL,
-                timeout=30.0,
+                timeout=EXTERNAL_TIMEOUT_S,
                 headers={
                     "User-Agent": "Mozilla/5.0 (compatible; LidoireFloodWatch/1.0)",
                 },
@@ -260,6 +299,7 @@ async def fetch_nowcast_rain() -> Optional[NowcastRainData]:
             )
             response.raise_for_status()
             html = response.text
+        _breaker.record_success()
 
         # Look for Chart.js data block containing 'dansHeure'
         # The page embeds chart data in <script> tags with Chart.js config
@@ -338,7 +378,7 @@ async def fetch_nowcast_rain() -> Optional[NowcastRainData]:
         logger.warning("nowcast_rain: beautifulsoup4 not installed, skipping")
         return None
     except Exception as e:
-        logger.warning("Error scraping nowcast rain: %s", e)
+        _scrape_failed("nowcast rain", e)
         return None
 
 
@@ -423,3 +463,15 @@ async def collect_and_store_nowcast_rain() -> int:
     """
     data = await get_nowcast_rain_cached()
     return 1 if data else 0
+
+
+def peek_nowcast_rain() -> Optional[NowcastRainData]:
+    """Memory-cached nowcast for request paths (never scrapes).
+
+    Filled by the scheduler job; served up to NOWCAST_STALE_GRACE past its
+    expiry, None otherwise (same as a failed scrape).
+    """
+    if (_nowcast_cache is not None and _nowcast_cache_expiry
+            and _nowcast_cache_expiry + NOWCAST_STALE_GRACE > _utcnow()):
+        return _nowcast_cache
+    return None

@@ -586,30 +586,31 @@ async def _safe(coro, default, name: str):
 
 
 async def gather_realtime_inputs(now: Optional[datetime] = None) -> RealtimeInputs:
-    """Fetch every realtime source in parallel and fuse them (I/O)."""
+    """Fetch every realtime source in parallel and fuse them (I/O).
+
+    Netatmo, Infoclimat and Meteo Agricole are only read from the caches the
+    scheduler jobs fill (``peek_*``): a slow or dead optional API never delays
+    a request. The other sources are cache-through with short timeouts.
+    """
     from app.services.collectors.hubeau import get_multi_station_data
-    from app.services.collectors.infoclimat import get_basin_rainfall_infoclimat
-    from app.services.collectors.meteo_agricole import get_meteo_agricole_cached
-    from app.services.collectors.netatmo import get_basin_rainfall
+    from app.services.collectors.infoclimat import peek_basin_rainfall_infoclimat
+    from app.services.collectors.meteo_agricole import peek_meteo_agricole
+    from app.services.collectors.netatmo import peek_basin_rainfall
     from app.services.collectors.tide import get_current_tide_data
     from app.services.collectors.weather import get_rainfall_summary, get_soil_wind_cached
 
     now = now or _utcnow()
 
-    (
-        tide, rainfall, stations, soil_wind, meteo_agricole, netatmo, infoclimat,
-    ) = await asyncio.gather(
+    tide, rainfall, stations, soil_wind = await asyncio.gather(
         get_current_tide_data(),
         get_rainfall_summary(),
         get_multi_station_data(),
         _safe(get_soil_wind_cached(), {}, "soil/wind"),
-        _safe(get_meteo_agricole_cached(), None, "meteo agricole"),
-        _safe(get_basin_rainfall(), {}, "netatmo"),
-        _safe(get_basin_rainfall_infoclimat(), {}, "infoclimat"),
     )
     soil_wind = soil_wind or {}
-    netatmo = netatmo or {}
-    infoclimat = infoclimat or {}
+    meteo_agricole = peek_meteo_agricole()
+    netatmo = peek_basin_rainfall() or {}
+    infoclimat = peek_basin_rainfall_infoclimat() or {}
 
     fused = fuse_rainfall(rainfall, netatmo, infoclimat)
     return RealtimeInputs(

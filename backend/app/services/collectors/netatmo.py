@@ -25,6 +25,13 @@ import httpx
 
 from app.config import get_settings
 from app.models.schemas import RainfallObservation
+from app.services.cache import (
+    EXTERNAL_TIMEOUT_S,
+    CircuitBreaker,
+    TTLCache,
+    describe_error,
+    is_upstream_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +51,15 @@ _lidoire_device_cache: dict[str, dict] = {}
 
 # Serializes token refreshes (Netatmo rotates refresh tokens)
 _token_lock = asyncio.Lock()
+
+# api.netatmo.com (token refresh + getpublicdata) skipped after a timeout/5xx
+_breaker = CircuitBreaker("Netatmo")
+
+# Request paths never call Netatmo: the scheduler job (every 15 min) runs
+# get_basin_rainfall(), whose last available result is served by
+# peek_basin_rainfall() for up to LATEST_MAX_AGE_S.
+LATEST_MAX_AGE_S = 60 * 60
+_latest = TTLCache(ttl_seconds=LATEST_MAX_AGE_S, max_entries=1)
 
 # Cache for InfluxDB cumulative history + Open-Meteo fallback (get_basin_rainfall)
 HISTORY_CACHE_MINUTES = 15
@@ -200,6 +216,8 @@ async def _refresh_access_token(refresh_token: str) -> Optional[str]:
     Must be called with ``_token_lock`` held.
     """
     settings = get_settings()
+    if not _breaker.allow():
+        return None
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -213,9 +231,12 @@ async def _refresh_access_token(refresh_token: str) -> Optional[str]:
                 headers={
                     "Content-Type": "application/x-www-form-urlencoded",
                 },
-                timeout=30.0,
+                timeout=EXTERNAL_TIMEOUT_S,
             )
 
+            if response.status_code >= 500:
+                _breaker.record_failure(f"token refresh HTTP {response.status_code}")
+                return None
             if response.status_code != 200:
                 error_text = response.text
                 logger.warning("Netatmo refresh error: %s - %s", response.status_code, error_text)
@@ -247,7 +268,10 @@ async def _refresh_access_token(refresh_token: str) -> Optional[str]:
             return access_token
 
     except Exception as e:
-        logger.warning("Error refreshing Netatmo token: %s", e)
+        if is_upstream_failure(e):
+            _breaker.record_failure(e)
+        else:
+            logger.warning("Error refreshing Netatmo token: %s", describe_error(e))
         return None
 
 
@@ -276,6 +300,8 @@ async def fetch_public_stations_data(
     if (_stations_cache_expiry and _stations_cache_expiry > now
             and cache_key in _stations_cache):
         return _stations_cache[cache_key]
+    if not _breaker.allow():
+        return []
 
     token = await _get_access_token()
     if not token:
@@ -302,10 +328,11 @@ async def fetch_public_stations_data(
                     "filter": True,
                 },
                 headers={"Authorization": f"Bearer {token}"},
-                timeout=30.0,
+                timeout=EXTERNAL_TIMEOUT_S,
             )
             response.raise_for_status()
             data = response.json()
+            _breaker.record_success()
 
             stations = []
             for station in data.get("body", []):
@@ -322,11 +349,13 @@ async def fetch_public_stations_data(
 
             return stations
 
-    except httpx.HTTPStatusError as e:
-        logger.info(f"Netatmo API error: {e.response.status_code}")
-        return []
     except Exception as e:
-        logger.warning(f"Error fetching Netatmo data: {e}")
+        if is_upstream_failure(e):
+            _breaker.record_failure(e)
+        elif isinstance(e, httpx.HTTPStatusError):
+            logger.info(f"Netatmo API error: {e.response.status_code}")
+        else:
+            logger.warning("Error fetching Netatmo data: %s", describe_error(e))
         return []
 
 
@@ -740,7 +769,7 @@ async def get_basin_rainfall() -> dict:
     position_order = {"amont": 0, "milieu": 1, "aval": 2, "unknown": 3}
     lidoire_stations.sort(key=lambda x: position_order.get(x.get("position", "unknown"), 3))
 
-    return {
+    result = {
         "available": True,
         "timestamp": _utcnow(),
         "stations_count": len(stations),
@@ -754,6 +783,27 @@ async def get_basin_rainfall() -> dict:
         } if closest else None,
         "lidoire_stations": lidoire_stations,  # Priority stations on Lidoire basin
         "stations": other_stations[:10],  # Other closest stations (limit 10)
+    }
+    _latest.set("basin", result)
+    return result
+
+
+def peek_basin_rainfall() -> dict:
+    """Last available Netatmo basin rainfall, never calling the API.
+
+    Used by request paths (realtime inputs, /api/realtime/*): the data is
+    fetched by the scheduler job. Unavailable (same shape as a failed fetch)
+    when no result younger than LATEST_MAX_AGE_S exists.
+    """
+    cached = _latest.get("basin")
+    if cached is not None:
+        return cached
+    return {
+        "available": False,
+        "stations_count": 0,
+        "rain_1h_avg_mm": 0.0,
+        "rain_24h_avg_mm": 0.0,
+        "auth_url": "/api/auth/netatmo",
     }
 
 

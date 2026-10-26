@@ -471,6 +471,9 @@ async def detect_episodes_endpoint(
     Returns a list of detected episodes for user validation.
     You can then confirm/reject each episode to refine the risk model.
 
+    Any range can be requested at once: data is read in 30-day windows
+    (bounded memory) with the same result as a single pass.
+
     Example: POST /api/episodes/detect?start_date=2022-11-01
     """
     kwargs: dict = {"start_date": start_date, "end_date": end_date}

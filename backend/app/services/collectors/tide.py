@@ -22,6 +22,7 @@ import httpx
 
 from app.config import get_settings
 from app.models.schemas import TideData, TideForecast, TideType
+from app.services.cache import EXTERNAL_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ async def fetch_open_meteo_marine() -> list[TideData]:
                     "forecast_days": 7,
                     "timezone": "UTC",
                 },
-                timeout=30.0,
+                timeout=EXTERNAL_TIMEOUT_S,
             )
             response.raise_for_status()
             data = response.json()
@@ -183,7 +184,7 @@ async def fetch_shom_api() -> list[TideData]:
                 headers={
                     "Authorization": f"Bearer {settings.shom_api_key}",
                 },
-                timeout=30.0,
+                timeout=EXTERNAL_TIMEOUT_S,
             )
             response.raise_for_status()
             data = response.json()
