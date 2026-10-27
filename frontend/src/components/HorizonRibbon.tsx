@@ -227,7 +227,8 @@ export function HorizonRibbonView({
   const selRain = sel ? rain.blocks.find((b) => sel.t > b.t0 && sel.t <= b.t1) ?? null : null
 
   // Tide row
-  const tides = tideMarks(forecast?.high_tides, t0, t1)
+  // Only high waters still to come: the first one is the outlook's next_high_tide (verdict, tide card)
+  const tides = tideMarks(forecast?.high_tides, Math.max(t0, now.getTime()), t1)
   const vigi = realtime?.river?.source === 'vigicrues' ? vigicruesMarks(realtime.river.forecast_scenarios, t0, t1) : []
   const vigiTop = vigi.reduce<(typeof vigi)[number] | null>((b, v) => (b === null || v.mean_m > b.mean_m ? v : b), null)
   const tideY = R2.y + R2.h / 2 - 4
