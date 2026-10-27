@@ -139,3 +139,13 @@ def test_security_nginx_upload_limit_only_on_observations():
     assert "client_max_body_size 9m;" in block
     assert "proxy_pass http://backend:8000;" in block
     assert conf.count("client_max_body_size") == 2
+
+
+def test_security_nginx_tls_snippet_is_optional():
+    conf = NGINX.read_text()
+    # Helm tls.enabled mounts the server-level TLS snippet there; a glob that
+    # matches nothing is a no-op, so docker-compose keeps plain HTTP on 8080.
+    assert "    include /etc/nginx/server.d/*.conf;" in conf
+    assert "listen 8443" not in conf
+    reload = REPO_ROOT / "frontend" / "docker-entrypoint.d" / "90-lfw-tls-reload.sh"
+    assert '[ -f "$cert" ] || exit 0' in reload.read_text()

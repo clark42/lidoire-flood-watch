@@ -121,6 +121,8 @@ frontend:
     # (10.32.0.0/20); lidoire.ts.kamorion.cloud resolves to it.
     clusterIP: 10.32.0.100
     port: 80
+    # Only exposed when tls.enabled (-> container port 8443)
+    httpsPort: 443
   securityContext:
     runAsUser: 101
     runAsGroup: 101
@@ -132,6 +134,25 @@ frontend:
     limits:
       cpu: 100m
       memory: 128Mi
+
+# HTTPS terminated by the frontend nginx itself (tailnet access, no Ingress).
+# When enabled: a cert-manager Certificate for tls.host (DNS-01, no public
+# exposure needed) stored in tls.secretName, mounted read-only in the frontend
+# pod; nginx serves the dashboard on 8443 (TLS 1.2+, HTTP/2) and answers 301
+# to https on 8080; probes move to 8443 (scheme HTTPS); Service frontend gets
+# a second port httpsPort -> 8443. nginx reloads itself every
+# reloadIntervalSeconds to pick up a renewed certificate (no Reloader).
+# Requires the frontend image with frontend/docker-entrypoint.d/ (reload) and
+# the server.d include of frontend/nginx.conf. Exclusive with ingress.enabled
+# (the Ingress targets port http, which would redirect in a loop).
+# Also switch backend.config.frontendUrl / corsOrigins to https.
+tls:
+  enabled: false
+  host: ""
+  issuer: letsencrypt-dns01-cloudflare
+  issuerKind: ClusterIssuer
+  secretName: lidoire-frontend-tls
+  reloadIntervalSeconds: 43200
 
 # Optional public exposure (disabled: the dashboard is tailnet-only). When
 # enabling it, also update backend.config.frontendUrl / corsOrigins.

@@ -1,4 +1,5 @@
 {{- $c := .Values.frontend -}}
+{{- $tls := .Values.tls -}}
 # Fixed ClusterIP announced on the headscale tailnet (subnet router 10.32.0.0/20).
 apiVersion: v1
 kind: Service
@@ -17,6 +18,11 @@ spec:
     - name: http
       port: {{ $c.service.port }}
       targetPort: http
+    {{- if $tls.enabled }}
+    - name: https
+      port: {{ $c.service.httpsPort }}
+      targetPort: https
+    {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,6 +40,12 @@ spec:
     metadata:
       labels:
         {{- include "lfw.labels" (dict "ctx" $ "component" "frontend") | nindent 8 }}
+      {{- if $tls.enabled }}
+      annotations:
+        # Roll the pod when the nginx TLS snippet changes (the certificate
+        # itself is picked up by the periodic reload, no restart)
+        checksum/nginx-tls: {{ include "lfw.frontendTlsSnippet" $ | sha256sum }}
+      {{- end }}
     spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
@@ -49,18 +61,38 @@ spec:
           env:
             - name: NGINX_ENTRYPOINT_QUIET_LOGS
               value: "1"
+            {{- if $tls.enabled }}
+            # frontend/docker-entrypoint.d/90-lfw-tls-reload.sh
+            - name: LFW_TLS_RELOAD_INTERVAL
+              value: {{ $tls.reloadIntervalSeconds | int | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080
+            {{- if $tls.enabled }}
+            - name: https
+              containerPort: 8443
+            {{- end }}
+          {{- /* With TLS, 8080 redirects every path: probe the TLS server */}}
           readinessProbe:
             httpGet:
               path: /index.html
+              {{- if $tls.enabled }}
+              port: https
+              scheme: HTTPS
+              {{- else }}
               port: http
+              {{- end }}
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /index.html
+              {{- if $tls.enabled }}
+              port: https
+              scheme: HTTPS
+              {{- else }}
               port: http
+              {{- end }}
             periodSeconds: 30
             failureThreshold: 5
           resources:
@@ -69,7 +101,34 @@ spec:
             # pid file and proxy/client temp paths of nginx-unprivileged
             - name: tmp
               mountPath: /tmp
+            {{- if $tls.enabled }}
+            # Server-level include of frontend/nginx.conf (listen 8443 ssl)
+            - name: nginx-tls
+              mountPath: /etc/nginx/server.d
+              readOnly: true
+            # Whole directory, no subPath: the kubelet updates the files in
+            # place when cert-manager renews the certificate
+            - name: tls-cert
+              mountPath: /etc/nginx/tls
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        {{- if $tls.enabled }}
+        - name: nginx-tls
+          configMap:
+            name: frontend-nginx-tls
+        # Created by cert-manager (Certificate frontend-tls): the pod waits in
+        # ContainerCreating until the first issuance
+        - name: tls-cert
+          secret:
+            secretName: {{ $tls.secretName }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}

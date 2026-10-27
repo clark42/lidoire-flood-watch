@@ -28,6 +28,11 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Copy nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# Periodic reload when a TLS certificate is mounted (Helm tls.enabled); no-op
+# without certificate (docker-compose)
+COPY --chmod=0755 docker-entrypoint.d/90-lfw-tls-reload.sh /docker-entrypoint.d/
+
+# 8443 (TLS) is only served when the Helm chart mounts its server snippet
 EXPOSE 8080
 
 CMD ["nginx", "-g", "daemon off;"]
