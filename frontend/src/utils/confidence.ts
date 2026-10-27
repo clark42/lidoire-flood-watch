@@ -1,6 +1,7 @@
 // Confidence of the verdict: a list of checkable reasons, never a percentage
-import type { OutlookConfidence, SourceFreshness, SourceFreshnessName } from '../types'
+import type { EnsembleForecast, OutlookConfidence, SourceFreshness, SourceFreshnessName } from '../types'
 import { formatAge, parseApiDate } from './time'
+import { ensembleAgreement } from './ensemble'
 
 export type ConfidenceKind = 'ok' | 'warn' | 'info'
 
@@ -30,13 +31,16 @@ function splitNote(note: string): { lead: string; text: string } {
 
 /**
  * Reasons shown in the confidence block: fresh primary station and score
- * (from /api/status), the outlook notes (degraded inputs first), and the
- * standing reminder that the model is tuned on few floods.
+ * (from /api/status), the agreement of the rain ensembles (when the
+ * ensemble payload is given; `undefined` = not asked, `null` = unavailable),
+ * the outlook notes (degraded inputs first), and the standing reminder that
+ * the model is tuned on few floods.
  */
 export function confidenceItems(
   confidence: Pick<OutlookConfidence, 'notes'>,
   sources: Partial<Record<SourceFreshnessName, SourceFreshness>> | null | undefined,
   now: number = Date.now(),
+  ensemble?: EnsembleForecast | null,
 ): ConfidenceItem[] {
   const items: ConfidenceItem[] = []
 
@@ -53,6 +57,8 @@ export function confidenceItems(
         (scoreAt ? `, score recalculé ${formatAge(scoreAt, now)}.` : '.'),
     })
   }
+
+  if (ensemble !== undefined) items.push(ensembleAgreement(ensemble, now))
 
   const warnings: ConfidenceItem[] = []
   const infos: ConfidenceItem[] = []

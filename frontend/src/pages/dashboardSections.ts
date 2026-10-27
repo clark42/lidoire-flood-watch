@@ -1,6 +1,6 @@
 // Sections of the Dashboard, in reading order (redesign spec, section 2):
 // decide (5 s), understand why (30 s), then explore. Sections still to
-// come (flood plan, analogs, 30-day GloFAS) are added with their panels.
+// come (analogs, 30-day GloFAS) are added with their panels.
 
 export interface DashboardSectionDef {
   id: string
@@ -18,25 +18,33 @@ export const DASHBOARD_SECTIONS = [
     label: 'Pourquoi',
     title: 'Pourquoi ce niveau',
     description:
-      "Le moulin n'est jamais mesuré : on regarde ce qui l'inonde (remous de la Dordogne et de la marée, crue propre de la Lidoire, nappe) et le détail du score.",
+      "Le moulin n'est jamais mesuré : on regarde ce qui l'inonde. D'abord la crue propre de la Lidoire (ruissellement), puis la Dordogne aval qui la freine, le débordement direct (rare) et la nappe. Chaque rail place la valeur du moment parmi les crues passées.",
   },
   {
     id: 'prochaines-heures',
     label: '72 h',
     title: 'Les prochaines heures',
-    description: 'Score prévu, pluie immédiate et prévisions d’ensemble (heure de Paris).',
+    description: 'Score prévu, pluie d’ensemble, pleines mers et Pessac sur un même axe (heure de Paris, nuits grisées).',
   },
   {
     id: 'agir',
     label: 'Agir',
     title: 'Agir',
-    description: 'La liste du moulin pour le niveau prévu, et le relevé terrain qui manque au modèle.',
+    description: 'La liste du moulin pour le niveau prévu, le relevé terrain qui manque au modèle, et ce qui ferait changer d’avis.',
   },
   {
     id: 'replay',
-    label: 'Replay',
-    title: 'Revoir une date',
-    description: 'TimeMachine : le tableau de bord tel qu’il était à une date passée ou lors d’une crue.',
+    label: 'Coupe & replay',
+    title: 'De la confluence au moulin',
+    description:
+      'Profil en long de la Lidoire en m NGF : jusqu’où remonte la Dordogne. Rejouez 10 jours ou une crue, les séries défilent ensemble.',
+  },
+  {
+    id: 'plan',
+    label: 'Plan des crues',
+    title: 'Plan des crues',
+    description:
+      'Chaque épisode labellisé selon ses deux moteurs : le débit de l’Eyraud (ruissellement, analogue de la Lidoire) et le niveau de Pessac (remous). Le point du jour et sa trace.',
   },
   {
     id: 'carte',
