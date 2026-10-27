@@ -175,6 +175,11 @@ src/
 ├── utils/time.ts        # parseApiDate (UTC) + formatParis, formatParisRelative ("demain a 11:33") : tout en Europe/Paris
 ├── utils/format.ts      # Libelles FR des niveaux, formatDistanceKm, formatNumber / formatQuantity (fr-FR, "–" si absent)
 ├── utils/levels.ts      # Ordre et rang des niveaux, levelFromScore (15/35/55), buildVerdict (pire niveau 0-72 h)
+├── utils/verdictWhy.ts  # Phrase "pourquoi" du verdict : ruissellement d'abord (Eyraud, pluie tombee et prevue), Dordogne seulement si Pessac >= jaune
+├── utils/stations.ts    # Station de maree (poids 0, Libourne) : "maree, hors score", ton neutre partout
+├── utils/frenchText.ts  # accentLabel : accents des libelles envoyes sans accent par le backend (affichage seulement)
+├── utils/userText.ts    # Notes backend sans chemin /api/ (Netatmo non connecte -> lien "Connecter Netatmo")
+├── utils/sectionDisclosure.ts # Sections repliables : repliees sous 640 px, ouvertes sur desktop et par #ancre
 ├── utils/confidence.ts  # Raisons de confiance (Pessac a jour, notes de l'outlook, "cale sur 5 crues")
 ├── utils/scale.ts       # linearScale / logScale / niceTicks pour les SVG maison
 ├── utils/rail.ts        # PercentileRail : domaine (log ou lineaire), positions, empilement des episodes, comparaison aux crues
@@ -185,17 +190,16 @@ src/
 ├── utils/lidoireProfile.ts # PUR, miroir de services/lidoire_profile.py : Z_c, remous (plan d'eau horizontal), marches du terrain, geometrie du profil (d3-scale)
 ├── utils/replay.ts      # PUR : presets du replay (pics des labels a l'heure), index horaire, valeurs a t (enveloppe 12.5 h causale), phrase factuelle par preset
 ├── utils/phasePlane.ts  # PUR : plan des crues (log Eyraud x Pessac), traces journalieres (fenetres 1d datees par leur fin), lecture et legende calculees
-├── hooks/useChartFrame.ts # useElementWidth (ResizeObserver), usePrefersReducedMotion, useInView (fetch a l'approche)
+├── hooks/useChartFrame.ts # usePrefersReducedMotion, useInView (fetch a l'approche) ; largeur : hooks/useElementWidth.ts
 ├── utils/observations.ts # Libelles et couleurs des types d'observation
 ├── utils/mapGeo.ts      # d3-geo : projection equirectangulaire a parallele standard (radar place par sa bbox), fitMap, echelle, classes de percentile
 ├── utils/basinMap.ts    # Modele de la carte (cadre, rivieres, troncons, stations, marqueurs, radar), pur
 ├── utils/analogs.ts, glofasFan.ts, forecastSkill.ts, sourceHealth.ts # Logique pure des panneaux terrain et confiance
 ├── geo/basinLines.json  # Rivieres BD TOPAGE et troncons Vigicrues simplifies (9 Ko) : non servis par l'API
-├── hooks/useApiResource.ts # GET partage par cle (une requete en vol, reutilisation 30 s), panneaux terrain et confiance
 ├── theme/               # theme.ts (preference systeme/clair/sombre, localStorage 'lfw_theme'), contrast.ts (WCAG)
 ├── styles/tokens.css    # Jetons clair/sombre (source unique), styles/fonts.css (@font-face woff2), styles/field.css (SVG carte, eventail, prevu/realise)
 ├── hooks/useRiskOutlook.ts # GET /api/risk/outlook toutes les 10 min (verdict + liste)
-├── hooks/useSharedResource.ts # Un fetch partage par route (indicators, drivers, geo/profile, ensemble, vigilance, forecast 168 h)
+├── hooks/useSharedResource.ts # Seul hook de donnees : un fetch partage par cle (cle null = rien, cle parametree `risk/analogs@<date>`, sans periode = une fois par page) ; indicators, drivers, geo/profile, ensemble, vigilance, forecast 168 h, radar bassin
 ├── hooks/useElementWidth.ts   # Largeur reelle des SVG (ResizeObserver), textes a taille fixe sur mobile
 ├── tooltipContent.ts    # Dictionnaire centralise des textes de tooltips
 ├── pages/
@@ -215,7 +219,7 @@ src/
     ├── ForecastSkillPanel.tsx (Configuration)
     ├── ReplayPanel.tsx  # Coupe & replay : LidoireProfile (+ Readout, curseur de plancher), ReplayScrubber (presets, lecture/pause, pas de 6 h en mouvement reduit), SyncStrips (Pessac/Libourne/Z_c NGF, Eyraud, score + shadows, pluie)
     ├── FloodPlanPanel.tsx # Plan des crues : FloodPhasePlane (episodes de /api/episodes/drivers, formes par issue, point du jour, traces 21 j et fevriers 2024/2026), legende, tableau
-    ├── BasinRainfallGauge.tsx, SoilConditionsPanel.tsx, NowcastRainChart.tsx
+    ├── BasinRainfallGauge.tsx, SoilConditionsPanel.tsx
     ├── HydroMap.tsx, TimeMachineBanner.tsx, TimelineSourceSelector.tsx
     ├── InfoTooltip.tsx, DataCard.tsx
     ├── VigilanceBadges.tsx (pastilles + mot, slot du verdict), ObservationQuickForm.tsx (Dashboard)
@@ -226,7 +230,6 @@ src/
     ├── ForecastVsObserved.tsx # /api/risk/forecast-skill : prevu vs realise, MAE, contingence, etat vide honnete
     ├── SourceHealth.tsx # /api/status.sources groupees (critiques, entrees, indicateurs, probabiliste), forme + mot par statut
     ├── ObservationList.tsx, EpisodeObservationsPanel.tsx (Episodes)
-    ├── EnsemblePanel.tsx  # Radar bassin, probabilites de pluie (hors score ; l'eventail GloFAS est GlofasFan)
     ├── BasinLayer.tsx   # Polygone du bassin sur HydroMap
     └── ApiKeyPanel.tsx  # Saisie de la cle API (localStorage)
 ```
@@ -304,7 +307,7 @@ Nouvelles series et routes, JAMAIS lues par le modele v3.4 (test `test_risk_mode
 - **Radar OPERA** (`opera_radar.py`, CC BY 4.0, attribution affichee) : composite ACRR (cumul 1 h finissant a l'heure du fichier) toutes les 15 min, 2 km, LAEA, COG `s3.waw3-1.cloudferro.com/openradar-24h` (24 h glissantes, ~10-20 min de latence, des creneaux manquent). Listing S3, en-tete + seules tuiles sous le bassin par requetes Range (64 Ko + une tuile de ~100-200 Ko au lieu de 4 Mo), lecteur TIFF maison (deflate, predicteurs 1/2/3) et LAEA ellipsoidale (Snyder, ecart < 1 mm avec pyproj) : aucune dependance ajoutee. Moyenne ponderee par la part de chaque pixel dans le polygone (8 x 8 sous-points), NaN = pas d'echo (0 mm), -9999000 = hors couverture (`coverage`). Mesure `radar_rain` (tags `source=opera`, `basin=LIDOIRE`, `product=ACRR` ; champs `basin_mean_mm`, `max_pixel_mm`, `coverage`, `quality`, `pixels`), images manquantes des 6 dernieres heures reprises (12 max par passage). `GET /api/realtime/radar` : cumuls 1/3/6/24 h = somme des images aux heures pleines depuis la derniere, `complete` si aucune heure manque, heure et age de la derniere image.
 - **GloFAS** (`glofas.py`) : Open-Meteo Flood `forecast_v4&ensemble=true`, 51 membres, 30 j, maille 44.875/-0.025 (proxy modelise, aucune jauge). Par jour : p10/p50/p90, min/max, P(> p95) et P(> p99) de la reanalyse `consolidated_v4` de la meme maille (1997-2025 : p95 3.12, p99 6.35 m3/s), climatologie calculee une fois (`glofas_climatology`). Chaque run est stocke (`glofas_forecast`, tags `cell`, `run` = date d'init via `meta.json`, `lead` en jours ; pas d'archive amont).
 - **Pluie d'ensemble** (`ensemble_rain.py`) : Open-Meteo Ensemble, `icon_d2` (20 membres, ~2.5 j), `icon_eu` (40, ~5.5 j), `ecmwf_ifs025` (51, 15 j), 3 points du bassin ponderes par l'aire des sous-bassins (`ensemble_rain_points`). Pluie horaire = cumul de l'heure precedente, fenetre (debut, fin]. P(24 h > 25/40/60 mm) et P(72 h > 50/80/120 mm) (seuils lus dans `get_model_params`), quantiles ; `blend` = moyenne des modeles couvrant la fenetre. Stockage de chaque run (`ensemble_rain`, tags `model`, `run` = `YYYY-MM-DDTHHZ`, `window` = `24h`/`72h`/`run`, `lead` en heures), fenetres ancrees sur l'init du run ; `meta.json` DWD perime => run ancre sur l'heure de collecte (`run_init_known=0`).
-- `GET /api/forecast/ensemble` : `rain.horizons["24h"|"72h"]` (fenetres depuis l'heure courante, par modele + `blend`) et `glofas.days` ; cache-through 3 h en memoire, la route n'ecrit jamais. Frontend : `HorizonRibbon` (fenetres 24 h, mediane, p10-p90, membre max), accord des modeles dans `ConfidencePanel`, `EnsemblePanel` (probabilites, bande radar) dans la section 72 h, `GlofasFan` (eventail GloFAS, section 30 jours).
+- `GET /api/forecast/ensemble` : `rain.horizons["24h"|"72h"]` (fenetres depuis l'heure courante, par modele + `blend`) et `glofas.days` ; cache-through 3 h en memoire, la route n'ecrit jamais. Frontend : `HorizonRibbon` (fenetres 24 h, mediane, p10-p90, membre max), accord des modeles dans `ConfidencePanel`, part des membres au-dela des seuils 24 h au curseur du ruban, radar bassin 1/3/6/24 h et nowcast 1 h en une ligne sous le ruban (EnsemblePanel et NowcastRainChart supprimes : chaque valeur une seule fois), `GlofasFan` (eventail GloFAS, section 30 jours).
 - Timeline : `include_radar=true` (`radar:LIDOIRE`, images aux heures pleines, sommes par fenetre au-dela de 1 h) et `include_glofas=true` (`glofas:LIDOIRE`, mediane du run le plus recent par jour) ; series stockees seulement, pas de cache-through.
 
 ### Profil en long, valeurs aux crues, analogues, image radar (hors modele)
@@ -544,9 +547,12 @@ Precautions v4-beta : 5 crues dont 4 de ruissellement (IC 95% de 5/5 = 48-100%, 
 - **Contraste** : `src/styles/tokens.test.ts` verifie WCAG AA (4,5:1) des paires texte/fond des deux themes et 3:1 pour l'anneau de focus. Les couleurs de niveau ne servent qu'aux marques et fonds pales, jamais au texte.
 - **Polices** auto-hebergees (`@fontsource/*`, latin, woff2 seul, `src/styles/fonts.css`) : Barlow Condensed (chiffres, titres, `font-display` / `.num` / `.eyebrow`), Atkinson Hyperlegible (texte, `font-sans`), IBM Plex Mono (horodatages, `font-mono`). Jamais Google Fonts (`font-src 'self'`).
 - **Niveaux** : `LevelMeter` (pastilles 1 a 4 + mot + couleur), jamais la couleur seule. **Valeurs** : `ValueTag` `measured` | `estimated` (≈) | `model` (~) | `analog` | `mockup` | `unavailable` ; une prevision sans bande d'incertitude le dit ("sans bande").
-- **Verdict** : pire niveau entre maintenant et 72 h (horizons de l'outlook + score temps reel) -> "Rien a faire" / "Surveiller" / "Preparer le moulin" / "Agir maintenant" ; pourquoi = facteurs du pic 72 h ; confiance = liste de raisons, jamais un pourcentage.
-- **Mobile** : 375 px, goutiere 16 px (`.page-gutter`, safe-area), cibles 44 px, barre de sections collante et defilante ; deux colonnes a partir de 960 px. `prefers-reduced-motion` coupe animations, transitions et defilement doux.
+- **Verdict** : pire niveau entre maintenant et 72 h (horizons de l'outlook + score temps reel) -> "Rien a faire" / "Surveiller" / "Preparer le moulin" / "Agir maintenant" ; pourquoi = "Score v3.4 au plus X/100 ..." puis les mecanismes (Eyraud Q, tendance 3 h, moyenne 24 h, seuil ; pluie tombee 24/72 h ; pluie prevue ; Dordogne en second seulement si Pessac max 12,5 h >= jaune), les facteurs v3.4 restent dans "Detail par horizon" (decomposition du score) ; confiance = liste de raisons, jamais un pourcentage. Prochaine PM (heure, coefficient) = `outlook.next_high_tide` partout (verdict, carte maree, carte detaillee, 1re PM du ruban) ; vigilances : heures d'emission Vigicrues et Meteo-France.
+- **Mobile** : 375 px, goutiere 16 px (`.page-gutter`, safe-area), cibles 44 px, barre de sections collante et defilante ; deux colonnes a partir de 960 px. Sections repliables (`collapsible` dans dashboardSections.ts : Coupe & replay, Plan des crues, Analogues, Carte, Pluie et sol, Fiabilite) : titre = bouton aria-expanded, contenu `hidden`, repliees sous 640 px, ouvertes sur desktop, une ancre (#replay) ou la barre de sections les ouvre ; jamais Maintenant, Pourquoi, Agir. 12,4 ecrans a 390 px (18 avant). Libelles SVG gardes dans le cadre (`labelBoxX`, `centredTextX`). `prefers-reduced-motion` coupe animations, transitions et defilement doux.
 - **Bundle** : chemin critique du Dashboard ~112 Ko gzip (entree 60 + Dashboard 38 avec d3-scale/d3-shape + CSS 14) ; recharts (~87 Ko) et BasinMap (d3-geo + rivieres, ~17 Ko) en chunks differes ; leaflet (~48 Ko + 6 Ko de CSS) seulement sur "carte detaillee".
+- **Remous** : une seule valeur affichee, l'eau connectee (`connected_distance_below_mill_m`, `backwaterGapBelowMill`) dans la carte mecanisme (heure du profil), le profil et le recit du replay (heure du curseur, valeur serveur quand elle est en cache).
+- **Libourne** (poids 0) : "maree, hors score", jamais colore par ses seuils (panneau des stations, carte selectionnee, carte detaillee ; ligne "pincement" supprimee).
+- **Textes** : accents partout (libelles backend via `accentLabel`), aucun chemin /api/ affiche (`plainText`).
 - **Section Pourquoi** (physique du "Controle physique du remous") : 1. crue propre de la Lidoire (Eyraud Q `analogue`, pluie passee et prevue), 2. Dordogne aval en modulateur (Pessac max 12,5 h, portee du remous `connected_distance_below_mill_m` de `/api/geo/profile`), 3. debordement direct (seuil inconnu = bande entre le plus haut Pessac reste sec et Pessac au terrain du moulin, 12,0 - 3,33 m), 4. nappe. Etats : cercle calme, triangle a surveiller, carre actif. Chaque rail : valeur du moment, episodes de `/api/episodes/drivers` par forme (disque inonde, anneau presque, croix pas inonde, pointille a annoter), seuils `*` = provisoires (en echantillon).
 - **Limites connues** : maintenant = Eyraud instantane contre max 12,5 h aux crues (pas de max 12,5 h dans `/api/indicators`) ; pluie d'ensemble par fenetres de 24 h (pas de serie horaire) ; pas de quantiles p50/p90/p99 en unites physiques dans l'API (rails gradues par les seuils de config).
 - **Carte** : SVG statique (pas de pan, ne capture pas le defilement), cadre = bassin + 10 km (emprise de l'image radar) + stations a moins de 25 km, les autres listees "hors cadre". Percentiles servis seulement pour Pessac et l'Eyraud (`/api/risk/analogs.situation`) : les autres rivieres restent neutres ("percentile non servi"). Coordonnees Eyraud / Mouliets reprises de `config.py` (non servies par `/api/indicators`). Flux de la Lidoire et pulsation du moulin coupes sous `prefers-reduced-motion`.
