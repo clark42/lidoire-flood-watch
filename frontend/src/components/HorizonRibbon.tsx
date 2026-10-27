@@ -1,14 +1,14 @@
 import { useId, useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { line } from 'd3-shape'
 import { scaleLinear } from 'd3-scale'
-import type { EnsembleForecast, ForecastData, RealtimeData } from '../types'
+import type { EnsembleForecast, ForecastData, NowcastRainData, RadarBasinRain, RealtimeData } from '../types'
 import { useElementWidth } from '../hooks/useElementWidth'
-import { useEnsembleForecast, useRiskForecast } from '../hooks/useSharedResource'
+import { useEnsembleForecast, useRadarBasinRain, useRiskForecast } from '../hooks/useSharedResource'
 import { availableModels, ENSEMBLE_MODEL_SHORT, modelLabel } from '../utils/ensemble'
 import { LEVEL_THRESHOLDS } from '../utils/levels'
 import { PESSAC_STATION_ID } from '../utils/mechanisms'
 import { formatNumber, RISK_LEVEL_LABELS } from '../utils/format'
-import { formatParis } from '../utils/time'
+import { formatAge, formatParis, parseApiDate } from '../utils/time'
 import {
   forecastPoints,
   levelRuns,
@@ -25,6 +25,8 @@ import {
   type RibbonHours,
 } from '../utils/ribbon'
 import ValueTag from './ui/ValueTag'
+import InfoTooltip from './InfoTooltip'
+import { TOOLTIPS } from '../tooltipContent'
 
 const LEVEL_FILL = {
   green: 'var(--lv-green)',
@@ -60,10 +62,84 @@ export interface HorizonRibbonViewProps {
   forecast: ForecastData | null
   ensemble: EnsembleForecast | null
   realtime: RealtimeData | null
+  /** OPERA radar rain over the basin (undefined = not asked, null = unavailable) */
+  radar?: RadarBasinRain | null
   now: Date
   initialHours?: RibbonHours
   initialModel?: string
   initialWidth?: number
+}
+
+const RADAR_WINDOWS = ['1h', '3h', '6h', '24h'] as const
+
+/**
+ * Observed rain, just before the ribbon starts: OPERA radar over the basin
+ * (last 1 / 3 / 6 / 24 h) and the next-hour nowcast. One compact row.
+ */
+export function ObservedRainRow({
+  radar,
+  nowcast,
+  now,
+}: {
+  radar?: RadarBasinRain | null
+  nowcast?: NowcastRainData | null
+  now: Date
+}) {
+  if (radar === undefined && !nowcast) return null
+  const last = parseApiDate(radar?.last_image_time ?? null)
+  return (
+    <div className="mt-3 grid gap-1.5 rounded-lg border border-line px-3 py-2 text-[13.5px] text-ink-2" data-testid="observed-rain">
+      <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="inline-flex items-center gap-1 font-bold text-ink">
+          Pluie observée sur le bassin (radar)
+          <InfoTooltip {...TOOLTIPS.radarBasin} />
+        </span>
+        {radar?.available ? (
+          <>
+            {RADAR_WINDOWS.map((w) => {
+              const win = radar.windows[w]
+              return (
+                <span key={w} className="whitespace-nowrap">
+                  {w.replace('h', ' h')}{' '}
+                  <b className="num text-[15px] text-ink">{win?.mm != null ? formatNumber(win.mm, 1) : '–'}</b>
+                  {win && !win.complete && <span title="heures manquantes">*</span>}
+                </span>
+              )
+            })}
+            <span>mm</span>
+            <ValueTag kind="measured" className="text-[11px]" />
+            {last && (
+              <span className="font-mono text-[11.5px] text-ink-3">
+                image {formatParis(last, 'HH:mm')} ({formatAge(last, now.getTime())})
+              </span>
+            )}
+          </>
+        ) : radar === null ? (
+          <span>indisponible.</span>
+        ) : radar ? (
+          <span>indisponible{radar.note ? ` : ${radar.note}` : ''}.</span>
+        ) : (
+          <span className="text-ink-3">chargement…</span>
+        )}
+      </p>
+      {nowcast && (
+        <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="inline-flex items-center gap-1 font-bold text-ink">
+            Prochaine heure
+            <InfoTooltip {...TOOLTIPS.timelineNowcast} />
+          </span>
+          <span>
+            <b className="num text-[15px] text-ink">{formatNumber(nowcast.total_60min_mm, 1)}</b> mm
+            {nowcast.rain_minutes > 0
+              ? `, ${nowcast.rain_minutes} min de pluie, intensité max ${formatNumber(nowcast.max_intensity_mm * 60, 1)} mm/h`
+              : ', pas de pluie prévue'}
+          </span>
+          <ValueTag kind="model" className="text-[11px]" />
+          <span className="font-mono text-[11.5px] text-ink-3">{nowcast.commune}</span>
+        </p>
+      )}
+    </div>
+  )
 }
 
 /** Segmented control (aria-pressed buttons, 44 px targets on mobile). */
@@ -109,6 +185,7 @@ export function HorizonRibbonView({
   forecast,
   ensemble,
   realtime,
+  radar,
   now,
   initialHours = 72,
   initialModel,
@@ -400,6 +477,15 @@ export function HorizonRibbonView({
           ) : (
             'hors horizon'
           )}
+          {selRain && rain.thresholds.length > 0 && (
+            <>
+              {' '}
+              · part des membres au-delà de {rain.thresholds.map((t) => formatNumber(t, 0)).join(' / ')} mm :{' '}
+              <b className="text-ink">
+                {rain.thresholds.map((t) => formatNumber((selRain.prob[String(t)] ?? 0) * 100, 0)).join(' / ')} %
+              </b>
+            </>
+          )}
           {nextTide && (
             <>
               {' '}
@@ -414,9 +500,14 @@ export function HorizonRibbonView({
         <ValueTag kind="model" /> Score et Pessac : prévision v{forecast?.model_version ?? '3.4'} de{' '}
         <span className="font-mono">{generated}</span>, en pointillé car <b className="text-ink-2">sans bande</b> d&apos;incertitude.
         Pluie : ensemble par fenêtres de 24 h depuis l&apos;émission, barre = médiane, bande = p10-p90, tirets = membre le plus
-        pluvieux. <ValueTag kind="estimated" /> Pleines mers estimées à la confluence (marée modèle décalée), taille = coefficient ;
+        pluvieux ; au curseur, part des membres au-delà des seuils 24 h <InfoTooltip {...TOOLTIPS.ensembleRain} />.{' '}
+        <ValueTag kind="estimated" /> Pleines mers estimées à la confluence (marée modèle décalée), taille = coefficient ;
         carrés noirs = prévision officielle Vigicrues à Libourne. Zones grisées : nuits (20 h-7 h, heure de Paris).
+        {' '}Ensembles et radar : informatifs, hors score.
+        {ensemble?.rain?.attribution && <span className="block">{ensemble.rain.attribution}</span>}
       </p>
+
+      <ObservedRainRow radar={radar} nowcast={realtime?.nowcast_rain} now={now} />
     </div>
   )
 }
@@ -425,6 +516,7 @@ export function HorizonRibbonView({
 export default function HorizonRibbon({ realtime, now }: { realtime: RealtimeData | null; now: Date }) {
   const forecast = useRiskForecast()
   const ensemble = useEnsembleForecast()
+  const radar = useRadarBasinRain()
   if (!forecast.data && forecast.loading) {
     return <div className="h-[420px] animate-pulse rounded-card bg-surface-2" aria-busy="true" aria-label="Chargement du ruban" />
   }
@@ -442,5 +534,13 @@ export default function HorizonRibbon({ realtime, now }: { realtime: RealtimeDat
       </div>
     )
   }
-  return <HorizonRibbonView forecast={forecast.data} ensemble={ensemble.data} realtime={realtime} now={now} />
+  return (
+    <HorizonRibbonView
+      forecast={forecast.data}
+      ensemble={ensemble.data}
+      realtime={realtime}
+      radar={radar.loading && !radar.data ? undefined : radar.data}
+      now={now}
+    />
+  )
 }

@@ -63,8 +63,6 @@ const GlofasFan = lazy(() => import('../components/GlofasFan'))
 const ForecastVsObserved = lazy(() => import('../components/ForecastVsObserved'))
 // recharts (~100 kB gzip) is only needed below the verdict: the panels that
 // draw charts load in a separate chunk, after the decision is on screen
-const EnsemblePanel = lazy(() => import('../components/EnsemblePanel'))
-const NowcastRainChart = lazy(() => import('../components/NowcastRainChart'))
 const BasinRainfallGauge = lazy(() => import('../components/BasinRainfallGauge'))
 // Replay of the Lidoire profile and flood plane (d3-scale/shape): below the fold
 const ReplayPanel = lazy(() => import('../components/ReplayPanel'))
@@ -494,13 +492,14 @@ export default function Dashboard() {
         <RiskBreakdownPanel risk={data.risk} />
       </DashboardSection>
 
-      {/* 3. Next hours: forecast score, nowcast, ensembles */}
+      {/* 3. Next hours: forecast score, ensemble rain (with its exceedance
+          shares), tides, Pessac; observed radar rain and next-hour nowcast */}
       <DashboardSection id="prochaines-heures">
-        {!timeMachineActive && <HorizonRibbon realtime={data} now={new Date(now)} />}
-        <Suspense fallback={<PanelFallback height="h-72" />}>
-          <NowcastRainChart data={data.nowcast_rain} />
-          {!timeMachineActive && <EnsemblePanel />}
-        </Suspense>
+        {timeMachineActive ? (
+          <p className="text-ink-2">Prévisions en direct uniquement.</p>
+        ) : (
+          <HorizonRibbon realtime={data} now={new Date(now)} />
+        )}
       </DashboardSection>
 
       {/* 4. Act: owner's checklist, field observation */}
