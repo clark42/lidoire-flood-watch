@@ -47,10 +47,25 @@ export const DASHBOARD_SECTIONS = [
       'Chaque épisode labellisé selon ses deux moteurs : le débit de l’Eyraud (ruissellement, analogue de la Lidoire) et le niveau de Pessac (remous). Le point du jour et sa trace.',
   },
   {
+    id: 'analogues',
+    label: 'Analogues',
+    title: 'Ça ressemble à…',
+    description:
+      'Les épisodes labellisés les plus proches de la situation du moment, moteur par moteur (Pessac, Eyraud, pluie 72 h, nappe).',
+  },
+  {
     id: 'carte',
     label: 'Carte',
     title: 'Le bassin',
-    description: 'Stations, marée et pluviomètres autour du moulin.',
+    description:
+      'Bassin topographique de la Lidoire (BD TOPAGE), rivières colorées par le percentile du niveau de leur station, tronçons Vigicrues et radar.',
+  },
+  {
+    id: 'glofas',
+    label: '30 jours',
+    title: 'Le mois qui vient',
+    description:
+      'Débit simulé par GloFAS dans la maille Lidoire (5 km) : 51 membres, comparés à la climatologie de la maille.',
   },
   {
     id: 'pluie-sol',
@@ -62,7 +77,7 @@ export const DASHBOARD_SECTIONS = [
     id: 'fiabilite',
     label: 'Fiabilité',
     title: 'Fiabilité',
-    description: 'Fraîcheur des sources et dernière mise à jour.',
+    description: 'Ce qui était prévu, ce qui est arrivé, et l’état des sources.',
   },
 ] as const satisfies readonly DashboardSectionDef[]
 

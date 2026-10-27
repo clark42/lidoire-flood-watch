@@ -1,0 +1,107 @@
+{
+ "available": true,
+ "time": "2026-10-26T22:45:00Z",
+ "accumulation_minutes": 60,
+ "accumulation_start": "2026-10-26T21:45:00Z",
+ "product": "ACRR",
+ "source": "opera",
+ "attribution": "Radar : EUMETNET OPERA (composite NIMBUS ACRR), CC BY 4.0",
+ "licence_url": "https://creativecommons.org/licenses/by/4.0/",
+ "bbox": [
+  -0.173,
+  44.761,
+  0.487,
+  45.069
+ ],
+ "bbox_order": "west,south,east,north (degres WGS84)",
+ "crs": "EPSG:4326, grille reguliere lon/lat, nord en haut (reechantillonnage au plus proche voisin)",
+ "width": 132,
+ "height": 62,
+ "pixel_deg": 0.005,
+ "url": "/api/realtime/radar/frame.png?t=2026-10-26T22:45Z",
+ "legend": [
+  {
+   "min_mm": 0.1,
+   "rgba": [
+    186,
+    228,
+    250,
+    140
+   ]
+  },
+  {
+   "min_mm": 0.5,
+   "rgba": [
+    125,
+    196,
+    240,
+    165
+   ]
+  },
+  {
+   "min_mm": 1.0,
+   "rgba": [
+    66,
+    146,
+    230,
+    185
+   ]
+  },
+  {
+   "min_mm": 2.0,
+   "rgba": [
+    33,
+    102,
+    209,
+    205
+   ]
+  },
+  {
+   "min_mm": 4.0,
+   "rgba": [
+    52,
+    64,
+    180,
+    220
+   ]
+  },
+  {
+   "min_mm": 8.0,
+   "rgba": [
+    106,
+    50,
+    168,
+    230
+   ]
+  },
+  {
+   "min_mm": 16.0,
+   "rgba": [
+    170,
+    35,
+    140,
+    240
+   ]
+  },
+  {
+   "min_mm": 32.0,
+   "rgba": [
+    215,
+    25,
+    75,
+    250
+   ]
+  }
+ ],
+ "no_coverage_rgba": [
+  128,
+  128,
+  128,
+  90
+ ],
+ "unit": "mm sur 1 h (cumul ACRR finissant a time)",
+ "model_input": false,
+ "coverage": 1.0,
+ "max_mm": 0.0,
+ "rain_pixels": 0
+}

@@ -30,7 +30,8 @@ import type {
 import DataCard from '../components/DataCard'
 import StationsPanel from '../components/StationsPanel'
 import RainfallPanel from '../components/RainfallPanel'
-import DataSourcesStatus from '../components/DataSourcesStatus'
+import SourceHealth from '../components/SourceHealth'
+import DetailedMap from '../components/DetailedMap'
 import RiskBreakdownPanel from '../components/RiskBreakdownPanel'
 import TimeMachineBanner from '../components/TimeMachineBanner'
 import SoilConditionsPanel from '../components/SoilConditionsPanel'
@@ -53,8 +54,13 @@ import { TOOLTIPS } from '../tooltipContent'
 import { formatAge, formatParis, parseApiDate } from '../utils/time'
 import { formatNumber } from '../utils/format'
 
-// leaflet is only needed by the map: separate chunk, the rest renders first
-const HydroMap = lazy(() => import('../components/HydroMap'))
+// Explore panels (basin map in SVG with d3-geo, analogs, GloFAS fan,
+// forecast skill): separate chunk, the decision renders first. Leaflet is
+// only loaded by the optional detailed map (DetailedMap).
+const BasinMap = lazy(() => import('../components/BasinMap'))
+const AnalogCards = lazy(() => import('../components/AnalogCards'))
+const GlofasFan = lazy(() => import('../components/GlofasFan'))
+const ForecastVsObserved = lazy(() => import('../components/ForecastVsObserved'))
 // recharts (~100 kB gzip) is only needed below the verdict: the panels that
 // draw charts load in a separate chunk, after the decision is on screen
 const EnsemblePanel = lazy(() => import('../components/EnsemblePanel'))
@@ -534,19 +540,28 @@ export default function Dashboard() {
         </Suspense>
       </DashboardSection>
 
-      {/* 6. Map and stations */}
+      {/* Analogs: nearest labelled episodes (at the TimeMachine date when active) */}
+      <DashboardSection id="analogues">
+        <Suspense fallback={<PanelFallback height="h-72" />}>
+          <AnalogCards at={timeMachineActive ? timeMachineDate?.toISOString() : undefined} />
+        </Suspense>
+      </DashboardSection>
+
+      {/* Map and stations */}
       <DashboardSection id="carte">
-        {/* isolate: Leaflet panes (z-index 400-1000) stay under the sticky section bar */}
-        <div className="isolate">
-          <Suspense fallback={<div className="w-full h-[380px] rounded-xl shadow bg-surface-2 animate-pulse" />}>
-            <HydroMap
-              stations={stations}
-              netatmoStations={netatmo?.lidoire_stations}
-              infoclimatStations={infoclimat?.nearest_stations}
-              tide={data.tide}
-            />
-          </Suspense>
-        </div>
+        <Suspense fallback={<PanelFallback height="h-[260px]" />}>
+          <BasinMap
+            stations={stations}
+            now={new Date(now)}
+            at={timeMachineActive ? timeMachineDate?.toISOString() : undefined}
+          />
+        </Suspense>
+        <DetailedMap
+          stations={stations}
+          netatmoStations={netatmo?.lidoire_stations}
+          infoclimatStations={infoclimat?.nearest_stations}
+          tide={data.tide}
+        />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <StationsPanel
             stations={stations}
@@ -634,6 +649,17 @@ export default function Dashboard() {
         </div>
       </DashboardSection>
 
+      {/* 30 days: GloFAS fan (model trend, live only) */}
+      <DashboardSection id="glofas">
+        {timeMachineActive ? (
+          <p className="text-ink-2">Éventail GloFAS disponible en direct uniquement.</p>
+        ) : (
+          <Suspense fallback={<PanelFallback height="h-72" />}>
+            <GlofasFan now={new Date(now)} />
+          </Suspense>
+        )}
+      </DashboardSection>
+
       {/* 7. Rain and soil */}
       <DashboardSection id="pluie-sol">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -692,14 +718,12 @@ export default function Dashboard() {
         </div>
       </DashboardSection>
 
-      {/* 8. Reliability: source freshness, last update */}
+      {/* 8. Reliability: forecast vs observed, source freshness, last update */}
       <DashboardSection id="fiabilite">
-        <DataSourcesStatus
-          sources={sources}
-          nextHighTide={data.tide.next_high_tide?.timestamp}
-          now={now}
-          loading={loading}
-        />
+        <Suspense fallback={<PanelFallback />}>
+          <ForecastVsObserved />
+        </Suspense>
+        <SourceHealth sources={sources} now={now} loading={loading} />
         <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-ink-3">
           <div className="flex flex-wrap items-center gap-2 min-w-0">
             <Clock className="w-4 h-4 flex-none" aria-hidden="true" />
