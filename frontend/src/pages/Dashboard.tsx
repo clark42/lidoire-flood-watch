@@ -529,7 +529,10 @@ export default function Dashboard() {
               </p>
             )}
             <ObservationQuickForm />
-            <TriggerList realtime={data} outlook={outlook.data} />
+            {/* Full width: alone in a half column it left an empty one beside it */}
+            <div className="min-w-0 min-[960px]:col-span-2">
+              <TriggerList realtime={data} outlook={outlook.data} />
+            </div>
           </div>
         )}
       </DashboardSection>
