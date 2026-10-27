@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # --- Build stage ------------------------------------------------------------
-FROM node:22-alpine AS builder
+# Static output: build natively on the runner platform (no QEMU for arm64),
+# then copy dist/ into the target-platform nginx image.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 
 WORKDIR /app
 
