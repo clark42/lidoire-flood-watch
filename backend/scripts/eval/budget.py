@@ -12,7 +12,10 @@ module reports on the hourly causal replay:
 - alerts per year (runs merged at 12 h, whole replay) and the number of
   ntfy "alert" messages the notifier would send (rise to the trigger level,
   downgrade after ``hold`` hours, :func:`simulate_notifier` mirrors
-  ``app.services.notifier.level_event``);
+  ``app.services.notifier.level_event`` on the two-state rule series), and
+  for v3.4 the messages of the real ``level_event`` under each
+  :data:`POLICIES` (``notify_min_level`` + hold, :func:`replay_notifier`;
+  for red, identical to the simulation at >= 55, see the tests);
 - POD with its Clopper-Pearson 95% interval, labelled FAR (alerts matching
   only near_miss / false_positive labels), raw FAR;
 - lead time (peak - alert start) against the labelled peaks, median / min,
@@ -125,6 +128,73 @@ def simulate_notifier(
                 level, pending_since = r, None
                 messages += 1
     return alerts, messages
+
+
+@dataclass(frozen=True)
+class NotifierPolicy:
+    """Production notifier settings replayed by :func:`replay_notifier`."""
+
+    name: str
+    min_level: str
+    hold_h: float
+    notify_yellow: bool = False
+
+    def settings(self):
+        from app.config import Settings
+
+        # Init values win over the environment: the replay never reads .env
+        return Settings(
+            _env_file=None, notify_min_level=self.min_level,
+            notify_downgrade_hold_hours=self.hold_h, notify_yellow=self.notify_yellow,
+        )
+
+
+# Default of the code, and the owner-approved production policy (Helm values)
+POLICIES = (
+    NotifierPolicy("orange, hold 3 h (default)", "orange", 3.0),
+    NotifierPolicy("orange, hold 12 h", "orange", 12.0),
+    NotifierPolicy("red, hold 12 h (production)", "red", 12.0),
+)
+
+
+def replay_notifier(times: Sequence[datetime], scores: Scores, settings) -> tuple[int, int]:
+    """(alert messages, all level messages) of the real ``notifier.level_event``.
+
+    Same counting as :func:`simulate_notifier`, but the levels, the minimum
+    level (``notify_min_level``), ``notify_yellow`` and the downgrade hold
+    are those of the production code. An alert is a delivered rise (orange
+    -> red counts again under the orange minimum); hours without a score are
+    skipped.
+    """
+    from app.services import notifier as nt
+    from app.services.risk_core import score_to_level
+
+    state = nt.NotifierState()
+    ctx = nt.Context()
+    alerts = messages = 0
+    for t, s in zip(times, scores):
+        if s is None:
+            continue
+        before = state.level
+        event = nt.level_event(state, t, float(s), score_to_level(float(s)).value, ctx, settings)
+        if event is None:
+            continue
+        if event.notification is not None:
+            messages += 1
+            if nt.level_rank(event.updates.get("level", before)) > nt.level_rank(before):
+                alerts += 1
+        state.apply(event.updates)
+    return alerts, messages
+
+
+def policy_rows(times: Sequence[datetime], scores: Scores, policies=POLICIES) -> list[dict]:
+    """Real-notifier alerts / messages per year on the v3.4 replay, per policy."""
+    years = len(times) / HOURS_PER_YEAR
+    rows = []
+    for p in policies:
+        a, m = replay_notifier(times, scores, p.settings())
+        rows.append({"policy": p.name, "alerts_per_year": a / years, "messages_per_year": m / years})
+    return rows
 
 
 def clopper_pearson(k: int, n: int, alpha: float = 0.05) -> tuple[float, float]:
@@ -260,6 +330,7 @@ def run(dataset, out_dir: Path, events=None, period=None, series=None) -> dict:
     times = dataset.times
     results = [evaluate_point(p, series, times, events, period) for p in default_points()]
     rows = [r.row() for r in results]
+    policies = policy_rows(times, series["v3.4"])
     floods = [e for e in events if e.positive is True]
     keys = [e.key for e in floods]
     md = [
@@ -278,11 +349,19 @@ def run(dataset, out_dir: Path, events=None, period=None, series=None) -> dict:
         "",
         budget_markdown(rows, keys),
         "",
+        "## Real notifier (notifier.level_event) on the v3.4 replay",
+        "",
+        "Alerts = delivered rises (under the orange minimum, orange -> red counts again).",
+        "",
+        "| Policy | ntfy alerts/yr | ntfy level messages/yr |",
+        "|---|---|---|",
+        *(f"| {p['policy']} | {_f(p['alerts_per_year'])} | {_f(p['messages_per_year'])} |" for p in policies),
+        "",
     ]
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "summary.md").write_text("\n".join(md), encoding="utf-8")
-    rep.write_json(out_dir / "metrics.json", {"rows": rows})
-    return {"rows": rows, "markdown": "\n".join(md)}
+    rep.write_json(out_dir / "metrics.json", {"rows": rows, "policies": policies})
+    return {"rows": rows, "policies": policies, "markdown": "\n".join(md)}
 
 
 def main(argv: Optional[list[str]] = None) -> int:
