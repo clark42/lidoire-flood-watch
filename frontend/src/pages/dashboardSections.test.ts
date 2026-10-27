@@ -12,6 +12,12 @@ describe('Dashboard sections', () => {
     expect(DASHBOARD_SECTIONS[DASHBOARD_SECTIONS.length - 1].id).toBe('fiabilite')
   })
 
+  it('explores with the profile replay, then the flood plane', () => {
+    const ids: string[] = DASHBOARD_SECTIONS.map((s) => s.id)
+    expect(ids.indexOf('plan')).toBe(ids.indexOf('replay') + 1)
+    expect(ids.indexOf('replay')).toBeGreaterThan(ids.indexOf('agir'))
+  })
+
   it('has unique anchor ids usable in a URL hash', () => {
     const ids = DASHBOARD_SECTIONS.map((s) => s.id)
     expect(new Set(ids).size).toBe(ids.length)

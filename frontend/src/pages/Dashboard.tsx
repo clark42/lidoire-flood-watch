@@ -60,6 +60,9 @@ const HydroMap = lazy(() => import('../components/HydroMap'))
 const EnsemblePanel = lazy(() => import('../components/EnsemblePanel'))
 const NowcastRainChart = lazy(() => import('../components/NowcastRainChart'))
 const BasinRainfallGauge = lazy(() => import('../components/BasinRainfallGauge'))
+// Replay of the Lidoire profile and flood plane (d3-scale/shape): below the fold
+const ReplayPanel = lazy(() => import('../components/ReplayPanel'))
+const FloodPlanPanel = lazy(() => import('../components/FloodPlanPanel'))
 
 function PanelFallback({ height = 'h-40' }: { height?: string }) {
   return <div className={`${height} w-full animate-pulse rounded-card bg-surface-2`} aria-hidden="true" />
@@ -264,6 +267,14 @@ export default function Dashboard() {
       if (requestId === timeMachineRequestRef.current) setTimeMachineLoading(false)
     }
   }, [setSearchParams])
+
+  // Replay button "whole dashboard at this hour": TimeMachine mode + ?tm=
+  const openTimeMachineAt = useCallback((date: Date) => {
+    timeMachineActiveRef.current = true
+    setTimeMachineActive(true)
+    void handleTimeMachineDateChange(date)
+    requestAnimationFrame(() => document.getElementById('maintenant')?.scrollIntoView())
+  }, [handleTimeMachineDateChange])
 
   // On mount: if ?tm= is present, load TimeMachine data
   useEffect(() => {
@@ -505,13 +516,22 @@ export default function Dashboard() {
         )}
       </DashboardSection>
 
-      {/* 5. Replay (TimeMachine entry; the banner moves to the top once active) */}
+      {/* 5. Long profile + replay (opens the TimeMachine at the cursor; the
+          banner stays at the top while it is active) */}
       <DashboardSection id="replay">
-        {timeMachineActive ? (
-          <p className="text-ink-2">
-            TimeMachine actif : le bandeau en haut de page permet de changer de date ou de revenir au direct.
-          </p>
-        ) : timeMachineBanner}
+        <Suspense fallback={<PanelFallback height="h-[640px]" />}>
+          <ReplayPanel
+            focusAt={timeMachineActive ? timeMachineDate : null}
+            onOpenDashboardAt={openTimeMachineAt}
+          />
+        </Suspense>
+      </DashboardSection>
+
+      {/* 6. Flood plane: Eyraud discharge x Pessac, episodes, today's trail */}
+      <DashboardSection id="plan">
+        <Suspense fallback={<PanelFallback height="h-[480px]" />}>
+          <FloodPlanPanel />
+        </Suspense>
       </DashboardSection>
 
       {/* 6. Map and stations */}

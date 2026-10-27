@@ -220,3 +220,31 @@
   border-color: var(--line-2) !important;
   color: var(--ink);
 }
+
+/* Flood plane: the Februaries' trails draw once, today's point pulses.
+   Both stop under prefers-reduced-motion (base layer rule above). */
+.phase-trail-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: phase-trail-draw 1.6s ease-out 0.2s forwards;
+}
+.phase-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: phase-pulse 2.2s ease-out infinite;
+}
+@keyframes phase-trail-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes phase-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
