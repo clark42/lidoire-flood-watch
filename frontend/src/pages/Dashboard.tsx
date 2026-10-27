@@ -112,7 +112,7 @@ const SECONDARY_SOURCE_LABELS = {
   infoclimat: 'Infoclimat',
   sources: 'Statut des sources',
   basin: 'Pluie bassin',
-  episodes: 'Episodes',
+  episodes: 'Épisodes',
 } as const
 
 type SecondarySource = keyof typeof SECONDARY_SOURCE_LABELS
@@ -344,7 +344,7 @@ export default function Dashboard() {
           onClick={() => fetchData()}
           className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
         >
-          Reessayer
+          Réessayer
         </button>
       </div>
     )

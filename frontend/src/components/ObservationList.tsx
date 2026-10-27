@@ -140,7 +140,7 @@ export default function ObservationList() {
           type="button"
           onClick={load}
           className="text-gray-500 hover:text-gray-700"
-          aria-label="Rafraichir les observations"
+          aria-label="Rafraîchir les observations"
         >
           <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
         </button>

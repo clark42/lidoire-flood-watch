@@ -76,7 +76,7 @@ export default function TimeMachineBanner({
       {/* Date/time input */}
       <div className="flex items-center gap-3">
         <label className="text-sm text-amber-700 whitespace-nowrap">
-          Voir le dashboard au:
+          Voir le dashboard au :
         </label>
         <input
           type="datetime-local"
@@ -94,7 +94,7 @@ export default function TimeMachineBanner({
       {episodes.length > 0 && (
         <div className="space-y-1.5">
           <span className="text-xs text-amber-600 font-medium">
-            Episodes connus:
+            Épisodes connus :
           </span>
           <div className="flex flex-wrap gap-2">
             {displayedEpisodes.map((episode) => (

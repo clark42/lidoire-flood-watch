@@ -14,7 +14,7 @@ const Configuration = lazy(() => import('./pages/Configuration'))
 const PAGES: { to: string; label: string; icon: LucideIcon }[] = [
   { to: '/', label: 'Dashboard', icon: AlertTriangle },
   { to: '/timeline', label: 'Timeline', icon: Clock },
-  { to: '/episodes', label: 'Episodes', icon: Calendar },
+  { to: '/episodes', label: 'Épisodes', icon: Calendar },
   { to: '/config', label: 'Config', icon: Settings },
 ]
 

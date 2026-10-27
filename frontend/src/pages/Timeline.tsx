@@ -29,6 +29,7 @@ import type {
 } from '../types'
 import TimelineSourceSelector from '../components/TimelineSourceSelector'
 import { formatParis, parseApiDate } from '../utils/time'
+import { accentLabel } from '../utils/frenchText'
 
 type Resolution = '15m' | '1h' | '6h' | '12h' | '1d'
 
@@ -222,7 +223,7 @@ export default function Timeline() {
           // Bookmarked URL with removed/renamed ids: drop them from the
           // selection; the state change rewrites the URL and refetches.
           setError(null)
-          setNotice(`Sources inconnues retirees de la selection : ${unknown.join(', ')}`)
+          setNotice(`Sources inconnues retirées de la sélection : ${unknown.join(', ')}`)
           setSelectedRiverStations((prev) => prev.filter((id) => !unknown.includes(id)))
           setSelectedRainfallStations((prev) => prev.filter((id) => !unknown.includes(id)))
           setSelectedIndicators((prev) => prev.filter((id) => !unknown.includes(id)))
@@ -362,7 +363,7 @@ export default function Timeline() {
 
     for (const [key, series] of Object.entries(unifiedData.series)) {
       const info: SeriesEntry = {
-        key, name: series.name, color: series.color,
+        key, name: accentLabel(series.name), color: series.color,
         type: series.type, unit: series.unit,
       }
       if (series.type === 'river_level' || series.type === 'tide' || series.type === 'forecast_level' || series.type === 'tide_observed') {
@@ -414,7 +415,7 @@ export default function Timeline() {
     if (seriesInfo.rain.length > 0) {
       // Derive unit label from first non-cumul series
       const rateUnit = seriesInfo.rain.find((s) => s.type === 'rainfall')?.unit || 'mm/h'
-      panels.push({ id: 'rain', label: 'Pluviometrie', series: seriesInfo.rain, height: 180, yLabel: `Pluie (${rateUnit})` })
+      panels.push({ id: 'rain', label: 'Pluviométrie', series: seriesInfo.rain, height: 180, yLabel: `Pluie (${rateUnit})` })
     }
     if (seriesInfo.risk.length > 0) {
       panels.push({ id: 'risk', label: 'Score de risque', series: seriesInfo.risk, height: 130, yLabel: 'Score (/100)' })
@@ -427,10 +428,10 @@ export default function Timeline() {
     }
     // Hydrological indicators (outside the model): tributaries and Dordogne on separate axes
     if (seriesInfo.flowLocal.length > 0) {
-      panels.push({ id: 'flow_local', label: 'Debits affluents (analogues Lidoire)', series: seriesInfo.flowLocal, height: 160, yLabel: 'Debit (m³/s)' })
+      panels.push({ id: 'flow_local', label: 'Débits affluents (analogues Lidoire)', series: seriesInfo.flowLocal, height: 160, yLabel: 'Débit (m³/s)' })
     }
     if (seriesInfo.flowDordogne.length > 0) {
-      panels.push({ id: 'flow_dordogne', label: 'Debits Dordogne', series: seriesInfo.flowDordogne, height: 160, yLabel: 'Debit (m³/s)' })
+      panels.push({ id: 'flow_dordogne', label: 'Débits Dordogne', series: seriesInfo.flowDordogne, height: 160, yLabel: 'Débit (m³/s)' })
     }
     if (seriesInfo.groundwater.length > 0) {
       panels.push({ id: 'groundwater', label: 'Nappe alluviale', series: seriesInfo.groundwater, height: 140, yLabel: 'm NGF' })
@@ -448,7 +449,7 @@ export default function Timeline() {
             <button
               onClick={() => shiftPeriod(-7)}
               className="p-2 hover:bg-gray-100 rounded"
-              title="Semaine precedente"
+              title="Semaine précédente"
             >
               <ChevronLeft className="w-5 h-5" />
             </button>
@@ -504,7 +505,7 @@ export default function Timeline() {
 
           {/* Resolution */}
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-500">Resolution:</span>
+            <span className="text-sm text-gray-500">Résolution :</span>
             <select
               value={resolution}
               onChange={(e) => setResolution(e.target.value as Resolution)}
@@ -562,7 +563,7 @@ export default function Timeline() {
           <div className="flex items-center gap-3 overflow-x-auto">
             <span className="flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">
               <AlertTriangle className="w-3.5 h-3.5" />
-              Episodes
+              Épisodes
             </span>
             {episodes.map((ep) => {
               const epDate = parseApiDate(ep.peak_time || ep.start_time)
@@ -577,7 +578,7 @@ export default function Timeline() {
                       ? 'bg-orange-100 text-orange-800 ring-1 ring-orange-300'
                       : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                   }`}
-                  title={ep.description || undefined}
+                  title={accentLabel(ep.description) || undefined}
                 >
                   <span className={`w-2 h-2 rounded-full ${
                     ep.severity >= 4 ? 'bg-red-500'
@@ -615,8 +616,8 @@ export default function Timeline() {
       {backfillPending.length > 0 && !loading && (
         <div role="status" className="bg-blue-50 border border-blue-200 text-blue-800 rounded-lg px-4 py-3 text-sm">
           {backfillGaveUp
-            ? `Donnees encore incompletes (${backfillPending.join(', ')}) : le chargement historique continue cote serveur. Rechargez la page dans quelques minutes.`
-            : `Donnees en cours de chargement (${backfillPending.join(', ')}) : les courbes seront completees automatiquement.`}
+            ? `Données encore incomplètes (${backfillPending.join(', ')}) : le chargement historique continue côté serveur. Rechargez la page dans quelques minutes.`
+            : `Données en cours de chargement (${backfillPending.join(', ')}) : les courbes seront complétées automatiquement.`}
         </div>
       )}
 
@@ -628,7 +629,7 @@ export default function Timeline() {
           </div>
         ) : chartData.length === 0 ? (
           <div className="h-[450px] flex items-center justify-center text-gray-400">
-            Aucune donnee pour la periode et les sources selectionnees
+            Aucune donnée pour la période et les sources sélectionnées
           </div>
         ) : (
           <div className="space-y-0">
@@ -793,7 +794,7 @@ export default function Timeline() {
                           if (series) {
                             return [
                               `${value?.toFixed(2)} ${series.unit}`,
-                              series.name,
+                              accentLabel(series.name),
                             ]
                           }
                           return [value?.toFixed(2), name]
