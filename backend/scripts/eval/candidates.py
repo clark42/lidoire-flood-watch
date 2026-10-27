@@ -29,6 +29,10 @@ Protocol (every number of a FITTED model is out-of-sample):
   runoff proxy (Eyraud Q lagged 7 h, Caudeau Q, GR4H, GloFAS), backwater
   input (Pessac H_aval or confluence stage Z_c), groundwater on/off,
   overbank off (ablation). Fitted Eyraud rules go through the blocked LOEO.
+- v4-beta (``V4BetaModel``, pre-registered 2026-10-27 in
+  ``preregistration_v4beta.md``): runoff-led, nowcast fitted on the
+  2010-2022 climatology only, label-free anchors; primary, 3 variants and
+  diagnostics (the decision rule is in :mod:`scripts.eval.v4beta`).
 
 Small sample: 5 floods (one of them an infiltration flood, 2023-03-11, since
 sealed). POD comes with a Clopper-Pearson 95% interval, AUC with a
@@ -57,6 +61,7 @@ from app.services.models_experimental import (
     LogisticModel,
     V33BackwaterModel,
     V4AlphaModel,
+    V4BetaModel,
     design_matrix,
     feature_table,
     fit_logistic_l2,
@@ -640,7 +645,31 @@ def build_candidates(
     if has_feature(table, "q_eyraud"):
         cv(lambda ds, ev, **kw: fit_backwater_rule(ds, ev, forcing="q_eyraud", **kw), "bw_rule_eyraud_cv", 2)
         cv(lambda ds, ev, **kw: fit_logistic(ds, ev, ("q_eyraud", "h_aval"), **kw), "lr_eyraud_haval_cv", 3)
+
+    # (4) v4-beta (pre-registered 2026-10-27, runoff-led, label-free)
+    for model, protocol in v4_beta_models():
+        plain(model, protocol, params={"variant": model.variant})
     return out
+
+
+V4B_HEADLINE = "v4b"
+
+
+def v4_beta_models(include_diagnostics: bool = True) -> list[tuple[V4BetaModel, str]]:
+    """The pre-registered v4-beta primary, its 3 variants and the non-eligible diagnostics."""
+    models = [
+        (V4BetaModel("primary", name=V4B_HEADLINE), "label-free (pre-registered, primary)"),
+        (V4BetaModel("fc", name="v4b_fc"), "label-free (pre-registered, V1)"),
+        (V4BetaModel("mod", name="v4b_mod"), "label-free (pre-registered, V2)"),
+        (V4BetaModel("runoff", name="v4b_runoff"), "label-free (pre-registered, V3)"),
+    ]
+    if include_diagnostics:
+        models += [
+            (V4BetaModel("obs_only", name="v4b[obs only]"), "label-free (diagnostic)"),
+            (V4BetaModel("nowcast_only", name="v4b[nowcast only]"), "label-free (diagnostic)"),
+            (V4BetaModel("lag0", name="v4b[Eyraud lag 0, optimistic]"), "label-free (diagnostic)"),
+        ]
+    return models
 
 
 def has_feature(table: Mapping[str, np.ndarray], name: str) -> bool:

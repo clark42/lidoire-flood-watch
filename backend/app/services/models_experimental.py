@@ -38,6 +38,13 @@ Candidates (every model follows the ``scripts.eval`` Model protocol:
   backwater input (Pessac H_aval or confluence stage Z_c) and the switches.
   :func:`v4_alpha_scores` is an independent vectorised implementation
   (equivalence test).
+- :class:`V4BetaModel`: the runoff-led v4-beta (pre-registered 2026-10-27,
+  ``scripts/eval/preregistration_v4beta.md``): Eyraud-equivalent runoff =
+  max(published Eyraud Q, climatology-fitted nowcast from ERA5 basin rain),
+  Pessac only as an overbank branch above the 3.1 km step crest; variants
+  with archived forecast rain, a Pessac modulator, or no Pessac. Not
+  promoted to ``app/services`` proper: it did not clear the pre-registered
+  rule (see CLAUDE.md).
 
 Every stateful quantity (API, GR4H stores) is updated from ``rain_1h`` in
 chronological order, so a model only ever uses current and past rows. A
@@ -54,9 +61,12 @@ from typing import Mapping, Optional, Sequence
 import numpy as np
 
 from app.services.risk_v4 import (
+    EYRAUD_Q2_M3S,
+    GradedThresholds,
     V4Features,
     V4Params,
     compute_risk_v4,
+    graded_score,
 )
 from app.services.risk_shadow import (
     BACKWATER_GATE_FULL_M,
@@ -651,3 +661,150 @@ def v4_alpha_scores(table: Mapping[str, np.ndarray], params: V4Params, runoff_fe
         filled = np.where(np.isnan(stacked), -1.0, stacked)
         best = np.where(np.all(np.isnan(stacked), axis=0), np.nan, np.max(filled, axis=0))
     return np.round(np.minimum(100.0, best), 2)
+
+
+# ---------------------------------------------------------------------------
+# v4-beta (runoff-led, pre-registered 2026-10-27: scripts/eval/preregistration_v4beta.md)
+# ---------------------------------------------------------------------------
+
+# OLS on the climatology 2010-09 -> 2022-08 (scripts/eval/runoff_nowcast.py, no label):
+# log1p(max Eyraud Q over [t, t + 6 h]) ~ q7, d7, r6, r24, r72, w30, q7*r6, q7*r24
+V4B_NOWCAST_INTERCEPT = -0.030654
+V4B_NOWCAST_COEF = {"q7": 0.932038, "d7": 0.743835, "r6": 0.033733, "r24": 0.033321, "r72": -0.002936,
+                    "w30": 0.008958, "q7_r6": 0.177589, "q7_r24": -0.040915}
+# fallback without any Eyraud point (gauge down): rain only
+V4B_RAIN_ONLY_INTERCEPT = -0.455674
+V4B_RAIN_ONLY_COEF = {"r6": 0.087107, "r24": 0.121413, "r72": 0.101706, "w30": 0.141890}
+# variant V1: max over [t, t + 24 h], + forecast rain f24 (perfect prognosis in the fit)
+V4B_FORECAST_INTERCEPT = -0.062638
+V4B_FORECAST_COEF = {"q7": 0.918883, "d7": 0.754779, "r6": 0.060571, "r24": 0.045927, "r72": -0.004478,
+                     "w30": 0.014704, "q7_r6": 0.163133, "q7_r24": -0.095765, "f24": 0.035738,
+                     "q7_f24": 0.128150}
+# runoff anchors: lowest fractions of Q2 with <= 10 / 5 / 2.5 climatological alerts per year
+V4B_RUNOFF_FRACTIONS = (0.10, 0.25, 0.70)
+V4B_RUNOFF = GradedThresholds(0.0, *(round(f * EYRAUD_Q2_M3S, 2) for f in V4B_RUNOFF_FRACTIONS))
+# overbank on H_aval (Pessac scale, zero 3.33 m NGF): 3.1 km step crest 9.0 m NGF -> mill ground 12.0 m NGF
+V4B_STEP_CREST_M = 5.67
+V4B_MILL_GROUND_M = 8.67
+V4B_OVERBANK = GradedThresholds(V4B_STEP_CREST_M, 6.67, 7.67, V4B_MILL_GROUND_M)
+V4B_MOD_MAX_G = 0.95
+
+
+def _log1p_pos(v: float) -> float:
+    return math.log1p(max(0.0, v))
+
+
+def v4b_regressors(values: Mapping[str, Optional[float]], forecast_rain_mm: Optional[float] = None
+                   ) -> dict[str, Optional[float]]:
+    """Transformed inputs of the v4-beta regressions (None where a raw input is missing).
+
+    Same transforms as ``scripts.eval.runoff_nowcast.transformed_features``
+    (an equivalence test checks it).
+    """
+    def g(k):
+        v = values.get(k)
+        return None if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
+
+    q_lag7, q_lag10 = g("q_eyraud_m3s"), g("q_eyraud_lag10_m3s")
+    r6h, r24h, r72h, r720h = (g(f"era5_rain_{h}h") for h in (6, 24, 72, 720))
+    out: dict[str, Optional[float]] = dict.fromkeys(
+        ("q7", "d7", "r6", "r24", "r72", "w30", "q7_r6", "q7_r24", "f24", "q7_f24"))
+    if None not in (r6h, r24h, r72h, r720h):
+        out["r6"] = _log1p_pos(r6h)
+        out["r24"] = _log1p_pos(r24h - r6h)
+        out["r72"] = _log1p_pos(r72h - r24h)
+        out["w30"] = _log1p_pos(r720h - r72h)
+    if q_lag7 is not None:
+        out["q7"] = _log1p_pos(q_lag7)
+        if q_lag10 is not None:
+            out["d7"] = out["q7"] - _log1p_pos(q_lag10)
+        if out["r6"] is not None:
+            out["q7_r6"] = out["q7"] * out["r6"]
+            out["q7_r24"] = out["q7"] * out["r24"]
+    if forecast_rain_mm is not None:
+        out["f24"] = _log1p_pos(forecast_rain_mm)
+        if out["q7"] is not None:
+            out["q7_f24"] = out["q7"] * out["f24"]
+    return out
+
+
+def _linear(intercept: float, coef: Mapping[str, float], x: Mapping[str, Optional[float]]) -> Optional[float]:
+    if any(x.get(k) is None for k in coef):
+        return None
+    return math.expm1(intercept + sum(c * x[k] for k, c in coef.items()))
+
+
+def v4b_nowcast_q(x: Mapping[str, Optional[float]]) -> tuple[Optional[float], str]:
+    """(Qhat over the next 6 h in Eyraud m3/s, "eyraud" | "rain_only" | "none")."""
+    q = _linear(V4B_NOWCAST_INTERCEPT, V4B_NOWCAST_COEF, x)
+    if q is not None:
+        return q, "eyraud"
+    q = _linear(V4B_RAIN_ONLY_INTERCEPT, V4B_RAIN_ONLY_COEF, x)
+    return (q, "rain_only") if q is not None else (None, "none")
+
+
+def v4b_forecast_q(x: Mapping[str, Optional[float]]) -> Optional[float]:
+    return _linear(V4B_FORECAST_INTERCEPT, V4B_FORECAST_COEF, x)
+
+
+def _max_opt(*vals: Optional[float]) -> Optional[float]:
+    present = [v for v in vals if v is not None]
+    return max(present) if present else None
+
+
+@dataclass
+class V4BetaModel:
+    """v4-beta: runoff-led score = max(runoff, [forecast runoff], overbank) (pre-registered).
+
+    ``variant``: ``"primary"`` (v4b), ``"fc"`` (V1, + forecast branch from the
+    archived forecast ``fc_rain_24h_prev``), ``"mod"`` (V2, Pessac modulator
+    above the 3.1 km step crest), ``"runoff"`` (V3, no Pessac); diagnostics
+    ``"obs_only"`` (Eyraud observed with its lag only), ``"nowcast_only"``,
+    ``"lag0"`` (Eyraud without publication lag, optimistic). Stateless.
+    """
+
+    variant: str = "primary"
+    name: str = "v4b"
+    kind: str = "score"
+    thresholds: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_SCORE_THRESHOLDS))
+
+    VARIANTS = ("primary", "fc", "mod", "runoff", "obs_only", "nowcast_only", "lag0")
+
+    def __post_init__(self):
+        if self.variant not in self.VARIANTS:
+            raise ValueError(f"unknown v4-beta variant {self.variant!r}")
+
+    def reset(self) -> None:  # stateless
+        return None
+
+    def breakdown(self, values: Mapping[str, Optional[float]]) -> dict:
+        v = self.variant
+        if v == "lag0":
+            values = {**values, "q_eyraud_m3s": values.get("q_eyraud_lag0_m3s"),
+                      "q_eyraud_max_12h": values.get("q_eyraud_lag0_max_12h"),
+                      "q_eyraud_lag10_m3s": values.get("q_eyraud_lag3_m3s")}
+        x = v4b_regressors(values, values.get("fc_rain_24h_prev") if v == "fc" else None)
+        q_obs = values.get("q_eyraud_max_12h")
+        q_now, source = v4b_nowcast_q(x)
+        if v == "obs_only":
+            q_r = q_obs
+        elif v == "nowcast_only":
+            q_r = q_now
+        else:
+            q_r = _max_opt(q_obs, q_now)
+        h = values.get("pessac_max_12h")
+        g = None
+        if v == "mod" and q_r is not None and h is not None:
+            g = min(V4B_MOD_MAX_G, max(0.0, (h - V4B_STEP_CREST_M) / (V4B_MILL_GROUND_M - V4B_STEP_CREST_M)))
+            q_r = q_r / (1.0 - g)
+        runoff = graded_score(q_r, V4B_RUNOFF)
+        q_fc = v4b_forecast_q(x) if v == "fc" else None
+        forecast = graded_score(q_fc, V4B_RUNOFF)
+        overbank = None if v in ("runoff", "obs_only", "nowcast_only") else graded_score(h, V4B_OVERBANK)
+        score = _max_opt(runoff, forecast, overbank)
+        return {"score": None if score is None else round(min(100.0, score), 2), "runoff": runoff,
+                "forecast": forecast, "overbank": overbank, "q_obs": q_obs, "q_nowcast": q_now,
+                "q_runoff": q_r, "q_forecast": q_fc, "nowcast_source": source, "modulator_g": g}
+
+    def score(self, row) -> Optional[float]:
+        return self.breakdown(row.values)["score"]
