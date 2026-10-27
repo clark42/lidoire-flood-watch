@@ -5,6 +5,7 @@ import type { ForecastSkill } from '../types'
 import InfoTooltip from './InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 import { formatParis } from '../utils/time'
+import { accentLabel } from '../utils/frenchText'
 
 const PERIODS = [7, 30, 90]
 
@@ -43,7 +44,7 @@ export default function ForecastSkillPanel() {
       <div className="p-4 border-b flex flex-wrap items-center justify-between gap-2">
         <h3 className="font-medium flex items-center gap-2">
           <Target className="w-5 h-5" />
-          Prevu vs observe
+          Prévu vs observé
           <InfoTooltip {...TOOLTIPS.forecastSkill} />
         </h3>
         <div className="flex items-center gap-2">
@@ -51,7 +52,7 @@ export default function ForecastSkillPanel() {
             value={days}
             onChange={(e) => setDays(Number(e.target.value))}
             className="border rounded px-2 py-1 text-sm"
-            aria-label="Periode"
+            aria-label="Période"
           >
             {PERIODS.map((d) => (
               <option key={d} value={d}>{d} jours</option>
@@ -72,22 +73,22 @@ export default function ForecastSkillPanel() {
         {data && (
           <>
             <p className="text-gray-600 mb-3">
-              {data.n_runs} prevision(s) archivee(s) (modele v{data.model_version})
+              {data.n_runs} prévision(s) archivée(s) (modèle v{data.model_version})
               {data.first_run_at && <> du {formatParis(data.first_run_at, 'dd/MM HH:mm')} au {formatParis(data.last_run_at, 'dd/MM HH:mm')}</>}
               . Seuil : {data.threshold_level} ({data.threshold.toFixed(0)}).
             </p>
             {data.notes.map((n) => (
-              <p key={n} className="text-gray-500 mb-2">{n}</p>
+              <p key={n} className="text-gray-500 mb-2">{accentLabel(n)}</p>
             ))}
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="text-xs text-gray-500 border-b">
                   <tr>
-                    <th className="py-1 pr-3">Echeance</th>
+                    <th className="py-1 pr-3">Échéance</th>
                     <th className="py-1 pr-3">Paires</th>
                     <th className="py-1 pr-3">MAE</th>
                     <th className="py-1 pr-3">Biais</th>
-                    <th className="py-1 pr-3">Detections</th>
+                    <th className="py-1 pr-3">Détections</th>
                     <th className="py-1 pr-3">Manques</th>
                     <th className="py-1 pr-3">Fausses alertes</th>
                     <th className="py-1 pr-3">POD</th>
@@ -114,7 +115,7 @@ export default function ForecastSkillPanel() {
               </table>
             </div>
             <p className="text-xs text-gray-400 mt-2">
-              Paires horaires (score prevu a l'echeance vs score temps reel stocke a +/- {data.tolerance_minutes} min), pas des evenements.
+              Paires horaires (score prévu à l'échéance vs score temps réel stocké à +/- {data.tolerance_minutes} min), pas des événements.
             </p>
           </>
         )}

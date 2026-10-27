@@ -35,17 +35,18 @@ import ActionError from '../components/ActionError'
 import ObservationList from '../components/ObservationList'
 import EpisodeObservationsPanel from '../components/EpisodeObservationsPanel'
 import { formatParis } from '../utils/time'
+import { accentLabel } from '../utils/frenchText'
 
 // Ground truth comes from the structured `outcome` field (null = not labelled yet)
 const OUTCOME_OPTIONS: { value: EpisodeOutcome; label: string }[] = [
-  { value: 'flooded', label: 'Inonde' },
-  { value: 'near_miss', label: 'Presque (eau haute, pas inonde)' },
+  { value: 'flooded', label: 'Inondé' },
+  { value: 'near_miss', label: 'Presque (eau haute, pas inondé)' },
   { value: 'false_positive', label: 'Faux positif' },
   { value: 'unknown', label: 'Inconnu' },
 ]
 
 const OUTCOME_LABELS: Record<EpisodeOutcome, string> = {
-  flooded: 'Inonde',
+  flooded: 'Inondé',
   near_miss: 'Presque',
   false_positive: 'Faux positif',
   unknown: 'Inconnu',
@@ -266,7 +267,7 @@ export default function Episodes() {
       )
     return (
       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700">
-        A valider
+        À valider
       </span>
     )
   }
@@ -276,9 +277,9 @@ export default function Episodes() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-bold">Episodes d'inondation</h2>
+          <h2 className="text-xl font-bold">Épisodes d'inondation</h2>
           <p className="text-sm text-gray-500 mt-1">
-            {episodes.length} episodes - {episodes.filter(isPending).length} a valider
+            {episodes.length} épisodes - {episodes.filter(isPending).length} à valider
           </p>
         </div>
         <button
@@ -294,7 +295,7 @@ export default function Episodes() {
         {/* Episodes List */}
         <div className="bg-white rounded-lg shadow max-h-[calc(100vh-200px)] overflow-hidden flex flex-col">
           <div className="p-4 border-b bg-gray-50">
-            <h3 className="font-medium">Episodes detectes</h3>
+            <h3 className="font-medium">Épisodes détectés</h3>
           </div>
 
           {loading ? (
@@ -302,19 +303,19 @@ export default function Episodes() {
           ) : listError ? (
             <div className="p-8 text-center space-y-3">
               <AlertTriangle className="w-12 h-12 text-red-400 mx-auto" />
-              <p className="text-red-600 text-sm">Chargement des episodes impossible : {listError}</p>
+              <p className="text-red-600 text-sm">Chargement des épisodes impossible : {listError}</p>
               <button
                 onClick={fetchEpisodes}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
               >
                 <RefreshCw className="w-4 h-4" />
-                Reessayer
+                Réessayer
               </button>
             </div>
           ) : episodes.length === 0 ? (
             <div className="p-8 text-center">
               <AlertTriangle className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-              <p className="text-gray-500">Aucun episode enregistre</p>
+              <p className="text-gray-500">Aucun épisode enregistré</p>
             </div>
           ) : (
             <div className="divide-y overflow-y-auto flex-1">
@@ -336,7 +337,7 @@ export default function Episodes() {
                         {statusBadge(ep.outcome)}
                       </div>
                       {ep.description && (
-                        <p className="text-sm text-gray-500 truncate mt-0.5">{ep.description}</p>
+                        <p className="text-sm text-gray-500 truncate mt-0.5">{accentLabel(ep.description)}</p>
                       )}
                     </div>
                     <div className="flex items-center gap-2 ml-2">
@@ -361,13 +362,13 @@ export default function Episodes() {
         {/* Detail Panel */}
         <div className="bg-white rounded-lg shadow">
           <div className="p-4 border-b bg-gray-50 flex items-center justify-between">
-            <h3 className="font-medium">Detail de l'episode</h3>
+            <h3 className="font-medium">Détail de l'épisode</h3>
             {selectedEpisode && (
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setIsEditing(!isEditing)}
                   className="p-1.5 rounded hover:bg-gray-200 text-gray-600"
-                  title="Editer"
+                  title="Éditer"
                 >
                   <Edit3 className="w-4 h-4" />
                 </button>
@@ -397,7 +398,7 @@ export default function Episodes() {
                 className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
               >
                 <RefreshCw className="w-4 h-4" />
-                Reessayer
+                Réessayer
               </button>
             </div>
           ) : selectedEpisode ? (
@@ -413,7 +414,7 @@ export default function Episodes() {
                   </h4>
                   {statusBadge(selectedEpisode.outcome)}
                 </div>
-                <p className="text-sm text-gray-600">{selectedEpisode.description}</p>
+                <p className="text-sm text-gray-600">{accentLabel(selectedEpisode.description)}</p>
                 {(selectedEpisode.water_height_cm != null ||
                   selectedEpisode.observed_at ||
                   selectedEpisode.outcome_source) && (
@@ -423,7 +424,7 @@ export default function Episodes() {
                     )}
                     {selectedEpisode.observed_at && (
                       <span>
-                        Pic observe :{' '}
+                        Pic observé :{' '}
                         {formatParis(selectedEpisode.observed_at, 'dd MMM yyyy HH:mm')}
                       </span>
                     )}
@@ -438,7 +439,7 @@ export default function Episodes() {
               {isEditing && (
                 <div className="bg-amber-50 rounded-lg p-4 space-y-3">
                   <label className="block text-sm font-medium" htmlFor="episode-outcome">
-                    Resultat au moulin
+                    Résultat au moulin
                   </label>
                   <select
                     id="episode-outcome"
@@ -446,7 +447,7 @@ export default function Episodes() {
                     onChange={(e) => setEditingOutcome(e.target.value as EpisodeOutcome | '')}
                     className="w-full border rounded px-3 py-2 text-sm bg-white"
                   >
-                    <option value="">A valider (non qualifie)</option>
+                    <option value="">À valider (non qualifié)</option>
                     {OUTCOME_OPTIONS.map((o) => (
                       <option key={o.value} value={o.value}>
                         {o.label}
@@ -472,7 +473,7 @@ export default function Episodes() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium" htmlFor="episode-observed-at">
-                        Pic observe au moulin
+                        Pic observé au moulin
                       </label>
                       <input
                         id="episode-observed-at"
@@ -484,7 +485,7 @@ export default function Episodes() {
                     </div>
                   </div>
 
-                  <label className="block text-sm font-medium">Severite reelle</label>
+                  <label className="block text-sm font-medium">Sévérité réelle</label>
                   <input
                     type="range"
                     min="1"
@@ -495,7 +496,7 @@ export default function Episodes() {
                   />
                   <div className="flex justify-between text-xs text-gray-500">
                     <span>1 - Mineur</span>
-                    <span>3 - Modere</span>
+                    <span>3 - Modéré</span>
                     <span>5 - Majeur</span>
                   </div>
 
@@ -505,7 +506,7 @@ export default function Episodes() {
                     onChange={(e) => setEditingNotes(e.target.value)}
                     className="w-full border rounded px-3 py-2 text-sm"
                     rows={3}
-                    placeholder="Niveau atteint au moulin, degats, observations..."
+                    placeholder="Niveau atteint au moulin, dégâts, observations..."
                   />
 
                   <button
@@ -532,7 +533,7 @@ export default function Episodes() {
               {/* Context metrics from analysis */}
               {selectedAnalysis && (
                 <div>
-                  <h4 className="font-medium mb-2 text-sm text-gray-600">Contexte hydro-meteo</h4>
+                  <h4 className="font-medium mb-2 text-sm text-gray-600">Contexte hydro-météo</h4>
                   <div className="grid grid-cols-2 gap-2">
                     <MetricCard
                       label="Pluie 24h"
@@ -547,7 +548,7 @@ export default function Episodes() {
                       value={`${selectedAnalysis.context.max_dordogne_level_m.toFixed(2)} m`}
                     />
                     <MetricCard
-                      label="Coef maree"
+                      label="Coef marée"
                       value={selectedAnalysis.context.max_tide_coefficient?.toString() ?? 'inconnu'}
                     />
                   </div>
@@ -557,7 +558,7 @@ export default function Episodes() {
               {/* Matched criteria */}
               {selectedAnalysis && selectedAnalysis.matched_criteria.length > 0 && (
                 <div>
-                  <h4 className="font-medium mb-2 text-sm text-gray-600">Criteres atteints</h4>
+                  <h4 className="font-medium mb-2 text-sm text-gray-600">Critères atteints</h4>
                   <ul className="space-y-1">
                     {selectedAnalysis.matched_criteria.slice(0, 6).map((criteria, i) => (
                       <li
@@ -565,7 +566,7 @@ export default function Episodes() {
                         className="flex items-start gap-2 text-xs text-orange-700 bg-orange-50 p-2 rounded"
                       >
                         <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                        {criteria}
+                        {accentLabel(criteria)}
                       </li>
                     ))}
                   </ul>
@@ -576,7 +577,7 @@ export default function Episodes() {
               {isPending(selectedEpisode) && (
                 <div className="border-t pt-4">
                   <p className="text-sm text-gray-600 mb-3">
-                    Est-ce que le moulin a ete inonde a cette date ?
+                    Est-ce que le moulin a été inondé à cette date ?
                   </p>
                   <div className="flex flex-wrap gap-3">
                     <button
@@ -585,7 +586,7 @@ export default function Episodes() {
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
                     >
                       <Check className="w-4 h-4" />
-                      Oui, inonde
+                      Oui, inondé
                     </button>
                     <button
                       onClick={() => handleConfirm('near_miss')}
@@ -605,14 +606,14 @@ export default function Episodes() {
                     </button>
                   </div>
                   <p className="text-xs text-gray-400 mt-2">
-                    Hauteur d'eau et heure du pic : bouton Editer.
+                    Hauteur d'eau et heure du pic : bouton Éditer.
                   </p>
                 </div>
               )}
 
               {!isPending(selectedEpisode) && !isEditing && (
                 <div className="border-t pt-3 text-xs text-gray-500">
-                  Resultat errone ?{' '}
+                  Résultat erroné ?{' '}
                   <button
                     onClick={() => setIsEditing(true)}
                     className="text-blue-600 hover:underline"
@@ -653,7 +654,7 @@ export default function Episodes() {
           ) : (
             <div className="p-8 text-center text-gray-400">
               <Search className="w-12 h-12 mx-auto mb-4 opacity-50" />
-              <p>Selectionnez un episode pour voir le detail</p>
+              <p>Sélectionnez un épisode pour voir le détail</p>
             </div>
           )}
         </div>
@@ -719,7 +720,7 @@ function AddEpisodeModal({
     } catch (err) {
       // The modal stays open with the form data so the user can retry
       console.error('Error creating episode:', err)
-      setError(toActionError(err, 'Creation impossible'))
+      setError(toActionError(err, 'Création impossible'))
     } finally {
       setSaving(false)
     }
@@ -729,11 +730,11 @@ function AddEpisodeModal({
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
         <div className="p-4 border-b">
-          <h3 className="font-bold text-lg">Nouvel episode</h3>
+          <h3 className="font-bold text-lg">Nouvel épisode</h3>
         </div>
         <form onSubmit={handleSubmit} className="p-4 space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-1">Date/heure de debut *</label>
+            <label className="block text-sm font-medium mb-1">Date/heure de début *</label>
             <input
               type="datetime-local"
               value={formData.start_time}
@@ -754,7 +755,7 @@ function AddEpisodeModal({
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1">Severite (1-5) *</label>
+            <label className="block text-sm font-medium mb-1">Sévérité (1-5) *</label>
             <input
               type="range"
               min="1"
@@ -765,14 +766,14 @@ function AddEpisodeModal({
             />
             <div className="flex justify-between text-xs text-gray-500">
               <span>1 - Mineur</span>
-              <span>3 - Modere</span>
+              <span>3 - Modéré</span>
               <span>5 - Majeur</span>
             </div>
           </div>
 
           <div>
             <label className="block text-sm font-medium mb-1" htmlFor="new-episode-outcome">
-              Resultat au moulin
+              Résultat au moulin
             </label>
             <select
               id="new-episode-outcome"
@@ -782,7 +783,7 @@ function AddEpisodeModal({
               }
               className="w-full border rounded px-3 py-2 bg-white"
             >
-              <option value="">A valider (non qualifie)</option>
+              <option value="">À valider (non qualifié)</option>
               {OUTCOME_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -798,7 +799,7 @@ function AddEpisodeModal({
               value={formData.description}
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
               className="w-full border rounded px-3 py-2"
-              placeholder="Ex: Crue suite a orage violent"
+              placeholder="Ex : crue suite à un orage violent"
             />
           </div>
 
@@ -809,7 +810,7 @@ function AddEpisodeModal({
               onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
               className="w-full border rounded px-3 py-2"
               rows={3}
-              placeholder="Observations, niveau atteint, degats..."
+              placeholder="Observations, niveau atteint, dégâts..."
             />
           </div>
 

@@ -25,7 +25,7 @@ function MoistureBar({ value, max = 0.5 }: { value: number; max?: number }) {
 
 function SaturationBadge({ factor }: { factor: number }) {
   const label =
-    factor >= 1.4 ? 'Sature' : factor >= 1.2 ? 'Humide' : factor >= 1.1 ? 'Normal' : 'Sec'
+    factor >= 1.4 ? 'Saturé' : factor >= 1.2 ? 'Humide' : factor >= 1.1 ? 'Normal' : 'Sec'
   const color =
     factor >= 1.4
       ? 'bg-red-100 text-red-700'
@@ -84,7 +84,7 @@ export default function SoilConditionsPanel({ soil, loading }: SoilConditionsPan
             <div className="flex items-center justify-between mb-1">
               <span className="text-sm text-gray-600 flex items-center gap-1">
                 <Droplets className="w-3 h-3" />
-                Humidite 0-9 cm (ICON)
+                Humidité 0-9 cm (ICON)
                 <InfoTooltip {...TOOLTIPS.soilMoisture} />
               </span>
               <span className="text-sm font-medium">{soil.soil_moisture.toFixed(3)} m3/m3</span>
@@ -99,7 +99,7 @@ export default function SoilConditionsPanel({ soil, loading }: SoilConditionsPan
             <div className="flex items-center justify-between mb-1">
               <span className="text-sm text-gray-600 flex items-center gap-1">
                 <Droplets className="w-3 h-3" />
-                Humidite profonde 9-81 cm (ICON)
+                Humidité profonde 9-81 cm (ICON)
               </span>
               <span className="text-sm font-medium">{soil.moisture_deep.toFixed(3)} m3/m3</span>
             </div>
@@ -108,7 +108,7 @@ export default function SoilConditionsPanel({ soil, loading }: SoilConditionsPan
         )}
         {(soil.soil_moisture != null || soil.moisture_deep != null) && (
           <p className="text-[10px] text-gray-400 -mt-2">
-            Open-Meteo, modele DWD ICON. La Timeline utilise ECMWF (0-7 / 7-100 cm) : valeurs differentes.
+            Open-Meteo, modèle DWD ICON. La Timeline utilise ECMWF (0-7 / 7-100 cm) : valeurs différentes.
           </p>
         )}
 
@@ -147,7 +147,7 @@ export default function SoilConditionsPanel({ soil, loading }: SoilConditionsPan
           <div className="flex items-center justify-between">
             <span className="text-sm text-gray-600 flex items-center gap-1">
               <CloudRain className="w-3 h-3" />
-              Proba. precipitation
+              Proba. précipitation
             </span>
             <span className="text-sm font-medium">{soil.precip_probability}%</span>
           </div>
@@ -169,7 +169,7 @@ export default function SoilConditionsPanel({ soil, loading }: SoilConditionsPan
               )}
               {soil.surplus_deficit_30d_pct != null && (
                 <div>
-                  <span className="text-gray-500">Ecart</span>
+                  <span className="text-gray-500">Écart</span>
                   <div className={`font-medium ${soil.surplus_deficit_30d_pct > 0 ? 'text-blue-600' : 'text-orange-600'}`}>
                     {soil.surplus_deficit_30d_pct > 0 ? '+' : ''}{soil.surplus_deficit_30d_pct.toFixed(0)}%
                   </div>
@@ -182,7 +182,7 @@ export default function SoilConditionsPanel({ soil, loading }: SoilConditionsPan
         {/* 12-month deficit */}
         {soil.deficit_12m_mm != null && (
           <div className="flex items-center justify-between text-sm">
-            <span className="text-gray-500">Deficit 12 mois</span>
+            <span className="text-gray-500">Déficit 12 mois</span>
             <span className="font-medium text-orange-600">{soil.deficit_12m_mm.toFixed(0)} mm</span>
           </div>
         )}

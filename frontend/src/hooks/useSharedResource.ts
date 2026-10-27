@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import {
   errorMessage,
   getEnsembleForecast,
@@ -6,6 +6,7 @@ import {
   getForecast,
   getIndicators,
   getLidoireProfile,
+  getRadarBasinRain,
   getVigilance,
 } from '../api'
 import type {
@@ -14,13 +15,15 @@ import type {
   ForecastData,
   IndicatorsData,
   LidoireProfileData,
+  RadarBasinRain,
   VigilanceStatus,
 } from '../types'
 
 // One fetch per endpoint shared by every panel of the Dashboard (mechanism
-// cards, ribbon, triggers and confidence read the same payloads): concurrent
-// callers join the request in flight, and a payload younger than its
-// refresh period is reused.
+// cards, ribbon, triggers, map, analogs and confidence read the same
+// payloads): concurrent callers join the request in flight, and a payload
+// younger than its refresh period is reused. The single data hook of the
+// app (it replaces the former useApiResource).
 
 interface Entry {
   data: unknown
@@ -50,7 +53,8 @@ function notify(entry: Entry) {
 
 /**
  * Fetches `key` unless a fetch is in flight (joined) or the last payload is
- * younger than `maxAgeMs` (kept). Errors keep the previous payload.
+ * younger than `maxAgeMs` (kept; Infinity = fetched once per page load).
+ * Errors keep the previous payload.
  */
 export function loadResource<T>(
   key: string,
@@ -91,20 +95,35 @@ export function resetSharedResources() {
 
 export interface SharedResource<T> {
   data: T | null
+  /** Error of the last fetch; `data` keeps the previous payload */
   error: string | null
   loading: boolean
   refresh: () => void
 }
 
+const IDLE: SharedResource<never> = { data: null, error: null, loading: false, refresh: () => {} }
+
+/**
+ * Shared GET keyed by `key`. `key` null or `enabled` false: nothing is
+ * fetched (a disabled panel, a date not chosen yet). A key that encodes its
+ * parameters (`risk/analogs@<date>`) never shows the payload of another
+ * one. `refreshMs` omitted: fetched once per page load (static payloads).
+ * Polling pauses while the tab is hidden.
+ */
 export function useSharedResource<T>(
-  key: string,
+  key: string | null,
   fetcher: () => Promise<T>,
-  refreshMs: number,
+  refreshMs?: number,
   enabled = true,
 ): SharedResource<T> {
-  const entry = entryOf(key)
+  const active = enabled && key !== null
+  const maxAge = refreshMs ?? Infinity
+  const fetcherRef = useRef(fetcher)
+  fetcherRef.current = fetcher
+
   const subscribe = useCallback(
     (listener: () => void) => {
+      if (key === null) return () => {}
       const e = entryOf(key)
       e.listeners.add(listener)
       return () => {
@@ -113,29 +132,31 @@ export function useSharedResource<T>(
     },
     [key],
   )
+  const version = useCallback(() => (key === null ? 0 : entryOf(key).version), [key])
   // The version changes on every state change of the entry
-  useSyncExternalStore(subscribe, () => entryOf(key).version, () => entryOf(key).version)
+  useSyncExternalStore(subscribe, version, version)
 
   useEffect(() => {
-    if (!enabled) return
-    void loadResource(key, fetcher, refreshMs)
+    if (!active || key === null) return
+    const run = () => loadResource(key, () => fetcherRef.current(), maxAge)
+    void run()
+    if (refreshMs == null) return
     const timer = setInterval(() => {
-      if (!document.hidden) void loadResource(key, fetcher, refreshMs)
+      if (!document.hidden) void run()
     }, refreshMs)
     return () => clearInterval(timer)
-    // The fetcher is a stable module function per key
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, refreshMs, enabled])
+  }, [key, active, maxAge, refreshMs])
 
   const refresh = useCallback(() => {
-    void loadResource(key, fetcher, 0)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (key !== null) void loadResource(key, () => fetcherRef.current(), 0)
   }, [key])
 
+  if (key === null) return IDLE
+  const entry = entryOf(key)
   return {
     data: entry.data as T | null,
     error: entry.error,
-    loading: entry.promise !== null || (enabled && entry.at === 0 && entry.error === null),
+    loading: entry.promise !== null || (active && entry.at === 0 && entry.error === null),
     refresh,
   }
 }
@@ -155,3 +176,5 @@ export const useVigilance = (enabled = true) =>
   useSharedResource<VigilanceStatus>('vigilance', getVigilance, 10 * MIN, enabled)
 export const useRiskForecast = (enabled = true) =>
   useSharedResource<ForecastData>('risk-forecast-168', () => getForecast(168), 10 * MIN, enabled)
+export const useRadarBasinRain = (enabled = true) =>
+  useSharedResource<RadarBasinRain>('radar-basin', getRadarBasinRain, 5 * MIN, enabled)

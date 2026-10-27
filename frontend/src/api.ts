@@ -146,7 +146,7 @@ async function buildApiError(response: Response): Promise<ApiError> {
   if (response.status === 401 || response.status === 403) {
     return new ApiError(
       response.status,
-      `Cle API manquante ou invalide (HTTP ${response.status}) : renseignez-la dans Configuration > Cle API`,
+      `Clé API manquante ou invalide (HTTP ${response.status}) : renseignez-la dans Configuration > Clé API`,
       detail,
     )
   }

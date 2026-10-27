@@ -58,16 +58,16 @@ describe('buildVerdict', () => {
     expect(v.title).toBe('Surveiller')
     expect(v.detail).toBe('et revenir dans quelques heures')
     expect(v.peak?.hours).toBe(72)
-    expect(v.why.lead).toBe('Maximum de 23/100 demain à 11:33, surtout :')
-    expect(v.why.reasons).toHaveLength(3)
-    expect(v.why.reasons[0]).toMatch(/Pessac-sur-Dordogne/)
+    expect(v.why.score).toBe("Score v3.4 au plus 23/100 d'ici 72 h, demain à 11:33.")
+    // The v3.4 drivers (Pessac rising) no longer lead the sentence
+    expect(v.why.reasons.join(' ')).not.toMatch(/Pessac-sur-Dordogne/)
   })
 
   it('says there is nothing to do when everything is green', () => {
     const v = buildVerdict({ horizons: [horizon(6, 'green'), horizon(24, 'green'), horizon(72, 'green')] }, 'green', NOW)
     expect(v.title).toBe('Rien à faire')
     expect(v.detail).toBe("ni ce soir, ni d'ici 3 jours")
-    expect(v.why.lead).toBe("Aucun facteur notable : score au plus 10/100 d'ici 72 h.")
+    expect(v.why.score).toMatch(/^Score v3\.4 au plus 10\/100 d'ici 72 h/)
   })
 
   it('uses the worst horizon, not the current level only', () => {
@@ -107,6 +107,6 @@ describe('buildVerdict', () => {
     const v = buildVerdict({ horizons: [] }, null, NOW)
     expect(v.level).toBe('green')
     expect(v.peak).toBeNull()
-    expect(v.why.lead).toBe('Prévision du score indisponible.')
+    expect(v.why.score).toBe('Prévision du score v3.4 indisponible.')
   })
 })

@@ -14,7 +14,8 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
-import { getStatus, getSourcesDetail, getCurrentRisk, simulateRisk, errorMessage, toActionError } from '../api'
+import { getStatus, getSourcesDetail, getCurrentRisk, simulateRisk, errorMessage, toActionError, netatmoAuthUrl } from '../api'
+import { needsNetatmoConnect, plainText } from '../utils/userText'
 import type { ActionErrorState } from '../api'
 import type {
   DependencyCheck,
@@ -29,6 +30,7 @@ import type {
 import { formatAge, parseApiDate } from '../utils/time'
 import ApiKeyPanel from '../components/ApiKeyPanel'
 import { formatDistanceKm } from '../utils/format'
+import { accentLabel } from '../utils/frenchText'
 import ActionError from '../components/ActionError'
 import ForecastSkillPanel from '../components/ForecastSkillPanel'
 
@@ -51,15 +53,15 @@ function statusBadgeClass(status: string): string {
 }
 
 const FRESHNESS_BADGE: Record<SourceFreshnessState, { label: string; className: string }> = {
-  ok: { label: 'a jour', className: 'bg-green-100 text-green-700' },
-  stale: { label: 'perime', className: 'bg-orange-100 text-orange-700' },
+  ok: { label: 'à jour', className: 'bg-green-100 text-green-700' },
+  stale: { label: 'périmé', className: 'bg-orange-100 text-orange-700' },
   unavailable: { label: 'indisponible', className: 'bg-red-100 text-red-700' },
   unknown: { label: 'inconnu', className: 'bg-gray-100 text-gray-600' },
 }
 
 function freshnessText(source: SourceFreshness): string {
   const last = parseApiDate(source.last_timestamp)
-  if (!last) return source.status === 'unknown' ? 'non verifie' : 'aucune donnee (30 j)'
+  if (!last) return source.status === 'unknown' ? 'non vérifié' : 'aucune donnée (30 j)'
   if (last.getTime() > Date.now()) {
     const until = last.toLocaleString('fr-FR', {
       day: '2-digit',
@@ -75,15 +77,15 @@ function freshnessText(source: SourceFreshness): string {
 function SourceFreshnessRow({ source }: { source: SourceFreshness }) {
   const badge = FRESHNESS_BADGE[source.status] ?? FRESHNESS_BADGE.unknown
   const limit =
-    source.max_age_hours > 0 ? `perime au-dela de ${source.max_age_hours} h` : 'doit couvrir le futur'
-  const detail = source.error ?? source.note
+    source.max_age_hours > 0 ? `périmé au-delà de ${source.max_age_hours} h` : 'doit couvrir le futur'
+  const detail = source.error ?? accentLabel(source.note ? plainText(source.note) : source.note)
   return (
     <div className="text-sm">
       <div className="flex items-center justify-between gap-2">
         <span className="min-w-0">
-          {source.label}
+          {accentLabel(source.label)}
           {source.critical && (
-            <span className="ml-1 text-xs text-gray-400" title="Perime ou indisponible : statut degrade">
+            <span className="ml-1 text-xs text-gray-400" title="Périmé ou indisponible : statut dégradé">
               (critique)
             </span>
           )}
@@ -101,6 +103,14 @@ function SourceFreshnessRow({ source }: { source: SourceFreshness }) {
       {detail && (
         <p className={`text-xs mt-0.5 text-right break-words ${source.error ? 'text-red-600' : 'text-gray-500'}`}>
           {detail}
+          {!source.error && needsNetatmoConnect(source.note) && (
+            <>
+              {' '}
+              <a href={netatmoAuthUrl()} className="text-indigo-600 underline">
+                Connecter Netatmo
+              </a>
+            </>
+          )}
         </p>
       )}
     </div>
@@ -240,7 +250,7 @@ export default function Configuration() {
           <div className="p-4 border-b flex items-center justify-between">
             <h3 className="font-medium flex items-center gap-2">
               <Database className="w-5 h-5" />
-              Etat du systeme
+              État du système
             </h3>
             <button
               onClick={() => { fetchStatus(); fetchSources() }}
@@ -252,14 +262,14 @@ export default function Configuration() {
           <div className="p-4">
             {statusError && (
               <div role="alert" className="mb-4 bg-red-50 border border-red-200 text-red-800 rounded px-3 py-2 text-sm">
-                Etat du systeme indisponible : {statusError}
-                {status ? ' (valeurs ci-dessous perimees)' : ''}
+                État du système indisponible : {statusError}
+                {status ? ' (valeurs ci-dessous périmées)' : ''}
               </div>
             )}
             {status ? (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-500">Status</span>
+                  <span className="text-gray-500">Statut</span>
                   <span className={`px-2 py-1 rounded text-sm ${statusBadgeClass(status.status)}`}>
                     {status.status}
                   </span>
@@ -271,7 +281,7 @@ export default function Configuration() {
 
                 <div className="pt-4 border-t">
                   <h4 className="text-sm font-medium text-gray-500 mb-2">
-                    Dependances
+                    Dépendances
                   </h4>
                   <div className="space-y-2">
                     {DEPENDENCIES.map(({ key, label }) => (
@@ -287,7 +297,7 @@ export default function Configuration() {
 
                 <div className="pt-4 border-t">
                   <h4 className="text-sm font-medium text-gray-500 mb-2">
-                    Fraicheur des donnees
+                    Fraîcheur des données
                   </h4>
                   {status.sources ? (
                     <div className="space-y-2">
@@ -319,7 +329,7 @@ export default function Configuration() {
               <div className="space-y-3">
                 <div>
                   <span className="text-gray-500 text-sm">Nom</span>
-                  <p className="font-medium">{status.location.name}</p>
+                  <p className="font-medium">{accentLabel(status.location.name)}</p>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -354,11 +364,11 @@ export default function Configuration() {
         </div>
       ) : sourcesError && !sources ? (
         <div role="alert" className="bg-red-50 border border-red-200 text-red-800 rounded-lg p-4 text-sm">
-          Detail des sources indisponible : {sourcesError}
+          Détail des sources indisponible : {sourcesError}
         </div>
       ) : sources ? (
         <div className="space-y-6">
-          <h3 className="text-lg font-bold">Sources de donnees</h3>
+          <h3 className="text-lg font-bold">Sources de données</h3>
 
           {/* River stations */}
           {sources.sources?.river && (
@@ -366,10 +376,10 @@ export default function Configuration() {
               <div className="p-4 border-b">
                 <h4 className="font-medium flex items-center gap-2">
                   <Droplets className="w-5 h-5 text-blue-600" />
-                  {sources.sources.river.name}
+                  {accentLabel(sources.sources.river.name)}
                 </h4>
                 <p className="text-sm text-gray-500 mt-1">
-                  {sources.sources.river.description}
+                  {accentLabel(sources.sources.river.description)}
                 </p>
                 <a
                   href={sources.sources.river.api_url}
@@ -390,9 +400,9 @@ export default function Configuration() {
                     <tr className="border-b text-left text-gray-500">
                       <th className="py-2 pr-3">Station</th>
                       <th className="py-2 pr-3">Code</th>
-                      <th className="py-2 pr-3">Riviere</th>
+                      <th className="py-2 pr-3">Rivière</th>
                       <th className="py-2 pr-3 text-right">Distance</th>
-                      <th className="py-2 pr-3 text-right">Delai</th>
+                      <th className="py-2 pr-3 text-right">Délai</th>
                       <th className="py-2 pr-3 text-right">Poids</th>
                       <th className="py-2 pr-3 text-right">Seuil J</th>
                       <th className="py-2 pr-3 text-right">Seuil O</th>
@@ -402,11 +412,11 @@ export default function Configuration() {
                   <tbody>
                     {sources.sources.river.stations?.map((s) => (
                       <tr key={s.id} className="border-b last:border-0">
-                        <td className="py-2 pr-3 font-medium">{s.name}</td>
+                        <td className="py-2 pr-3 font-medium">{accentLabel(s.name)}</td>
                         <td className="py-2 pr-3 font-mono text-xs text-gray-500">
                           {s.id}
                         </td>
-                        <td className="py-2 pr-3">{s.river}</td>
+                        <td className="py-2 pr-3">{accentLabel(s.river)}</td>
                         <td className="py-2 pr-3 text-right">{formatDistanceKm(s.distance_km)}</td>
                         <td className="py-2 pr-3 text-right">{s.delay_hours}h</td>
                         <td className="py-2 pr-3 text-right font-medium">
@@ -435,15 +445,15 @@ export default function Configuration() {
               <div className="p-4 border-b">
                 <h4 className="font-medium flex items-center gap-2">
                   <CloudRain className="w-5 h-5 text-green-600" />
-                  {sources.sources.netatmo.name}
+                  {accentLabel(sources.sources.netatmo.name)}
                   {!sources.sources.netatmo.configured && (
                     <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded">
-                      Non configure
+                      Non configuré
                     </span>
                   )}
                 </h4>
                 <p className="text-sm text-gray-500 mt-1">
-                  {sources.sources.netatmo.description}
+                  {accentLabel(sources.sources.netatmo.description)}
                 </p>
                 <p className="text-xs text-gray-400 mt-1">
                   Rayon de recherche : {sources.sources.netatmo.search_radius_km} km
@@ -466,7 +476,7 @@ export default function Configuration() {
                     <tbody>
                       {sources.sources.netatmo.priority_stations?.map((s, i) => (
                         <tr key={i} className="border-b last:border-0">
-                          <td className="py-2 pr-3 font-medium">{s.city}</td>
+                          <td className="py-2 pr-3 font-medium">{accentLabel(s.city)}</td>
                           <td className="py-2 pr-3 capitalize">{s.position}</td>
                           <td className="py-2 pr-3 text-right font-mono text-xs">
                             {s.lat}
@@ -489,15 +499,15 @@ export default function Configuration() {
               <div className="p-4 border-b">
                 <h4 className="font-medium flex items-center gap-2">
                   <Radio className="w-5 h-5 text-purple-600" />
-                  {sources.sources.infoclimat.name}
+                  {accentLabel(sources.sources.infoclimat.name)}
                   {!sources.sources.infoclimat.configured && (
                     <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded">
-                      Non configure
+                      Non configuré
                     </span>
                   )}
                 </h4>
                 <p className="text-sm text-gray-500 mt-1">
-                  {sources.sources.infoclimat.description}
+                  {accentLabel(sources.sources.infoclimat.description)}
                 </p>
               </div>
               <div className="p-4 space-y-2 text-sm">
@@ -512,7 +522,7 @@ export default function Configuration() {
                 {sources.sources.infoclimat.note && (
                   <div className="mt-2 p-2 bg-amber-50 text-amber-700 rounded text-xs flex items-start gap-2">
                     <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-                    {sources.sources.infoclimat.note}
+                    {accentLabel(sources.sources.infoclimat.note)}
                   </div>
                 )}
               </div>
@@ -525,10 +535,10 @@ export default function Configuration() {
               <div className="p-4 border-b">
                 <h4 className="font-medium flex items-center gap-2">
                   <Thermometer className="w-5 h-5 text-sky-600" />
-                  {sources.sources.open_meteo.name}
+                  {accentLabel(sources.sources.open_meteo.name)}
                 </h4>
                 <p className="text-sm text-gray-500 mt-1">
-                  {sources.sources.open_meteo.description}
+                  {accentLabel(sources.sources.open_meteo.description)}
                 </p>
                 <div className="mt-1 space-y-0.5">
                   <a
@@ -554,7 +564,7 @@ export default function Configuration() {
               <div className="p-4 space-y-4">
                 <div>
                   <p className="text-sm font-medium text-gray-500 mb-2">
-                    Champs collectes
+                    Champs collectés
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {sources.sources.open_meteo.fields?.map((f: string) => (
@@ -562,7 +572,7 @@ export default function Configuration() {
                         key={f}
                         className="px-2 py-0.5 bg-sky-50 text-sky-700 rounded text-xs"
                       >
-                        {f}
+                        {accentLabel(f)}
                       </span>
                     ))}
                   </div>
@@ -585,7 +595,7 @@ export default function Configuration() {
                         {sources.sources.open_meteo.basin_points?.map((p) => (
                           <tr key={p.id} className="border-b last:border-0">
                             <td className="py-1 pr-3 font-mono text-xs">{p.id}</td>
-                            <td className="py-1 pr-3">{p.name}</td>
+                            <td className="py-1 pr-3">{accentLabel(p.name)}</td>
                             <td className="py-1 pr-3 text-right font-mono text-xs">
                               {p.lat}
                             </td>
@@ -608,19 +618,19 @@ export default function Configuration() {
               <div className="p-4 border-b">
                 <h4 className="font-medium flex items-center gap-2">
                   <Waves className="w-5 h-5 text-teal-600" />
-                  {sources.sources.tide.name}
+                  {accentLabel(sources.sources.tide.name)}
                 </h4>
                 <p className="text-sm text-gray-500 mt-1">
-                  {sources.sources.tide.description}
+                  {accentLabel(sources.sources.tide.description)}
                 </p>
               </div>
               <div className="p-4 space-y-3 text-sm">
                 <div>
-                  <p className="text-gray-500 mb-1">Ports surveilles</p>
+                  <p className="text-gray-500 mb-1">Ports surveillés</p>
                   <div className="space-y-1">
                     {sources.sources.tide.ports?.map((port, i) => (
                       <div key={i} className="flex justify-between">
-                        <span className="font-medium">{port.name}</span>
+                        <span className="font-medium">{accentLabel(port.name)}</span>
                         <span className="font-mono text-xs text-gray-400">
                           {port.lat}, {port.lon}
                         </span>
@@ -630,9 +640,9 @@ export default function Configuration() {
                 </div>
                 {sources.sources.tide.reference_point && (
                   <div className="pt-2 border-t">
-                    <p className="text-gray-500 mb-1">Point de reference</p>
+                    <p className="text-gray-500 mb-1">Point de référence</p>
                     <div className="flex justify-between">
-                      <span>{sources.sources.tide.reference_point.name}</span>
+                      <span>{accentLabel(sources.sources.tide.reference_point.name)}</span>
                       <span className="font-mono text-xs text-gray-400">
                         {sources.sources.tide.reference_point.lat},{' '}
                         {sources.sources.tide.reference_point.lon}
@@ -650,10 +660,10 @@ export default function Configuration() {
               <div className="p-4 border-b">
                 <h4 className="font-medium flex items-center gap-2">
                   <CloudRain className="w-5 h-5 text-amber-600" />
-                  {sources.sources.meteo_agricole.name}
+                  {accentLabel(sources.sources.meteo_agricole.name)}
                 </h4>
                 <p className="text-sm text-gray-500 mt-1">
-                  {sources.sources.meteo_agricole.description}
+                  {accentLabel(sources.sources.meteo_agricole.description)}
                 </p>
                 {sources.sources.meteo_agricole.url && (
                   <a
@@ -669,7 +679,7 @@ export default function Configuration() {
               </div>
               <div className="p-4">
                 <p className="text-sm font-medium text-gray-500 mb-2">
-                  Champs collectes
+                  Champs collectés
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {sources.sources.meteo_agricole.fields?.map((f: string) => (
@@ -677,7 +687,7 @@ export default function Configuration() {
                       key={f}
                       className="px-2 py-0.5 bg-amber-50 text-amber-700 rounded text-xs"
                     >
-                      {f}
+                      {accentLabel(f)}
                     </span>
                   ))}
                 </div>
@@ -691,15 +701,15 @@ export default function Configuration() {
               <div className="p-4 border-b">
                 <h4 className="font-medium flex items-center gap-2">
                   <Camera className="w-5 h-5 text-gray-600" />
-                  {sources.sources.camera.name}
+                  {accentLabel(sources.sources.camera.name)}
                   {!sources.sources.camera.configured && (
                     <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded">
-                      Non configure
+                      Non configuré
                     </span>
                   )}
                 </h4>
                 <p className="text-sm text-gray-500 mt-1">
-                  {sources.sources.camera.description}
+                  {accentLabel(sources.sources.camera.description)}
                 </p>
               </div>
             </div>
@@ -711,13 +721,13 @@ export default function Configuration() {
               <div className="p-4 border-b">
                 <h4 className="font-medium flex items-center gap-2">
                   <AlertTriangle className="w-5 h-5 text-red-500" />
-                  Modele de risque {formatModelVersion(sources.risk_model.version ?? scoreModelVersion) ?? ''}
+                  Modèle de risque {formatModelVersion(sources.risk_model.version ?? scoreModelVersion) ?? ''}
                 </h4>
               </div>
               <div className="p-4 space-y-4">
                 <div>
                   <p className="text-sm font-medium text-gray-500 mb-2">
-                    Ponderation des facteurs
+                    Pondération des facteurs
                   </p>
                   <div className="space-y-1">
                     {Object.entries(sources.risk_model.weights).map(
@@ -729,7 +739,7 @@ export default function Configuration() {
                           <span className="text-gray-600">
                             {key.replace(/_/g, ' ')}
                           </span>
-                          <span className="font-mono text-xs">{value as string}</span>
+                          <span className="font-mono text-xs">{accentLabel(value as string)}</span>
                         </div>
                       )
                     )}
@@ -781,7 +791,7 @@ export default function Configuration() {
                       )}
                       {sources.risk_model.thresholds.tide_coef_high != null && (
                         <div className="bg-gray-50 p-2 rounded">
-                          <p className="font-medium mb-1">Coef. maree (fort)</p>
+                          <p className="font-medium mb-1">Coef. marée (fort)</p>
                           <span className="text-xs text-orange-600">
                             {'>='} {sources.risk_model.thresholds.tide_coef_high}
                           </span>
@@ -806,7 +816,7 @@ export default function Configuration() {
             Simulateur de risque
           </h3>
           <p className="text-sm text-gray-500 mt-1">
-            Testez differentes combinaisons de conditions pour comprendre le modele de risque
+            Testez différentes combinaisons de conditions pour comprendre le modèle de risque
           </p>
         </div>
         <div className="p-4">
@@ -871,7 +881,7 @@ export default function Configuration() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1">
-                    Coefficient maree
+                    Coefficient marée
                   </label>
                   <input
                     type="number"
@@ -889,7 +899,7 @@ export default function Configuration() {
                 </div>
                 <div className="col-span-2">
                   <label className="block text-sm font-medium mb-1">
-                    Heures jusqu'a pleine mer: {simParams.hours_to_high_tide}h
+                    Heures jusqu'à la pleine mer : {simParams.hours_to_high_tide}h
                   </label>
                   <input
                     type="range"
@@ -906,7 +916,7 @@ export default function Configuration() {
                     step="0.5"
                   />
                   <div className="flex justify-between text-xs text-gray-500">
-                    <span>-6h (apres PM)</span>
+                    <span>-6h (après PM)</span>
                     <span>0 (PM)</span>
                     <span>+6h (avant PM)</span>
                   </div>
@@ -925,7 +935,7 @@ export default function Configuration() {
 
             {/* Result */}
             <div className="bg-gray-50 rounded-lg p-4">
-              <h4 className="font-medium mb-3">Resultat</h4>
+              <h4 className="font-medium mb-3">Résultat</h4>
               {simResult ? (
                 <div className="space-y-3">
                   <div className="text-center">
@@ -942,13 +952,13 @@ export default function Configuration() {
                     >
                       {simResult.risk.score.toFixed(1)} / 100
                     </div>
-                    <p className="mt-2 text-sm">{simResult.risk.description}</p>
+                    <p className="mt-2 text-sm">{accentLabel(simResult.risk.description)}</p>
                   </div>
                   <div className="pt-3 border-t space-y-1 text-sm">
                     {simResult.risk.recommendations.map(
                       (rec: string, i: number) => (
                         <p key={i} className="text-gray-600">
-                          {rec}
+                          {accentLabel(rec)}
                         </p>
                       )
                     )}
@@ -956,7 +966,7 @@ export default function Configuration() {
                 </div>
               ) : (
                 <p className="text-gray-400 text-center">
-                  Ajustez les parametres et lancez la simulation
+                  Ajustez les paramètres et lancez la simulation
                 </p>
               )}
             </div>

@@ -2,14 +2,13 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import {
   getApiKey,
-  getEpisodeDrivers,
   getObservationPhoto,
   getObservations,
   getRiskAnalogs,
   isAuthError,
 } from '../api'
 import type { EpisodeDriversData, EpisodeOutcome, RiskAnalog, RiskAnalogsData } from '../types'
-import { useApiResource } from '../hooks/useApiResource'
+import { useEpisodeDrivers, useSharedResource } from '../hooks/useSharedResource'
 import {
   analogsIntro,
   axisBars,
@@ -320,8 +319,8 @@ const TEN_MIN = 10 * 60_000
  * close. `at` (TimeMachine, ISO): the situation at that date.
  */
 export default function AnalogCards({ at }: { at?: string }) {
-  const analogs = useApiResource<RiskAnalogsData>(`risk/analogs@${at ?? 'now'}`, () => getRiskAnalogs(at), TEN_MIN)
-  const drivers = useApiResource<EpisodeDriversData>('episodes/drivers', getEpisodeDrivers)
+  const analogs = useSharedResource<RiskAnalogsData>(`risk/analogs@${at ?? 'now'}`, () => getRiskAnalogs(at), TEN_MIN)
+  const drivers = useEpisodeDrivers()
   return (
     <AnalogCardsView
       analogs={analogs.data}

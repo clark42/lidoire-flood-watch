@@ -42,7 +42,7 @@ describe('source grouping', () => {
     expect(freshnessText(s.river_primary!, NOW)).toBe('il y a 15 min')
     expect(freshnessText(s.infoclimat!, NOW)).toBe('il y a 10 h 10')
     expect(freshnessText(s.tide!, NOW)).toMatch(/^connue jusqu’au mar\.? 3 nov\.? 23:00$/)
-    expect(freshnessText(s.netatmo!, NOW)).toBe('aucun jeton : autoriser via /api/auth/netatmo')
+    expect(freshnessText(s.netatmo!, NOW)).toBe('Netatmo n’est pas connecté')
   })
 
   it('restores the French accents of the backend labels', () => {

@@ -1,29 +1,6 @@
-// Small hooks shared by the hand-drawn SVG charts (profile, strips, phase plane)
+// Small hooks shared by the hand-drawn SVG charts (profile, strips, phase
+// plane); their width comes from useElementWidth.ts
 import { useEffect, useRef, useState, type RefObject } from 'react'
-
-/**
- * Width (CSS px) of an element, followed with a ResizeObserver: the charts
- * are drawn at their real size (legible text on a 375 px phone) instead of
- * a scaled viewBox. `fallback` is used before the first measure.
- */
-export function useElementWidth<T extends HTMLElement>(fallback = 640): [RefObject<T>, number] {
-  const ref = useRef<T>(null)
-  const [width, setWidth] = useState(fallback)
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const measure = () => {
-      const w = Math.floor(el.getBoundingClientRect().width)
-      if (w > 0) setWidth(w)
-    }
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(measure)
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [])
-  return [ref, width]
-}
 
 /** true when the user asked the system for reduced motion (followed live). */
 export function usePrefersReducedMotion(): boolean {

@@ -5,6 +5,7 @@ import type { EpisodeLabel, UnifiedTimelineData } from '../types'
 import { formatNumber } from './format'
 import { formatParis, parseApiDate } from './time'
 import {
+  backwaterGapBelowMill,
   backwaterReach,
   confluenceStage,
   reachRelativeToMill,
@@ -317,11 +318,12 @@ export function replayStory(
           : ''
       parts.push(`Pessac culmine à ${formatNumber(pMax.v, 2)} m le ${when(pMax.t)}${rel}.`)
     }
-    if (atPeak?.reach.distanceBelowMillM != null) {
+    const gapAtPeak = atPeak ? backwaterGapBelowMill(atPeak.reach) : null
+    if (atPeak && gapAtPeak != null) {
       parts.push(
         atPeak.reach.reachesMill
           ? `À l'heure labellisée, le plan d'eau de la Dordogne atteindrait le moulin (approximation).`
-          : `À l'heure labellisée, le remous s'arrête à ≈ ${km(atPeak.reach.distanceBelowMillM)} km sous le moulin : la Dordogne seule n'explique pas l'eau au moulin (approximation plan d'eau horizontal).`,
+          : `À l'heure labellisée, le remous s'arrête à ≈ ${km(gapAtPeak)} km sous le moulin : la Dordogne seule n'explique pas l'eau au moulin (approximation plan d'eau horizontal).`,
       )
     }
     return parts.join(' ')
@@ -337,8 +339,9 @@ export function replayStory(
   if (qMax) clauses.push(`l'Eyraud ne dépasse pas ${formatNumber(qMax.v, 1)} m³/s`)
   clauses.push(`il tombe ${formatNumber(rain, 0)} mm (Open-Meteo)`)
   parts.push(`${intro}, ${clauses.join(', ')}.`)
-  if (last?.reach.distanceBelowMillM != null) {
-    parts.push(`À la fin de la période, le remous s'arrête à ≈ ${km(last.reach.distanceBelowMillM)} km sous le moulin.`)
+  const gapAtEnd = last ? backwaterGapBelowMill(last.reach) : null
+  if (gapAtEnd != null) {
+    parts.push(`À la fin de la période, le remous s'arrête à ≈ ${km(gapAtEnd)} km sous le moulin.`)
   }
   return parts.join(' ')
 }

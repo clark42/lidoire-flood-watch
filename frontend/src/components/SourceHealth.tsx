@@ -1,4 +1,5 @@
 import type { SourceFreshnessState, SystemStatus } from '../types'
+import { netatmoAuthUrl } from '../api'
 import { groupSources, STATUS_LABELS, statusCounts } from '../utils/sourceHealth'
 import '../styles/field.css'
 
@@ -69,6 +70,11 @@ export default function SourceHealth({ sources, now, loading = false }: SourceHe
                   <span className="min-w-0">
                     {i.label}
                     {i.note && <span className="block text-[12px] text-ink-3">{i.note}</span>}
+                    {i.connectNetatmo && (
+                      <a href={netatmoAuthUrl()} className="block text-[12.5px] text-accent underline underline-offset-2">
+                        Connecter Netatmo
+                      </a>
+                    )}
                   </span>
                   <span className="text-right text-[12.5px] text-ink-2">
                     <span className={i.status === 'ok' ? undefined : 'font-bold text-ink'}>{STATUS_LABELS[i.status]}</span>

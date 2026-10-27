@@ -27,7 +27,7 @@ export default function ActionError({
         {error.auth && (
           <p className="mt-1">
             <Link to="/config#api-key" className="font-medium text-red-700 underline hover:text-red-900">
-              Renseigner la cle API
+              Renseigner la clé API
             </Link>
           </p>
         )}

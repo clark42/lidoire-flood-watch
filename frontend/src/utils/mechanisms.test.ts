@@ -59,7 +59,7 @@ describe('buildMechanisms', () => {
   it('backwater: Pessac 12.5 h max and the reach of the backwater below the mill', () => {
     expect(backwater.value).toBe(0.61)
     expect(backwater.state).toBe('calm')
-    expect(backwater.lead).toContain("Le remous s'arrête à ≈ 4,9 km sous le moulin.")
+    expect(backwater.lead).toContain("Le remous s'arrête à ≈ 4,9 km sous le moulin à 00:10 (eau connectée).")
     expect(backwater.facts.find((f) => f.label === 'Niveau à la confluence Z_c')).toMatchObject({
       value: '≈ 3,84 m NGF',
       kind: 'estimated',

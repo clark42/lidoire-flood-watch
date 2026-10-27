@@ -48,11 +48,12 @@ import DashboardSection from '../components/DashboardSection'
 import LevelMeter from '../components/ui/LevelMeter'
 import { ValueTagLegend } from '../components/ui/ValueTag'
 import { useRiskOutlook } from '../hooks/useRiskOutlook'
-import { useEnsembleForecast } from '../hooks/useSharedResource'
+import { useEnsembleForecast, useIndicators, useLidoireProfile } from '../hooks/useSharedResource'
 import { DASHBOARD_SECTIONS } from './dashboardSections'
 import { TOOLTIPS } from '../tooltipContent'
-import { formatAge, formatParis, parseApiDate } from '../utils/time'
+import { formatAge, formatParis, formatParisRelative, parseApiDate } from '../utils/time'
 import { formatNumber } from '../utils/format'
+import { isTideStation, rateTone, TIDE_STATION_HINT, TIDE_STATION_LABEL } from '../utils/stations'
 
 // Explore panels (basin map in SVG with d3-geo, analogs, GloFAS fan,
 // forecast skill): separate chunk, the decision renders first. Leaflet is
@@ -63,8 +64,6 @@ const GlofasFan = lazy(() => import('../components/GlofasFan'))
 const ForecastVsObserved = lazy(() => import('../components/ForecastVsObserved'))
 // recharts (~100 kB gzip) is only needed below the verdict: the panels that
 // draw charts load in a separate chunk, after the decision is on screen
-const EnsemblePanel = lazy(() => import('../components/EnsemblePanel'))
-const NowcastRainChart = lazy(() => import('../components/NowcastRainChart'))
 const BasinRainfallGauge = lazy(() => import('../components/BasinRainfallGauge'))
 // Replay of the Lidoire profile and flood plane (d3-scale/shape): below the fold
 const ReplayPanel = lazy(() => import('../components/ReplayPanel'))
@@ -74,9 +73,9 @@ function PanelFallback({ height = 'h-40' }: { height?: string }) {
   return <div className={`${height} w-full animate-pulse rounded-card bg-surface-2`} aria-hidden="true" />
 }
 
-function TendencyIcon({ tendency }: { tendency: string | null }) {
-  if (tendency === 'hausse') return <TrendingUp className="w-4 h-4 text-red-500" />
-  if (tendency === 'baisse') return <TrendingDown className="w-4 h-4 text-green-500" />
+function TendencyIcon({ tendency, neutral = false }: { tendency: string | null; neutral?: boolean }) {
+  if (tendency === 'hausse') return <TrendingUp className={`w-4 h-4 ${neutral ? 'text-gray-400' : 'text-red-500'}`} />
+  if (tendency === 'baisse') return <TrendingDown className={`w-4 h-4 ${neutral ? 'text-gray-400' : 'text-green-500'}`} />
   return <Minus className="w-4 h-4 text-gray-400" />
 }
 
@@ -113,7 +112,7 @@ const SECONDARY_SOURCE_LABELS = {
   infoclimat: 'Infoclimat',
   sources: 'Statut des sources',
   basin: 'Pluie bassin',
-  episodes: 'Episodes',
+  episodes: 'Épisodes',
 } as const
 
 type SecondarySource = keyof typeof SECONDARY_SOURCE_LABELS
@@ -154,6 +153,9 @@ export default function Dashboard() {
   const outlook = useRiskOutlook(!timeMachineActive)
   // Rain ensembles (confidence block), shared with the ribbon and the cards
   const ensemble = useEnsembleForecast(!timeMachineActive)
+  // Eyraud and the Pessac envelope of the verdict's "why" (shared with the cards)
+  const indicators = useIndicators(!timeMachineActive)
+  const profile = useLidoireProfile(!timeMachineActive)
 
   // Refs used by the polling loop (avoid stale closures and overlapping polls)
   const inFlightRef = useRef(false)
@@ -342,7 +344,7 @@ export default function Dashboard() {
           onClick={() => fetchData()}
           className="mt-4 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
         >
-          Reessayer
+          Réessayer
         </button>
       </div>
     )
@@ -373,6 +375,10 @@ export default function Dashboard() {
       loading={timeMachineLoading}
     />
   )
+  // One source for the next high water (time and coefficient): the outlook's
+  // next_high_tide, as in the verdict; the realtime tide only as a fallback
+  // (TimeMachine, outlook not loaded yet)
+  const nextHighTide = (!timeMachineActive && outlook.data?.next_high_tide) || data.tide.next_high_tide
   const alerts = data.alerts.filter(a => !a.includes('Netatmo') && !a.includes('Mode TimeMachine'))
   const selected = stations.find((s) => s.station_id === selectedStation)
 
@@ -462,6 +468,11 @@ export default function Dashboard() {
             sources={sources}
             ensemble={ensemble.loading && !ensemble.data ? undefined : ensemble.data}
             vigilance={<VigilanceBadges />}
+            mechanisms={{
+              indicators: indicators.loading && !indicators.data ? undefined : indicators.data,
+              realtime: data,
+              profile: profile.data,
+            }}
             now={new Date(now)}
           />
         )}
@@ -494,13 +505,14 @@ export default function Dashboard() {
         <RiskBreakdownPanel risk={data.risk} />
       </DashboardSection>
 
-      {/* 3. Next hours: forecast score, nowcast, ensembles */}
+      {/* 3. Next hours: forecast score, ensemble rain (with its exceedance
+          shares), tides, Pessac; observed radar rain and next-hour nowcast */}
       <DashboardSection id="prochaines-heures">
-        {!timeMachineActive && <HorizonRibbon realtime={data} now={new Date(now)} />}
-        <Suspense fallback={<PanelFallback height="h-72" />}>
-          <NowcastRainChart data={data.nowcast_rain} />
-          {!timeMachineActive && <EnsemblePanel />}
-        </Suspense>
+        {timeMachineActive ? (
+          <p className="text-ink-2">Prévisions en direct uniquement.</p>
+        ) : (
+          <HorizonRibbon realtime={data} now={new Date(now)} />
+        )}
       </DashboardSection>
 
       {/* 4. Act: owner's checklist, field observation */}
@@ -517,7 +529,10 @@ export default function Dashboard() {
               </p>
             )}
             <ObservationQuickForm />
-            <TriggerList realtime={data} outlook={outlook.data} />
+            {/* Full width: alone in a half column it left an empty one beside it */}
+            <div className="min-w-0 min-[960px]:col-span-2">
+              <TriggerList realtime={data} outlook={outlook.data} />
+            </div>
           </div>
         )}
       </DashboardSection>
@@ -561,6 +576,7 @@ export default function Dashboard() {
           netatmoStations={netatmo?.lidoire_stations}
           infoclimatStations={infoclimat?.nearest_stations}
           tide={data.tide}
+          highTideCoefficient={nextHighTide?.coefficient ?? null}
         />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <StationsPanel
@@ -587,18 +603,23 @@ export default function Dashboard() {
                         {selected.current_level.height_m.toFixed(2)}
                       </span>
                       <span className="text-gray-500">m</span>
-                      <TendencyIcon tendency={selected.tendency} />
+                      <TendencyIcon tendency={selected.tendency} neutral={isTideStation(selected)} />
                     </div>
                   </div>
-                  <div className="text-sm text-gray-500 flex items-center gap-1">
+                  <div className="text-sm text-gray-500 flex flex-wrap items-center gap-1">
                     {selected.tendency === 'hausse' && (
-                      <span className="text-red-500">
+                      <span className={rateTone(selected) === 'rising' ? 'text-red-500' : 'text-gray-500'}>
                         +{selected.rate_cm_per_hour.toFixed(1)} cm/h
                       </span>
                     )}
                     {selected.tendency === 'baisse' && (
-                      <span className="text-green-500">
+                      <span className={rateTone(selected) === 'falling' ? 'text-green-500' : 'text-gray-500'}>
                         {selected.rate_cm_per_hour.toFixed(1)} cm/h
+                      </span>
+                    )}
+                    {isTideStation(selected) && (
+                      <span className="rounded bg-surface-2 px-2 py-0.5 text-xs text-ink-2" title={TIDE_STATION_HINT}>
+                        {TIDE_STATION_LABEL}
                       </span>
                     )}
                     {selected.tendency === 'stable' && 'Stable'}
@@ -619,20 +640,20 @@ export default function Dashboard() {
               <div className="space-y-2">
                 <div className="flex justify-between">
                   <span className="text-gray-500 flex items-center gap-1">
-                    Coefficient
+                    Coefficient de la prochaine PM
                     <InfoTooltip {...TOOLTIPS.tideCoefficient} />
                   </span>
-                  <span className="font-bold text-lg">
-                    {data.tide.current_coefficient || '-'}
+                  <span className="font-bold text-lg" data-testid="tide-coefficient">
+                    {nextHighTide?.coefficient ?? '–'}
                   </span>
                 </div>
-                {data.tide.next_high_tide && (
+                {nextHighTide && (
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-500 flex items-center gap-1">
-                      Prochaine PM
+                      Prochaine PM (confluence, estimée)
                       <InfoTooltip {...TOOLTIPS.tidePhaseBmPm} />
                     </span>
-                    <span>{formatParis(data.tide.next_high_tide.timestamp, 'HH:mm')}</span>
+                    <span>{formatParisRelative(nextHighTide.timestamp, new Date(now))}</span>
                   </div>
                 )}
                 {data.tide.next_low_tide && (

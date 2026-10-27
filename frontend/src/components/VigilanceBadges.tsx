@@ -102,15 +102,21 @@ export function VigilancePanel({ data, failed = false, now = new Date() }: { dat
       href: d.url || meteofrance.url,
     })),
   ]
-  const issued = vigicrues.issued_at ?? meteofrance.issued_at
+  // Each service publishes on its own schedule: both times are shown
+  const issued = [
+    { source: 'Vigicrues', at: vigicrues.issued_at },
+    { source: 'Météo-France', at: meteofrance.issued_at },
+  ].filter((i): i is { source: string; at: string } => !!i.at)
   return (
     <section aria-labelledby="vigilance-title" className="rounded-card border border-line bg-surface p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 id="vigilance-title" className="font-display text-[19px] font-semibold tracking-[0.01em]">
           Vigilances officielles
         </h3>
-        <span className="font-mono text-[12px] text-ink-3">
-          {issued ? `émises ${formatParisRelative(issued, now)}` : 'en attente de collecte'}
+        <span className="font-mono text-[12px] text-ink-3" data-testid="vigilance-issued">
+          {issued.length > 0
+            ? issued.map((i) => `${i.source} ${formatParisRelative(i.at, now)}`).join(' · ')
+            : 'en attente de collecte'}
         </span>
       </div>
       <ul className="mt-1.5">

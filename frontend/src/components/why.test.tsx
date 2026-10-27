@@ -87,7 +87,7 @@ describe('MechanismGrid', () => {
   })
 
   it('says where the backwater stops and shows the unknown overflow threshold as a band', () => {
-    expect(visible).toContain("Le remous s'arrête à ≈ 4,9 km sous le moulin.")
+    expect(visible).toContain("Le remous s'arrête à ≈ 4,9 km sous le moulin à 00:10 (eau connectée).")
     expect(visible).toContain('seuil inconnu')
     expect(html).toContain('url(#rail-hatch-')
   })
@@ -205,6 +205,14 @@ describe('VigilancePanel', () => {
     expect(html.match(/data-level="green"/g)).toHaveLength(4)
     expect(visible).toContain('Vert')
     expect(visible).toContain('hors score')
+  })
+
+  it('shows the issue time of each service (UAT: only the Vigicrues time was shown)', () => {
+    const later = structuredClone(vigilance)
+    later.meteofrance.issued_at = '2026-10-27T05:00:00Z'
+    const html = renderToStaticMarkup(<VigilancePanel data={later} now={new Date('2026-10-27T08:00:00Z')} />)
+    const issued = text(html.match(/data-testid="vigilance-issued">([^<]*)</)![1])
+    expect(issued).toBe("Vigicrues hier à 15:56 · Météo-France aujourd'hui à 06:00")
   })
 
   it('reports an unavailable feed', () => {

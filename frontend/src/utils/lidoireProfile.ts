@@ -121,6 +121,33 @@ export interface ReachVsMill {
   reachesMill: boolean | null
 }
 
+/**
+ * Distance left between the end of the backwater and the mill, the single
+ * definition shown everywhere (mechanism card, profile, replay story): the
+ * connected water only, i.e. the server's `connected_distance_below_mill_m`
+ * (the upper bound `distance_below_mill_m` may jump a weir).
+ */
+export function backwaterGapBelowMill(reach: Pick<ReachVsMill, 'connectedDistanceBelowMillM'>): number | null {
+  return reach.connectedDistanceBelowMillM
+}
+
+/**
+ * Left edge of a label box of `boxWidth` px placed next to `anchorX`: on the
+ * right by default, on the left when it would cross `max`, and always kept
+ * within [min, max] (the SVG never clips a label, at any width).
+ */
+export function labelBoxX(anchorX: number, boxWidth: number, gap: number, [min, max]: [number, number]): number {
+  let x = anchorX + gap
+  if (x + boxWidth > max) x = anchorX - gap - boxWidth
+  return Math.min(Math.max(x, min), Math.max(min, max - boxWidth))
+}
+
+/** Centre of a middle-anchored text of about `textWidth` px, kept within [min, max]. */
+export function centredTextX(centerX: number, textWidth: number, [min, max]: [number, number]): number {
+  const half = textWidth / 2
+  return Math.min(Math.max(centerX, min + half), Math.max(min + half, max - half))
+}
+
 export function reachRelativeToMill(reach: Reach, millD: number): ReachVsMill {
   const d = reach.distance_m
   const c = reach.connected_distance_m

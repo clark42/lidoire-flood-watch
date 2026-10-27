@@ -14,6 +14,7 @@ import InfoTooltip from './InfoTooltip'
 import ConfidencePanel from './ConfidencePanel'
 import { TOOLTIPS } from '../tooltipContent'
 import { buildVerdict } from '../utils/levels'
+import type { MechanismWhyInputs } from '../utils/verdictWhy'
 import { formatNumber, RISK_LEVEL_LABELS } from '../utils/format'
 import { formatParis, formatParisRelative } from '../utils/time'
 
@@ -38,6 +39,8 @@ export interface VerdictHeroProps {
   ensemble?: EnsembleForecast | null
   /** Official vigilances, under the confidence block */
   vigilance?: ReactNode
+  /** Payloads of the "why" sentence (Eyraud, rain, Pessac); indicators undefined = loading */
+  mechanisms?: MechanismWhyInputs
   now?: Date
 }
 
@@ -59,16 +62,20 @@ function HorizonTile({ horizon, now }: { horizon: OutlookHorizon; now: Date }) {
   )
 }
 
-function HorizonDetails({ horizons }: { horizons: OutlookHorizon[] }) {
+function HorizonDetails({ horizons, version }: { horizons: OutlookHorizon[]; version: string }) {
   return (
     <details className="mt-3 text-sm">
       <summary className="inline-flex min-h-[44px] cursor-pointer items-center text-accent underline-offset-2 hover:underline sm:min-h-0">
         Détail par horizon
       </summary>
+      <p className="mt-2 text-[13px] text-ink-3">
+        Décomposition du score v{version} : les facteurs qui lui donnent le plus de points (montée et niveau de Pessac,
+        pluie, marée). Ce sont les termes du score, pas les mécanismes physiques du moulin (section Pourquoi).
+      </p>
       <div className="mt-2 grid gap-3 sm:grid-cols-3">
         {horizons.map((h) => (
           <div key={h.hours} className="min-w-0">
-            <div className="eyebrow">D&apos;ici {h.label}</div>
+            <div className="eyebrow">Score v{version}, d&apos;ici {h.label}</div>
             {h.drivers.length === 0 ? (
               <p className="mt-1 text-ink-2">Aucun facteur notable.</p>
             ) : (
@@ -108,6 +115,7 @@ export default function VerdictHero({
   sources = null,
   ensemble,
   vigilance,
+  mechanisms = {},
   now = new Date(),
 }: VerdictHeroProps) {
   const currentMeter = current && (
@@ -150,7 +158,8 @@ export default function VerdictHero({
     )
   }
 
-  const verdict = buildVerdict(outlook, current?.level ?? null, now)
+  const verdict = buildVerdict(outlook, current?.level ?? null, now, mechanisms)
+  const version = outlook.model_version ?? '3.4'
   const tide = outlook.next_high_tide
   const actions = outlook.checklist.actions.length
 
@@ -176,8 +185,8 @@ export default function VerdictHero({
             {verdict.detail}
           </span>
         </h2>
-        <p className="mt-3 max-w-[56ch] text-[16.5px] text-ink-2">
-          {verdict.why.lead}{' '}
+        <p className="mt-3 max-w-[56ch] text-[16.5px] text-ink-2" data-testid="verdict-why">
+          {verdict.why.score} {verdict.why.lead}{' '}
           {verdict.why.reasons.map((r, i) => (
             <span key={r}>
               <b className="font-bold text-ink">{r}</b>
@@ -212,7 +221,7 @@ export default function VerdictHero({
         </div>
 
         <div className="flex flex-wrap items-center gap-x-5">
-          <HorizonDetails horizons={outlook.horizons} />
+          <HorizonDetails horizons={outlook.horizons} version={version} />
           {actions > 0 && (
             <a
               href="#agir"

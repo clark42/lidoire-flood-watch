@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { Check, Droplets, Waves, AlertTriangle, Anchor, Sprout, Wind, Radio, Gauge } from 'lucide-react'
 import type { RiverStationInfo, RainfallStationInfo, IndicatorSeriesInfo } from '../types'
 import { formatDistanceKm } from '../utils/format'
+import { accentLabel } from '../utils/frenchText'
 
 interface TimelineSourceSelectorProps {
   riverStations: RiverStationInfo[]
@@ -38,12 +39,12 @@ const INDICATOR_GROUPS: { label: string; match: (s: IndicatorSeriesInfo) => bool
   { label: 'Affluents', match: (s) => s.type === 'flow_tributary' },
   { label: 'Dordogne', match: (s) => s.type === 'flow_dordogne' },
   { label: 'Nappe', match: (s) => s.type === 'groundwater' },
-  { label: 'Maree obs.', match: (s) => s.type === 'tide_observed' },
+  { label: 'Marée obs.', match: (s) => s.type === 'tide_observed' },
 ]
 
 /** "Debit Eyraud a La Force" -> "Eyraud a La Force" (the group already says what it is). */
 function shortIndicatorName(s: IndicatorSeriesInfo): string {
-  return s.name.replace(/^(Debit|Nappe|Maree observee) /, '')
+  return accentLabel(s.name.replace(/^(Debit|Nappe|Maree observee) /, ''))
 }
 
 export default function TimelineSourceSelector({
@@ -114,14 +115,14 @@ export default function TimelineSourceSelector({
       {/* Header with quick actions */}
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-gray-700">
-          Sources a afficher
+          Sources à afficher
         </span>
         <div className="flex gap-2">
           <button
             onClick={onSelectAllRivers}
             className="text-xs px-2 py-1 bg-cyan-50 text-cyan-600 rounded hover:bg-cyan-100"
           >
-            Toutes les rivieres
+            Toutes les rivières
           </button>
           <button
             onClick={onSelectAllRainfall}
@@ -143,14 +144,14 @@ export default function TimelineSourceSelector({
         <div className="flex items-center gap-2 mb-2">
           <Waves className="w-4 h-4 text-cyan-600" />
           <span className="text-sm font-medium text-cyan-700">
-            Niveaux rivieres (Hub'Eau)
+            Niveaux rivières (Hub'Eau)
           </span>
         </div>
         <div className="space-y-2">
           {Object.entries(stationsByRiver).map(([river, stations]) => (
             <div key={river} className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-medium text-gray-500 w-20">
-                {river}:
+                {accentLabel(river)}:
               </span>
               {stations.map((station) => {
                 const isSelected = selectedRiverStations.includes(station.id)
@@ -174,7 +175,7 @@ export default function TimelineSourceSelector({
                     }
                   >
                     {isSelected && <Check className="w-3 h-3" />}
-                    {station.name}
+                    {accentLabel(station.name)}
                     <span className="opacity-60">
                       ({formatDistanceKm(station.distance_km)})
                     </span>
@@ -191,10 +192,10 @@ export default function TimelineSourceSelector({
         <div className="flex items-center gap-2 mb-2">
           <Droplets className="w-4 h-4 text-green-600" />
           <span className="text-sm font-medium text-green-700">
-            Pluviometrie (Open-Meteo, Netatmo Lidoire)
+            Pluviométrie (Open-Meteo, Netatmo Lidoire)
           </span>
           {rainfallStations.some((s) => s.available === false) && (
-            <span className="text-xs text-gray-500">Netatmo indisponible (non autorise)</span>
+            <span className="text-xs text-gray-500">Netatmo indisponible (non autorisé)</span>
           )}
         </div>
         <div className="space-y-2">
@@ -215,7 +216,7 @@ export default function TimelineSourceSelector({
                     <button
                       key={station.id}
                       onClick={() => onRainfallStationToggle(station.id)}
-                      title={unavailable ? 'Source indisponible : aucune donnee collectee' : undefined}
+                      title={unavailable ? 'Source indisponible : aucune donnée collectée' : undefined}
                       className={`flex items-center gap-1 px-2 py-1 text-xs rounded-full border transition-all ${
                         isSelected
                           ? 'border-2'
@@ -232,7 +233,7 @@ export default function TimelineSourceSelector({
                       }
                     >
                       {isSelected && <Check className="w-3 h-3" />}
-                      {station.name}
+                      {accentLabel(station.name)}
                       {unavailable && <span className="opacity-60">(indisponible)</span>}
                     </button>
                   )
@@ -251,7 +252,7 @@ export default function TimelineSourceSelector({
             <span className="text-sm font-medium text-teal-700">
               Indicateurs hydrologiques
             </span>
-            <span className="text-xs text-gray-500">hors modele v3.4</span>
+            <span className="text-xs text-gray-500">hors modèle v3.4</span>
           </div>
           <div className="space-y-2">
             {INDICATOR_GROUPS.map(({ label, match }) => {
@@ -266,7 +267,7 @@ export default function TimelineSourceSelector({
                       <button
                         key={s.id}
                         onClick={() => onIndicatorToggle(s.id)}
-                        title={`${s.name} (${s.unit})`}
+                        title={`${accentLabel(s.name)} (${s.unit})`}
                         className={`flex items-center gap-1 px-2 py-1 text-xs rounded-full border transition-all ${
                           isSelected ? 'border-2' : 'border-gray-200 bg-white hover:bg-gray-50'
                         }`}
@@ -301,7 +302,7 @@ export default function TimelineSourceSelector({
         >
           <Anchor className="w-4 h-4" />
           {tideEnabled && <Check className="w-3 h-3" />}
-          Maree (confluence, estimee)
+          Marée (confluence, estimée)
         </button>
 
         <button
@@ -320,7 +321,7 @@ export default function TimelineSourceSelector({
         {onRiskShadowToggle && (
           <button
             onClick={onRiskShadowToggle}
-            title="Modele shadow 3.4-gate (v3.4 x gate de remous Pessac), stocke pour comparaison, sans effet sur le score affiche"
+            title="Modèle shadow 3.4-gate (v3.4 x gate de remous Pessac), stocké pour comparaison, sans effet sur le score affiché"
             className={`flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-all ${
               riskShadowEnabled
                 ? 'bg-teal-50 border-teal-300 text-teal-700 border-2'
@@ -336,7 +337,7 @@ export default function TimelineSourceSelector({
         {onRiskShadowV4Toggle && (
           <button
             onClick={onRiskShadowV4Toggle}
-            title="Modele shadow 4.0a (v4-alpha : max(min(remous, ruissellement Eyraud), debordement)), stocke pour comparaison, sans effet sur le score affiche ni sur les alertes"
+            title="Modèle shadow 4.0a (v4-alpha : max(min(remous, ruissellement Eyraud), débordement)), stocké pour comparaison, sans effet sur le score affiché ni sur les alertes"
             className={`flex items-center gap-2 px-3 py-2 text-sm rounded-lg border transition-all ${
               riskShadowV4Enabled
                 ? 'bg-purple-50 border-purple-300 text-purple-700 border-2'
@@ -405,7 +406,7 @@ export default function TimelineSourceSelector({
           >
             <AlertTriangle className="w-4 h-4" />
             {forecastEnabled && <Check className="w-3 h-3" />}
-            Previsions 7j
+            Prévisions 7j
           </button>
         )}
       </div>
@@ -416,7 +417,7 @@ export default function TimelineSourceSelector({
           <span className="font-medium text-cyan-600">
             {selectedRiverStations.length}
           </span>{' '}
-          station{selectedRiverStations.length > 1 ? 's' : ''} riviere
+          station{selectedRiverStations.length > 1 ? 's' : ''} rivière
         </span>
         <span>
           <span className="font-medium text-green-600">
@@ -425,7 +426,7 @@ export default function TimelineSourceSelector({
           station{selectedRainfallStations.length > 1 ? 's' : ''} pluie
         </span>
         {tideEnabled && (
-          <span className="font-medium text-blue-600">+ maree</span>
+          <span className="font-medium text-blue-600">+ marée</span>
         )}
         {riskEnabled && (
           <span className="font-medium text-amber-600">+ risque</span>
@@ -440,7 +441,7 @@ export default function TimelineSourceSelector({
           <span className="font-medium text-slate-600">+ vent</span>
         )}
         {forecastEnabled && (
-          <span className="font-medium text-purple-600">+ previsions</span>
+          <span className="font-medium text-purple-600">+ prévisions</span>
         )}
         {selectedIndicators.length > 0 && (
           <span className="font-medium text-teal-600">+ {selectedIndicators.length} indicateur{selectedIndicators.length > 1 ? 's' : ''}</span>

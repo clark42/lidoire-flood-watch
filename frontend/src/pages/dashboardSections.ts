@@ -9,6 +9,11 @@ export interface DashboardSectionDef {
   /** Heading of the section (absent: the section supplies its own) */
   title?: string
   description?: string
+  /**
+   * Long, secondary section: a disclosure, collapsed by default under 640 px
+   * (open on desktop). Never the decision, the why or the actions.
+   */
+  collapsible?: boolean
 }
 
 export const DASHBOARD_SECTIONS = [
@@ -34,6 +39,7 @@ export const DASHBOARD_SECTIONS = [
   },
   {
     id: 'replay',
+    collapsible: true,
     label: 'Coupe & replay',
     title: 'De la confluence au moulin',
     description:
@@ -41,6 +47,7 @@ export const DASHBOARD_SECTIONS = [
   },
   {
     id: 'plan',
+    collapsible: true,
     label: 'Plan des crues',
     title: 'Plan des crues',
     description:
@@ -48,6 +55,7 @@ export const DASHBOARD_SECTIONS = [
   },
   {
     id: 'analogues',
+    collapsible: true,
     label: 'Analogues',
     title: 'Ça ressemble à…',
     description:
@@ -55,6 +63,7 @@ export const DASHBOARD_SECTIONS = [
   },
   {
     id: 'carte',
+    collapsible: true,
     label: 'Carte',
     title: 'Le bassin',
     description:
@@ -69,12 +78,14 @@ export const DASHBOARD_SECTIONS = [
   },
   {
     id: 'pluie-sol',
+    collapsible: true,
     label: 'Pluie et sol',
     title: 'Pluie et sol',
     description: 'Cumuls par source, pluie du bassin et état des sols.',
   },
   {
     id: 'fiabilite',
+    collapsible: true,
     label: 'Fiabilité',
     title: 'Fiabilité',
     description: 'Ce qui était prévu, ce qui est arrivé, et l’état des sources.',

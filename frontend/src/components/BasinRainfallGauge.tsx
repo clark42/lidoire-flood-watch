@@ -52,11 +52,11 @@ export default function BasinRainfallGauge({ data, loading }: BasinRainfallGauge
           <InfoTooltip {...TOOLTIPS.basinHeader} />
         </div>
         <p className="text-sm text-gray-500">
-          {data ? 'Netatmo indisponible : aucune station du bassin ne remonte de donnees.' : 'Pas de donnees'}
+          {data ? 'Netatmo indisponible : aucune station du bassin ne remonte de données.' : 'Pas de données'}
         </p>
         {data && (
           <p className="text-xs text-gray-400 mt-1">
-            Pluie du modele : voir Pluie (modele), Open-Meteo et Infoclimat.
+            Pluie du modèle : voir Pluie (modèle), Open-Meteo et Infoclimat.
           </p>
         )}
       </div>
@@ -88,7 +88,7 @@ export default function BasinRainfallGauge({ data, loading }: BasinRainfallGauge
 
       {/* Secondary value */}
       <div className="text-sm text-gray-500 mb-4">
-        Derniere heure : {data.basin_average_1h_mm.toFixed(1)} mm
+        Dernière heure : {data.basin_average_1h_mm.toFixed(1)} mm
       </div>
 
       {/* Position bars */}

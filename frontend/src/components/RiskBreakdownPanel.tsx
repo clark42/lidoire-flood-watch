@@ -10,17 +10,17 @@ interface RiskBreakdownPanelProps {
 }
 
 const FACTOR_LABELS: Record<string, string> = {
-  river: 'Niveaux rivieres',
+  river: 'Niveaux rivières',
   rain_24h: 'Pluie 24h',
   rain_72h: 'Pluie 72h',
   rain_7d: 'Pluie 7j',
-  tide: 'Coef. maree',
-  tide_phase: 'Phase maree',
+  tide: 'Coef. marée',
+  tide_phase: 'Phase marée',
   tendency: 'Tendance',
   momentum: 'Momentum multi-stations',
   wind_west: "Vent d'ouest",
   soil_sat: 'Saturation sol',
-  video: 'Video',
+  video: 'Vidéo',
 }
 
 const FACTOR_TOOLTIPS: Record<string, keyof typeof TOOLTIPS> = {
@@ -210,7 +210,7 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
       >
         <div className="flex items-center gap-2">
           <Calculator className="w-5 h-5 text-gray-500" />
-          <span className="font-medium">Detail du calcul de risque</span>
+          <span className="font-medium">Détail du calcul de risque</span>
           <InfoTooltip {...TOOLTIPS.riskScore} />
         </div>
         {expanded ? (
@@ -226,29 +226,29 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
           {/* Score summary */}
           <div className="p-4 bg-gray-50 border-b border-gray-200">
             <div className="text-2xl font-bold">
-              Score final: {risk.score.toFixed(0)}/100
+              Score final : {risk.score.toFixed(0)}/100
             </div>
             <div className="text-sm text-gray-600 mt-1 flex items-center gap-1 flex-wrap font-mono">
-              = somme ponderee {weightedSum.toFixed(3)} / denominateur {denominator.toFixed(2)}
+              = somme pondérée {weightedSum.toFixed(3)} / dénominateur {denominator.toFixed(2)}
               {' '}x conjonction {conjunction.toFixed(2)}
               <InfoTooltip {...TOOLTIPS.conjunctionMultiplier} />
               {' '}x amortisseur {dampener.toFixed(2)} x 100
               {' '}= {Math.min(totalPoints, 100).toFixed(1)}
             </div>
             <div className="text-xs text-gray-500 mt-1">
-              Denominateur = somme des poids des facteurs disponibles
+              Dénominateur = somme des poids des facteurs disponibles
               {unavailable.size > 0
                 ? ` (exclus : ${[...unavailable].map(k => FACTOR_LABELS[k] || k).join(', ')})`
                 : ''}
-              {totalPoints > 100 ? ' ; score plafonne a 100' : ''}
+              {totalPoints > 100 ? ' ; score plafonné à 100' : ''}
             </div>
             {tideGate != null && (
               <div className="text-xs text-gray-500 mt-1">
-                Gate maree : x{tideGate.toFixed(2)} sur Coef. et Phase maree
+                Gate marée : x{tideGate.toFixed(2)} sur Coef. et Phase marée
                 {factors.backwater_level_m != null
                   ? ` (remous Pessac max 12.5 h : ${factors.backwater_level_m.toFixed(2)} m ; 0 sous le seuil jaune, 1 au seuil orange)`
                   : ''}
-                {factors.tide_available === false ? ' ; maree indisponible ou estimee' : ''}
+                {factors.tide_available === false ? ' ; marée indisponible ou estimée' : ''}
               </div>
             )}
           </div>
@@ -316,7 +316,7 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
                 className="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors"
               >
                 <span className="text-sm font-medium text-gray-600">
-                  Detail par station ({stations.length})
+                  Détail par station ({stations.length})
                 </span>
                 {stationsExpanded ? (
                   <ChevronUp className="w-4 h-4 text-gray-400" />
@@ -373,7 +373,7 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
             >
               <div className="flex items-center gap-2">
                 <HelpCircle className="w-4 h-4 text-gray-400" />
-                <span className="text-sm text-gray-600">Comment est calcule le score ?</span>
+                <span className="text-sm text-gray-600">Comment est calculé le score ?</span>
               </div>
               {helpExpanded ? (
                 <ChevronUp className="w-4 h-4 text-gray-400" />
@@ -384,21 +384,21 @@ export default function RiskBreakdownPanel({ risk, defaultExpanded = false }: Ri
 
             {helpExpanded && (
               <div className="px-4 pb-4 text-sm text-gray-600 space-y-2">
-                <p>Le score de risque (0-100) est calcule en plusieurs etapes :</p>
+                <p>Le score de risque (0-100) est calculé en plusieurs étapes :</p>
                 <ol className="list-decimal list-inside space-y-1 pl-2">
-                  <li>Chaque facteur est normalise de 0 a 1 selon des seuils predefinis</li>
-                  <li>Chaque score est multiplie par son poids (11 facteurs, total = 100%)</li>
+                  <li>Chaque facteur est normalisé de 0 à 1 selon des seuils prédéfinis</li>
+                  <li>Chaque score est multiplié par son poids (11 facteurs, total = 100%)</li>
                   <li>La saturation du sol amplifie aussi les scores de pluie (multiplicateur)</li>
-                  <li>Les facteurs maree sont multiplies par le gate maree (remous a Pessac)</li>
+                  <li>Les facteurs marée sont multipliés par le gate marée (remous à Pessac)</li>
                   <li>
-                    La somme ponderee est divisee par la somme des poids des facteurs disponibles
+                    La somme pondérée est divisée par la somme des poids des facteurs disponibles
                   </li>
                   <li>
-                    Multiplicateur de conjonction (1.0 a 2.5x) et amortisseur de stabilite (0.65 a 1.0x)
+                    Multiplicateur de conjonction (1.0 à 2.5x) et amortisseur de stabilité (0.65 à 1.0x)
                   </li>
                 </ol>
                 <p className="text-xs text-gray-500 mt-3">
-                  Les seuils sont calibres sur les donnees historiques d'inondations du moulin.
+                  Les seuils sont calibrés sur les données historiques d'inondations du moulin.
                 </p>
               </div>
             )}

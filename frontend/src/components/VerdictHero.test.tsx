@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { RiskOutlook } from '../types'
 import fixture from '../test-fixtures/outlook.json'
+import indicatorsFixture from '../test-fixtures/indicators.json'
+import realtimeFixture from '../test-fixtures/realtime.json'
+import type { IndicatorsData, RealtimeData } from '../types'
 import VerdictHero from './VerdictHero'
 import LevelMeter from './ui/LevelMeter'
 import ValueTag from './ui/ValueTag'
@@ -39,7 +42,15 @@ describe('ValueTag', () => {
 
 describe('VerdictHero', () => {
   const html = renderToStaticMarkup(
-    <VerdictHero outlook={outlook} current={{ score: 21.5, level: 'yellow' }} now={NOW} />,
+    <VerdictHero
+      outlook={outlook}
+      current={{ score: 21.5, level: 'yellow' }}
+      mechanisms={{
+        indicators: indicatorsFixture as unknown as IndicatorsData,
+        realtime: realtimeFixture as unknown as RealtimeData,
+      }}
+      now={NOW}
+    />,
   )
   const visible = text(html)
 
@@ -56,8 +67,19 @@ describe('VerdictHero', () => {
     expect(html.match(/data-level="yellow"/g)!.length).toBeGreaterThanOrEqual(4)
   })
 
-  it('explains why with the drivers of the peak', () => {
-    expect(visible).toContain('Maximum de 23/100 demain à 11:33, surtout :')
+  it('explains why with the mechanisms, runoff first, the score named as such', () => {
+    const why = text(html.match(/<p[^>]*data-testid="verdict-why"[^>]*>(.*?)<\/p>/)![1])
+    expect(why).toMatch(/^Score v3\.4 au plus 23\/100 d'ici 72 h, demain à 11:33\. Mécanismes, ruissellement de la Lidoire d’abord : Eyraud 0,066 m³\/s/)
+    expect(why).toContain('pluie tombée 0,3 mm sur 24 h, 9,1 mm sur 72 h')
+    expect(why).toContain('pluie prévue ~ 0,0 mm')
+    // Pessac is low: the Dordogne stays out of the sentence
+    expect(why).not.toMatch(/Pessac|Dordogne/)
+  })
+
+  it('keeps the v3.4 drivers in the horizon detail, labelled as the score breakdown', () => {
+    expect(visible).toContain('Détail par horizon')
+    expect(visible).toContain('Décomposition du score v3.4')
+    expect(visible).toContain("Score v3.4, d'ici 72 h")
     expect(visible).toContain('Pessac-sur-Dordogne monte de')
   })
 

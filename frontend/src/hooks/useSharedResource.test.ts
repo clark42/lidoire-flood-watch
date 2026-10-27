@@ -25,4 +25,18 @@ describe('shared resources (one fetch per endpoint for every panel)', () => {
     await loadResource('k', () => Promise.reject(new Error('HTTP 503')), 0)
     expect(peekResource('k')).toEqual({ data: 'ok', error: 'HTTP 503', loading: false })
   })
+
+  it('fetches a static payload (no refresh period) once per page load', async () => {
+    const fetcher = vi.fn(() => Promise.resolve('basin'))
+    await loadResource('geo/basin', fetcher, Infinity)
+    await loadResource('geo/basin', fetcher, Infinity, Date.now() + 24 * 3600_000)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps one entry per parameterised key (a date never shows another one)', async () => {
+    await loadResource('risk/analogs@now', () => Promise.resolve('now'), 60_000)
+    await loadResource('risk/analogs@2024-02-26', () => Promise.resolve('then'), 60_000)
+    expect(peekResource('risk/analogs@now').data).toBe('now')
+    expect(peekResource('risk/analogs@2024-02-26').data).toBe('then')
+  })
 })

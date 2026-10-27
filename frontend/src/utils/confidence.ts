@@ -2,6 +2,7 @@
 import type { EnsembleForecast, OutlookConfidence, SourceFreshness, SourceFreshnessName } from '../types'
 import { formatAge, parseApiDate } from './time'
 import { ensembleAgreement } from './ensemble'
+import { needsNetatmoConnect, plainText } from './userText'
 
 export type ConfidenceKind = 'ok' | 'warn' | 'info'
 
@@ -10,6 +11,8 @@ export interface ConfidenceItem {
   /** Bold lead (may be empty) */
   lead: string
   text: string
+  /** The note asks to (re)authorise Netatmo: the reason offers "Connecter Netatmo" */
+  connectNetatmo?: boolean
 }
 
 export const CONFIDENCE_LEVEL_LABELS: Record<OutlookConfidence['level'], string> = {
@@ -24,9 +27,11 @@ export const LABELLED_FLOODS = 5
 // Notes of backend/app/services/outlook.py that report a degraded input
 const WARNING_NOTE = /^(Source |Facteurs indisponibles|Marées estimées|Donnée de prévision manquante)/
 
-function splitNote(note: string): { lead: string; text: string } {
+function splitNote(raw: string): { lead: string; text: string; connectNetatmo?: boolean } {
+  const note = plainText(raw)
+  const connect = needsNetatmoConnect(raw) ? { connectNetatmo: true } : {}
   const at = note.indexOf(' : ')
-  return at > 0 ? { lead: note.slice(0, at), text: note.slice(at + 3) } : { lead: '', text: note }
+  return at > 0 ? { lead: note.slice(0, at), text: note.slice(at + 3), ...connect } : { lead: '', text: note, ...connect }
 }
 
 /**
@@ -64,7 +69,7 @@ export function confidenceItems(
   const infos: ConfidenceItem[] = []
   for (const note of confidence.notes) {
     if (WARNING_NOTE.test(note)) warnings.push({ kind: 'warn', ...splitNote(note) })
-    else infos.push({ kind: 'info', lead: '', text: note })
+    else infos.push({ kind: 'info', lead: '', text: plainText(note), connectNetatmo: needsNetatmoConnect(note) || undefined })
   }
   items.push(...warnings, ...infos)
 

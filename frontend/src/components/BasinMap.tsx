@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
-import { getBasinGeoJson, getRadarFrameMeta, getRiskAnalogs, getVigilance } from '../api'
-import type { BasinGeoJson, RadarFrameMeta, RiskAnalogsData, StationData, VigilanceLevel, VigilanceStatus } from '../types'
-import { useApiResource } from '../hooks/useApiResource'
+import { getBasinGeoJson, getRadarFrameMeta, getRiskAnalogs } from '../api'
+import type { BasinGeoJson, RadarFrameMeta, RiskAnalogsData, StationData, VigilanceLevel } from '../types'
+import { useSharedResource, useVigilance } from '../hooks/useSharedResource'
 import { useElementWidth } from '../hooks/useElementWidth'
 import { buildBasinMap, mapPercentiles, type BasinMapModel } from '../utils/basinMap'
 import { PERCENTILE_CLASS_LABELS } from '../utils/mapGeo'
@@ -338,10 +338,10 @@ export default function BasinMap({
   const [radarToggle, setRadarOn] = useState(false)
   const live = !at
   const radarOn = live && radarToggle
-  const basin = useApiResource<BasinGeoJson>('geo/basin', getBasinGeoJson)
-  const vigilance = useApiResource<VigilanceStatus>(live ? 'vigilance' : null, getVigilance, TEN_MIN)
-  const analogs = useApiResource<RiskAnalogsData>(`risk/analogs@${at ?? 'now'}`, () => getRiskAnalogs(at), TEN_MIN)
-  const radar = useApiResource<RadarFrameMeta>(radarOn ? 'radar/frame' : null, () => getRadarFrameMeta(), 5 * 60_000)
+  const basin = useSharedResource<BasinGeoJson>('geo/basin', getBasinGeoJson)
+  const vigilance = useVigilance(live)
+  const analogs = useSharedResource<RiskAnalogsData>(`risk/analogs@${at ?? 'now'}`, () => getRiskAnalogs(at), TEN_MIN)
+  const radar = useSharedResource<RadarFrameMeta>(radarOn ? 'radar/frame' : null, () => getRadarFrameMeta(), 5 * 60_000)
 
   const model = useMemo(
     () =>

@@ -81,19 +81,19 @@ function LidoireStationRow({ station }: { station: NetatmoStation }) {
         </span>
       </div>
       <div className="flex gap-2 text-xs flex-shrink-0">
-        <span className="w-14 text-right" title="Derniere heure">
+        <span className="w-14 text-right" title="Dernière heure">
           <span className="text-gray-400">1h:</span>{' '}
           <strong className={rainClass(station.rain_1h_mm)}>
             {formatRain(station.rain_1h_mm)}
           </strong>
         </span>
-        <span className="w-14 text-right" title="Dernieres 24 heures">
+        <span className="w-14 text-right" title="Dernières 24 heures">
           <span className="text-gray-400">24h:</span>{' '}
           <strong className={rainClass(station.rain_24h_mm)}>
             {formatRain(station.rain_24h_mm)}
           </strong>
         </span>
-        <span className="w-14 text-right" title="Dernieres 72 heures">
+        <span className="w-14 text-right" title="Dernières 72 heures">
           <span className="text-gray-400">72h:</span>{' '}
           <strong className={rainClass(station.rain_72h_mm)}>
             {formatRain(station.rain_72h_mm)}
@@ -173,9 +173,9 @@ export default function RainfallPanel({
       >
         <div className="flex items-center gap-2">
           <CloudRain className="w-5 h-5 text-indigo-600" />
-          <h3 className="font-semibold text-indigo-800">Pluviometrie</h3>
+          <h3 className="font-semibold text-indigo-800">Pluviométrie</h3>
           <span className="text-sm text-indigo-600">
-            ({totalStations} station{totalStations > 1 ? 's' : ''} avec donnees)
+            ({totalStations} station{totalStations > 1 ? 's' : ''} avec données)
           </span>
         </div>
         {expanded ? (
@@ -190,7 +190,7 @@ export default function RainfallPanel({
           {/* Summary cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="p-3 bg-gray-50 rounded-lg">
-              <div className="text-xs text-gray-500 mb-1">Derniere heure</div>
+              <div className="text-xs text-gray-500 mb-1">Dernière heure</div>
               {netatmoAvailable ? (
                 <div className={`text-xl font-bold ${getRainIntensityColor(netatmo?.rain_1h_avg_mm || 0)}`}>
                   {(netatmo?.rain_1h_avg_mm ?? 0).toFixed(1)} mm
@@ -202,7 +202,7 @@ export default function RainfallPanel({
             </div>
             <div className="p-3 bg-gray-50 rounded-lg">
               <div className="text-xs text-gray-500 mb-1 flex items-center gap-1">
-                24h observe
+                24 h observé
                 <InfoTooltip {...TOOLTIPS.rain24h} />
               </div>
               {observed24h ? (
@@ -217,7 +217,7 @@ export default function RainfallPanel({
             <div className="p-3 bg-blue-50 rounded-lg">
               <div className="text-xs text-blue-600 mb-1 flex items-center gap-1">
                 <Cloud className="w-3 h-3" />
-                Prevu 24h
+                Prévu 24 h
                 <InfoTooltip {...TOOLTIPS.rainfallForecast} />
               </div>
               <div className="text-xl font-bold text-blue-700">
@@ -228,7 +228,7 @@ export default function RainfallPanel({
             <div className="p-3 bg-blue-50 rounded-lg">
               <div className="text-xs text-blue-600 mb-1 flex items-center gap-1">
                 <Cloud className="w-3 h-3" />
-                Prevu 72h
+                Prévu 72 h
                 <InfoTooltip {...TOOLTIPS.rain72h} />
               </div>
               <div className="text-xl font-bold text-blue-700">
@@ -269,7 +269,7 @@ export default function RainfallPanel({
                     <span className="font-medium text-sm">Netatmo</span>
                     <InfoTooltip {...TOOLTIPS.netatmoSource} />
                     <span className="text-xs text-gray-500">
-                      {netatmo.available ? `${netatmo.stations_count} stations` : 'indisponible (non autorise)'}
+                      {netatmo.available ? `${netatmo.stations_count} stations` : 'indisponible : Netatmo n’est pas connecté'}
                     </span>
                   </div>
                   {netatmo.closest_station && (
@@ -322,7 +322,7 @@ export default function RainfallPanel({
                     <InfoTooltip {...TOOLTIPS.infoclimatSource} />
                     <span className="text-xs text-gray-500">
                       {infoclimat.available
-                        ? `${infoclimat.rainfall?.stations_count ?? 0} stations avec donnees`
+                        ? `${infoclimat.rainfall?.stations_count ?? 0} stations avec données`
                         : 'indisponible'}
                     </span>
                   </div>
@@ -366,7 +366,7 @@ export default function RainfallPanel({
                 {!infoclimat.rainfall?.available && infoclimat.nearest_stations && infoclimat.nearest_stations.length > 0 && (
                   <div className="p-2 space-y-1">
                     <div className="px-2 text-xs text-gray-500">
-                      Stations proches, sans donnees ({Math.min(3, infoclimat.nearest_stations.length)} sur {infoclimat.stations_found ?? infoclimat.nearest_stations.length}) :
+                      Stations proches, sans données ({Math.min(3, infoclimat.nearest_stations.length)} sur {infoclimat.stations_found ?? infoclimat.nearest_stations.length}) :
                     </div>
                     {infoclimat.nearest_stations.slice(0, 3).map((station, idx) => (
                       <div
@@ -388,7 +388,7 @@ export default function RainfallPanel({
 
                 {!infoclimat.available && (
                   <div className="p-3 text-sm text-amber-600">
-                    Aucune observation recue{infoclimat.rainfall?.reason ? ` : ${infoclimat.rainfall.reason}` : ''}
+                    Aucune observation reçue{infoclimat.rainfall?.reason ? ` : ${infoclimat.rainfall.reason}` : ''}
                   </div>
                 )}
               </div>
@@ -407,7 +407,7 @@ export default function RainfallPanel({
               <Droplets className="w-3 h-3 text-blue-500" /> Forte
             </span>
             <span className="flex items-center gap-1">
-              <Droplets className="w-3 h-3 text-purple-500" /> Tres forte
+              <Droplets className="w-3 h-3 text-purple-500" /> Très forte
             </span>
           </div>
         </div>

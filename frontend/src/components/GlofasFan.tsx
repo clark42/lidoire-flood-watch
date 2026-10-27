@@ -1,6 +1,5 @@
-import { getEnsembleForecast, getEpisodeDrivers } from '../api'
-import type { EnsembleForecast, EpisodeDriversData, GlofasForecast } from '../types'
-import { useApiResource } from '../hooks/useApiResource'
+import type { EpisodeDriversData, GlofasForecast } from '../types'
+import { useEnsembleForecast, useEpisodeDrivers } from '../hooks/useSharedResource'
 import { useElementWidth } from '../hooks/useElementWidth'
 import {
   bandPath,
@@ -183,13 +182,11 @@ export function GlofasFanView({ glofas, drivers, width, now, error }: GlofasFanV
   )
 }
 
-const THIRTY_MIN = 30 * 60_000
-
 /** "Le mois qui vient": GloFAS v4 fan of the Lidoire cell, informative only. */
 export default function GlofasFan({ now }: { now: Date }) {
   const [ref, width] = useElementWidth<HTMLDivElement>()
-  const ensemble = useApiResource<EnsembleForecast>('forecast/ensemble', getEnsembleForecast, THIRTY_MIN)
-  const drivers = useApiResource<EpisodeDriversData>('episodes/drivers', getEpisodeDrivers)
+  const ensemble = useEnsembleForecast()
+  const drivers = useEpisodeDrivers()
   return (
     <div className="min-w-0 rounded-card border border-line bg-surface p-4">
       {/* Measured without the card padding (clientWidth includes it) */}

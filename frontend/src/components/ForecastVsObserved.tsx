@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { getForecastSkill } from '../api'
 import type { ForecastSkill } from '../types'
-import { useApiResource } from '../hooks/useApiResource'
+import { useSharedResource } from '../hooks/useSharedResource'
 import { useElementWidth } from '../hooks/useElementWidth'
 import { defaultLead, pairsForLead, scoreDomain, SHORT_ARCHIVE_PAIRS, skillRows, skillState } from '../utils/forecastSkill'
 import { linearScale, niceTicks } from '../utils/scale'
@@ -194,7 +194,7 @@ const THIRTY_MIN = 30 * 60_000
 
 export default function ForecastVsObserved() {
   const [ref, width] = useElementWidth<HTMLDivElement>()
-  const skill = useApiResource<ForecastSkill>('risk/forecast-skill', () => getForecastSkill(), THIRTY_MIN)
+  const skill = useSharedResource<ForecastSkill>('risk/forecast-skill', () => getForecastSkill(), THIRTY_MIN)
   return (
     <div className="min-w-0 rounded-card border border-line bg-surface p-4">
       <h3 className="font-display text-[19px] font-semibold tracking-[0.01em]">Score prévu vs score réalisé</h3>

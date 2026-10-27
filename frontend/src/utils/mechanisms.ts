@@ -19,7 +19,7 @@ import type {
 } from '../types'
 import type { ValueKind } from '../components/ui/valueKinds'
 import { formatNumber, formatQuantity } from './format'
-import { formatAge, formatParisRelative, parseApiDate } from './time'
+import { formatAge, formatParis, formatParisRelative, parseApiDate } from './time'
 import { ensembleWindow, formatEnsembleStats, modelLabel, preferredModel } from './ensemble'
 import {
   compareToFloods,
@@ -314,7 +314,9 @@ function backwaterCard(inputs: MechanismInputs, now: Date): MechanismView {
     if (bw.reaches_mill) reach = 'Le remous atteindrait le moulin (estimation, plan d’eau horizontal).'
     else if (bw.status === 'none') reach = 'Pas de remous dans la Lidoire : la Dordogne est sous le lit à la confluence.'
     else if (bw.connected_distance_below_mill_m != null) {
-      reach = `Le remous s'arrête à ≈ ${km(bw.connected_distance_below_mill_m)} sous le moulin.`
+      // Same definition as the profile (connected water), at the profile's hour
+      const at = parseApiDate(inputs.profile?.at)
+      reach = `Le remous s'arrête à ≈ ${km(bw.connected_distance_below_mill_m)} sous le moulin${at ? ` à ${formatParis(at, 'HH:mm')}` : ''} (eau connectée).`
     }
   }
   if (conf?.z_c_m_ngf != null) facts.push({ label: 'Niveau à la confluence Z_c', value: `≈ ${fmtNgf(conf.z_c_m_ngf)}`, kind: 'estimated' })

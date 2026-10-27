@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { formatParis } from '../utils/time'
 import { formatDistanceKm } from '../utils/format'
+import { isTideStation, rateTone, stationTone, TIDE_STATION_HINT, TIDE_STATION_LABEL, type StationTone } from '../utils/stations'
 import InfoTooltip from './InfoTooltip'
 import { TOOLTIPS } from '../tooltipContent'
 
@@ -39,17 +40,24 @@ interface StationsPanelProps {
   loading?: boolean
 }
 
-function TendencyIcon({ tendency }: { tendency: string }) {
-  if (tendency === 'hausse') return <TrendingUp className="w-4 h-4 text-red-500" />
-  if (tendency === 'baisse') return <TrendingDown className="w-4 h-4 text-green-500" />
-  return <Minus className="w-4 h-4 text-gray-400" />
+const RATE_CLASS = { rising: 'text-red-500', falling: 'text-green-500', neutral: 'text-gray-500' } as const
+
+function TendencyIcon({ tendency, tone }: { tendency: string; tone: keyof typeof RATE_CLASS }) {
+  const cls = `w-4 h-4 ${tone === 'neutral' ? 'text-gray-400' : RATE_CLASS[tone]}`
+  if (tendency === 'hausse') return <TrendingUp className={cls} aria-hidden="true" />
+  if (tendency === 'baisse') return <TrendingDown className={cls} aria-hidden="true" />
+  return <Minus className="w-4 h-4 text-gray-400" aria-hidden="true" />
 }
 
-function getLevelColor(height: number, thresholds: { yellow: number; orange: number; red: number }) {
-  if (height >= thresholds.red) return 'text-red-600 bg-red-50'
-  if (height >= thresholds.orange) return 'text-orange-600 bg-orange-50'
-  if (height >= thresholds.yellow) return 'text-yellow-600 bg-yellow-50'
-  return 'text-green-600 bg-green-50'
+// Literal class names (Tailwind only generates classes it can read)
+const LEVEL_CLASS: Record<StationTone, string> = {
+  red: 'text-red-600 bg-red-50',
+  orange: 'text-orange-600 bg-orange-50',
+  yellow: 'text-yellow-600 bg-yellow-50',
+  green: 'text-green-600 bg-green-50',
+  // Libourne: the tide, not a flood signal
+  tide: 'text-ink bg-surface-2',
+  none: 'text-gray-500 bg-gray-50',
 }
 
 function getLevelBarWidth(height: number, thresholds: { yellow: number; orange: number; red: number }) {
@@ -96,7 +104,7 @@ export default function StationsPanel({
       >
         <div className="flex items-center gap-2">
           <Activity className="w-5 h-5 text-cyan-600" />
-          <h3 className="font-semibold text-cyan-800">Stations hydrometriques</h3>
+          <h3 className="font-semibold text-cyan-800">Stations hydrométriques</h3>
           <InfoTooltip {...TOOLTIPS.stationsHeader} />
           <span className="text-sm text-cyan-600">({stations.length} stations)</span>
         </div>
@@ -117,7 +125,7 @@ export default function StationsPanel({
                 groupByRiver ? 'bg-cyan-100 text-cyan-700' : 'bg-gray-100'
               }`}
             >
-              Par riviere
+              Par rivière
             </button>
             <button
               onClick={() => setGroupByRiver(false)}
@@ -188,12 +196,16 @@ function StationCard({
     orange: station.threshold_orange,
     red: station.threshold_red,
   }
-  const levelColor = getLevelColor(station.current_level.height_m, thresholds)
+  const tide = isTideStation(station)
+  const levelColor = LEVEL_CLASS[stationTone(station)]
+  const rate = rateTone(station)
   const barWidth = getLevelBarWidth(station.current_level.height_m, thresholds)
 
   return (
     <div
       onClick={onSelect}
+      data-station={station.station_id}
+      data-tone={stationTone(station)}
       className={`group p-3 rounded-lg border-2 cursor-pointer transition-all ${
         isSelected
           ? 'border-cyan-500 bg-cyan-50'
@@ -207,9 +219,9 @@ function StationCard({
             <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">
               {station.river}
             </span>
-            {station.weight === 0 && (
-              <span className="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded" title="Station soumise a la maree - exclue du calcul de risque">
-                maree
+            {tide && (
+              <span className="text-xs text-ink-2 bg-surface-2 px-2 py-0.5 rounded" title={TIDE_STATION_HINT}>
+                {TIDE_STATION_LABEL}
               </span>
             )}
           </div>
@@ -233,16 +245,8 @@ function StationCard({
             {station.current_level.height_m.toFixed(2)} m
           </div>
           <div className="flex items-center justify-end gap-1 mt-1">
-            <TendencyIcon tendency={station.tendency} />
-            <span
-              className={`text-xs ${
-                station.tendency === 'hausse'
-                  ? 'text-red-500'
-                  : station.tendency === 'baisse'
-                  ? 'text-green-500'
-                  : 'text-gray-500'
-              }`}
-            >
+            <TendencyIcon tendency={station.tendency} tone={rate} />
+            <span className={`text-xs ${RATE_CLASS[rate]}`} data-rate-tone={rate}>
               {station.rate_cm_per_hour > 0 ? '+' : ''}
               {station.rate_cm_per_hour.toFixed(1)} cm/h
             </span>
@@ -251,6 +255,12 @@ function StationCard({
         </div>
       </div>
 
+      {tide ? (
+        <p className="mt-2 text-xs text-gray-500">
+          Monte et descend avec la marée : niveau et vitesse sans couleur d&apos;alerte.
+        </p>
+      ) : (
+      <>
       {/* Level bar */}
       <div className="mt-2 h-2 bg-gray-100 rounded-full overflow-hidden">
         <div className="h-full flex">
@@ -312,6 +322,8 @@ function StationCard({
         <span className="text-red-600 font-medium">R:{thresholds.red}m</span>
         <InfoTooltip {...TOOLTIPS.thresholds} />
       </div>
+      </>
+      )}
 
       {/* Timestamp */}
       <div className="mt-2 text-xs text-gray-400">

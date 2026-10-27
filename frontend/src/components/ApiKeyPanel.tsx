@@ -36,17 +36,17 @@ export default function ApiKeyPanel() {
       <div className="p-4 border-b">
         <h3 className="font-medium flex items-center gap-2">
           <KeyRound className="w-5 h-5" />
-          Cle API (actions d'ecriture)
+          Clé API (actions d'écriture)
         </h3>
       </div>
       <div className="p-4 space-y-3">
         <p className="text-sm text-gray-500">
-          Requise par le backend pour creer, modifier ou supprimer des episodes et lancer
-          backfill / detection. Conservee uniquement dans ce navigateur et envoyee dans
-          l'en-tete <code className="text-xs bg-gray-100 px-1 rounded">X-API-Key</code>.
+          Requise par le backend pour créer, modifier ou supprimer des épisodes et lancer
+          backfill / détection. Conservée uniquement dans ce navigateur et envoyée dans
+          l'en-tête <code className="text-xs bg-gray-100 px-1 rounded">X-API-Key</code>.
         </p>
         <div className="text-sm">
-          <span className="text-gray-500">Cle actuelle : </span>
+          <span className="text-gray-500">Clé actuelle : </span>
           {masked ? (
             <span className="font-mono">{visible ? stored : masked}</span>
           ) : (
@@ -74,8 +74,8 @@ export default function ApiKeyPanel() {
             autoComplete="off"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder="Nouvelle cle API"
-            aria-label="Nouvelle cle API"
+            placeholder="Nouvelle clé API"
+            aria-label="Nouvelle clé API"
             className="flex-1 min-w-0 border rounded px-3 py-2 text-sm"
           />
           <button

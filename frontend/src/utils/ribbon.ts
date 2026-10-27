@@ -141,6 +141,8 @@ export interface RainBlock {
   /** Total of the wettest member over the window */
   max: number
   members: number
+  /** Share of members above each 24 h threshold (key = threshold in mm) */
+  prob: Record<string, number>
 }
 
 export interface RainRow {
@@ -148,6 +150,8 @@ export interface RainRow {
   /** End of the model run (beyond: hatched, no data) */
   horizonEnd: number | null
   members: number
+  /** 24 h thresholds of the ensemble (mm), keys of RainBlock.prob */
+  thresholds: number[]
 }
 
 /**
@@ -170,11 +174,17 @@ export function rainRow(ensemble: EnsembleForecast | null | undefined, model: st
       p90: stats.p90,
       max: stats.max,
       members: stats.members,
+      prob: stats.prob ?? {},
     })
   }
   const info = ensemble?.rain?.models?.find((m) => m.id === model)
   const horizonEnd = parseApiDate(info?.horizon_end ?? null)?.getTime() ?? null
-  return { blocks, horizonEnd, members: info?.members ?? blocks[0]?.members ?? 0 }
+  return {
+    blocks,
+    horizonEnd,
+    members: info?.members ?? blocks[0]?.members ?? 0,
+    thresholds: ensemble?.rain?.thresholds?.['24h'] ?? [],
+  }
 }
 
 /** Radius of a high-tide circle: 4 px at coefficient 40 or less, 10 px at 120. */

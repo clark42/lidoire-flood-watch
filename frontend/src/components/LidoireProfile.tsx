@@ -1,9 +1,13 @@
 import { useId } from 'react'
 import type { LidoireProfileData } from '../types'
 import { formatNumber } from '../utils/format'
+import { formatParis } from '../utils/time'
 import {
+  backwaterGapBelowMill,
   backwaterPolygon,
+  centredTextX,
   findSteps,
+  labelBoxX,
   groundAt,
   pathOf,
   profileLayout,
@@ -60,13 +64,19 @@ export default function LidoireProfile({ profile, zc, reach, floorZ, width }: Li
   const millX = x(mill.d_m)
   const frontX = toD != null ? x(toD) : null
   const upperX = reach.disconnected_low_points && reach.distance_m != null ? x(reach.distance_m) : null
-  const gapM = reach.distanceBelowMillM
+  const gapM = backwaterGapBelowMill(reach)
   const zTicks: number[] = []
   for (let v = Math.ceil(zLo / 2) * 2; v <= zHi; v += 2) zTicks.push(v)
   const kmTicks: number[] = []
   for (let d = 0; d <= x.domain()[1]; d += 1000) kmTicks.push(d)
   const millGroundY = y(millGround)
   const bracketY = plotTop + 6
+  // Labels stay inside the SVG at any width (the mill is near the right edge)
+  const bounds: [number, number] = [2, width - 2]
+  const FLOOR_PILL_W = 66
+  const floorPillX = labelBoxX(millX, FLOOR_PILL_W, 6, bounds)
+  // "plancher (hypothèse) 12,40" is ~130 px: on the left of the mill when it would cross the edge
+  const floorTextLeft = narrow || millX + 6 + 135 > bounds[1]
 
   const label =
     `Profil en long de la Lidoire, de la confluence au moulin, en mètres NGF. ` +
@@ -188,16 +198,16 @@ export default function LidoireProfile({ profile, zc, reach, floorZ, width }: Li
       {floorZ == null ? (
         <g data-floor="unknown">
           <rect
-            x={millX + 6}
+            x={floorPillX}
             y={millGroundY - 32}
-            width={66}
+            width={FLOOR_PILL_W}
             height={18}
             rx={9}
             fill="var(--surface)"
             stroke="var(--lv-red)"
             strokeDasharray="3 2"
           />
-          <text x={millX + 39} y={millGroundY - 19} textAnchor="middle" className="fill-ink text-[11px]">
+          <text x={floorPillX + FLOOR_PILL_W / 2} y={millGroundY - 19} textAnchor="middle" className="fill-ink text-[11px]">
             plancher ?
           </text>
         </g>
@@ -213,9 +223,9 @@ export default function LidoireProfile({ profile, zc, reach, floorZ, width }: Li
             strokeDasharray="6 3"
           />
           <text
-            x={narrow ? millX - 8 : millX + 6}
+            x={floorTextLeft ? millX - 8 : millX + 6}
             y={y(floorZ) - 5}
-            textAnchor={narrow ? 'end' : 'start'}
+            textAnchor={floorTextLeft ? 'end' : 'start'}
             className="fill-ink text-[11px]"
             {...HALO}
           >
@@ -238,7 +248,13 @@ export default function LidoireProfile({ profile, zc, reach, floorZ, width }: Li
           <line x1={frontX} x2={millX} y1={bracketY} y2={bracketY} stroke="var(--ink-2)" strokeWidth="1.2" />
           <path d={`M${frontX + 5},${bracketY - 4}L${frontX},${bracketY}L${frontX + 5},${bracketY + 4}`} fill="none" stroke="var(--ink-2)" />
           <path d={`M${millX - 5},${bracketY - 4}L${millX},${bracketY}L${millX - 5},${bracketY + 4}`} fill="none" stroke="var(--ink-2)" />
-          <text x={(frontX + millX) / 2} y={bracketY - 5} textAnchor="middle" className="num fill-ink text-[13px] font-semibold" {...HALO}>
+          <text
+            x={centredTextX((frontX + millX) / 2, 130, bounds)}
+            y={bracketY - 5}
+            textAnchor="middle"
+            className="num fill-ink text-[13px] font-semibold"
+            {...HALO}
+          >
             ≈ {km(gapM)} km sans remous
           </text>
         </g>
@@ -253,10 +269,14 @@ export function LidoireProfileReadout({
   zc,
   reach,
   floorZ,
-}: Omit<LidoireProfileProps, 'width'>) {
+  at = null,
+}: Omit<LidoireProfileProps, 'width'> & {
+  /** Hour of the values (ms): the time basis of the reach */
+  at?: number | null
+}) {
   const millGround = profile.mill.ground_z_m_ngf
   const points = profile.profile.points ?? []
-  const gap = reach.distanceBelowMillM
+  const gap = backwaterGapBelowMill(reach)
   const marginToGround = zc != null ? millGround - zc : null
   const floorGap = floorZ != null && zc != null ? floorZ - zc : null
   const groundAtFront = reach.connected_distance_m != null ? groundAt(points, reach.connected_distance_m) : null
@@ -272,6 +292,7 @@ export function LidoireProfileReadout({
         ) : (
           <>
             Le remous s’arrête à <b className="num text-[17px]">≈ {km(gap)} km</b> sous le moulin
+            {at != null && <> à <span className="font-mono text-[13px]">{formatParis(new Date(at), 'dd/MM HH:mm')}</span></>}
             {reach.connected_distance_m != null && (
               <> (eau connectée jusqu’à {km(reach.connected_distance_m, 2)} km de la confluence
                 {groundAtFront != null && <>, terrain {formatNumber(groundAtFront, 1)} m</>})</>
