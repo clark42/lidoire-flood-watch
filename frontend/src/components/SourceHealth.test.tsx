@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { SystemStatus } from '../types'
-import statusFixture from '../test-fixtures/status.json'
+import statusFixture from '../test-fixtures/field_status.json'
 import { freshnessText, groupSources, sourceGroup, sourceLabel, statusCounts } from '../utils/sourceHealth'
 import SourceHealth from './SourceHealth'
 

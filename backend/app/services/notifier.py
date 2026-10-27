@@ -4,13 +4,16 @@ The ``notifier`` scheduler job runs every hour, a few minutes after
 ``risk_scorer``, and evaluates three triggers:
 
 - observed level: the last stored realtime risk score (the one written by
-  ``risk_scorer``). Rising to orange or red is sent at once; a lower level is
-  sent only after it has held ``notify_downgrade_hold_hours`` (the score
-  oscillates around the thresholds with the tide). Green <-> yellow is silent
-  unless ``notify_yellow``.
+  ``risk_scorer``). Rising to ``notify_min_level`` (orange by default, or red)
+  or above is sent at once; a lower level is sent only after it has held
+  ``notify_downgrade_hold_hours`` (the score oscillates around the thresholds
+  with the tide), and only when the level left was notifiable. Green <->
+  yellow is silent unless ``notify_yellow`` (honoured only with the orange
+  minimum). Every level is still tracked in the state, notified or not.
 - forecast: the max score over the next ``notify_forecast_hours`` reaches
-  orange/red -> one heads-up per event (again on escalation to red), cleared
-  once the forecast has stayed below orange for the same hold time.
+  the minimum level -> one heads-up per event (again on escalation to red),
+  cleared once the forecast has stayed below that level for the same hold
+  time.
 - staleness: primary station (Pessac) last point older than
   ``notify_station_stale_hours``, or no realtime score stored for
   ``notify_score_stale_hours`` -> one alert, then one recovery message.
@@ -55,8 +58,10 @@ SEND_TIMEOUT_S = 10.0
 SCORE_LOOKBACK = timedelta(hours=24)
 
 _RANK = {RiskLevel.GREEN.value: 0, RiskLevel.YELLOW.value: 1, RiskLevel.ORANGE.value: 2, RiskLevel.RED.value: 3}
-_ORANGE = _RANK[RiskLevel.ORANGE.value]
 LEVEL_FR = {"green": "VERT", "yellow": "JAUNE", "orange": "ORANGE", "red": "ROUGE"}
+# Lower-case level names inside sentences ("seuil orange", "sous le rouge")
+_LEVEL_WORD = {"orange": "orange", "red": "rouge"}
+_BELOW = {"orange": "sous l'orange", "red": "sous le rouge"}
 TENDENCY_FR = {"hausse": "en hausse", "stable": "stable", "baisse": "en baisse"}
 # ntfy priority (1-5) and tags (rendered as emojis by the ntfy apps)
 _RISE_STYLE = {"yellow": (3, ("yellow_circle",)), "orange": (4, ("warning",)), "red": (5, ("rotating_light",))}
@@ -72,12 +77,36 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _rank(level: Optional[str]) -> int:
+def level_rank(level: Optional[str]) -> int:
+    """green 0, yellow 1, orange 2, red 3 (unknown / None = green)."""
     return _RANK.get(level or RiskLevel.GREEN.value, 0)
 
 
+_rank = level_rank
+
+
+def min_level(settings: Settings) -> str:
+    """Lowest level that alerts (observed rise and forecast heads-up)."""
+    return settings.notify_min_level
+
+
+def _min_rank(settings: Settings) -> int:
+    return _RANK[min_level(settings)]
+
+
 def _notifiable(level: str, settings: Settings) -> bool:
-    return _rank(level) >= _ORANGE or (level == RiskLevel.YELLOW.value and settings.notify_yellow)
+    """True when a transition to (rise) or from (downgrade) ``level`` is sent.
+
+    ``notify_yellow`` only applies with the orange minimum: with ``red``, a
+    yellow level is as silent as orange.
+    """
+    if _rank(level) >= _min_rank(settings):
+        return True
+    return (
+        level == RiskLevel.YELLOW.value
+        and settings.notify_yellow
+        and min_level(settings) == RiskLevel.ORANGE.value
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +431,7 @@ def _entry_time(entry: dict) -> Optional[datetime]:
 def forecast_event(
     state: NotifierState, entries: list[dict], now: datetime, ctx: Context, settings: Settings,
 ) -> Optional[Event]:
-    """Heads-up when the forecast max over the next hours reaches orange/red (once per event)."""
+    """Heads-up when the forecast max over the next hours reaches the minimum level (once per event)."""
     horizon = settings.notify_forecast_hours
     window = [e for e in entries if 1 <= e.get("hours_ahead", 0) <= horizon]
     if not window:
@@ -410,8 +439,10 @@ def forecast_event(
     peak = max(window, key=lambda e: e["score"])
     level = score_to_level(peak["score"]).value
     active = state.forecast_level
+    threshold = min_level(settings)
+    min_rank = _min_rank(settings)
 
-    if _rank(level) >= _ORANGE:
+    if _rank(level) >= min_rank:
         updates: dict = {"forecast_clear_since": None}
         if active is not None and _rank(level) <= _rank(active):
             return Event(updates) if state.forecast_clear_since is not None else None
@@ -420,7 +451,7 @@ def forecast_event(
             return Event(updates)  # already observed at this level: nothing new
         first = next(
             e for e in sorted(window, key=lambda e: e["hours_ahead"])
-            if _rank(score_to_level(e["score"]).value) >= _ORANGE
+            if _rank(score_to_level(e["score"]).value) >= min_rank
         )
         peak_at = _entry_time(peak)
         when = f" vers {_local(peak_at)}" if peak_at else ""
@@ -428,7 +459,7 @@ def forecast_event(
         return Event(updates, _notification(
             f"Lidoire : risque {LEVEL_FR[level]} prévu",
             f"Prévision : score max {peak['score']:.0f}/100 ({LEVEL_FR[level]}) dans {peak['hours_ahead']} h{when}, "
-            f"seuil orange atteint dans {first['hours_ahead']} h (horizon {horizon} h).",
+            f"seuil {_LEVEL_WORD[threshold]} atteint dans {first['hours_ahead']} h (horizon {horizon} h).",
             ctx, 4 if red else 3, ("rotating_light",) if red else ("warning",),
         ))
 
@@ -438,11 +469,16 @@ def forecast_event(
     if now - since < timedelta(hours=settings.notify_downgrade_hold_hours):
         return Event({"forecast_clear_since": since})
     updates = {"forecast_level": None, "forecast_clear_since": None}
-    if _rank(state.level) >= _ORANGE:
+    if _rank(state.level) >= min_rank:
         return Event(updates)  # the observed level messages take over
+    if _rank(active) < min_rank:
+        # Heads-up stored under a lower minimum (setting changed since): never
+        # sent under this policy, so its end is not announced either
+        return Event(updates)
+    what = "orange ou rouge" if threshold == RiskLevel.ORANGE.value else "rouge"
     return Event(updates, _notification(
-        "Lidoire : prévision revenue sous l'orange",
-        f"Plus de risque orange ou rouge prévu sur {horizon} h (max {peak['score']:.0f}/100).",
+        f"Lidoire : prévision revenue {_BELOW[threshold]}",
+        f"Plus de risque {what} prévu sur {horizon} h (max {peak['score']:.0f}/100).",
         ctx, 2, ("white_check_mark",),
     ))
 
@@ -651,9 +687,10 @@ async def send_test_notification(settings: Optional[Settings] = None, channel: O
     if channel is None:
         return False
     url = settings.frontend_url.strip()
+    levels = "orange/rouge" if min_level(settings) == RiskLevel.ORANGE.value else "rouge"
     lines = [
         "Notification de test de Lidoire Flood Watch.",
-        "Alertes envoyées sur ce canal : passage en orange/rouge, prévision orange/rouge "
+        f"Alertes envoyées sur ce canal : passage en {levels}, prévision {levels} "
         f"sous {settings.notify_forecast_hours} h, données périmées.",
     ]
     if url:

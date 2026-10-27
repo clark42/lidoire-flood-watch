@@ -1,0 +1,132 @@
+{
+ "at": "2026-02-12T16:00:00Z",
+ "model_input": false,
+ "profile": {
+  "metadata": {
+   "name": "Profil en long de la Lidoire, du moulin a la confluence avec la Dordogne",
+   "distance_origin": "confluence (0 m), distance le long du trace TOPAGE vers l'amont",
+   "line_source": "Sandre, BD TOPAGE 2019 (IGN/OFB), couche CoursEau_FXX_Topage2019, CdOH 05C0000002000889946",
+   "line_source_url": "https://services.sandre.eaufrance.fr/geo/topage2019?SERVICE=WFS&VERSION=1.1.0&REQUEST=GetFeature&TYPENAME=sa:CoursEau_FXX_Topage2019&SRSNAME=EPSG:4326&FILTER=%3CFilter%3E%3CPropertyIsEqualTo%3E%3CPropertyName%3ECdOH%3C/PropertyName%3E%3CLiteral%3E05C0000002000889946%3C/Literal%3E%3C/PropertyIsEqualTo%3E%3C/Filter%3E",
+   "line_length_m": 51521.5,
+   "elevation_source": "IGN, RGE ALTI (API altimetrie de la Geoplateforme, ressource ign_rge_alti_wld)",
+   "elevation_source_url": "https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json",
+   "licence": "Licence Ouverte / Open Licence v2.0 (Etalab) : Sandre BD TOPAGE et IGN RGE ALTI",
+   "attribution": "Sandre - BD TOPAGE ; IGN - RGE ALTI",
+   "vertical_datum": "NGF-IGN69 (m)",
+   "retrieved": "2026-10-26",
+   "step_m": 100.0,
+   "upstream_of_mill_m": 1000.0,
+   "z_definition": "z_m = minimum du terrain sur une section de +/- 30 m perpendiculaire au trace (7 points) : point bas (lit en eau ou berge basse) ; z_line_m = terrain sur le trace",
+   "section_half_width_m": 30.0,
+   "section_points": 7,
+   "caveats": [
+    "z = altitude du terrain (surface de l'eau au jour du leve LiDAR la ou il y a de l'eau), pas le fond du lit",
+    "le trace TOPAGE peut s'ecarter du lit reel de quelques dizaines de metres",
+    "ponts, seuils et remblais ne sont pas representes comme obstacles"
+   ],
+   "confluence": {
+    "lon": -0.034211,
+    "lat": 44.85216,
+    "z_m": 2.42
+   },
+   "mill": {
+    "lon": 0.0015091,
+    "lat": 44.8759811,
+    "d_m": 5833.4,
+    "offset_from_line_m": 4.1,
+    "ground_z_m": 12.0,
+    "ground_z_ring60m_min_m": 11.67,
+    "ground_z_ring60m_max_m": 13.27
+   }
+  },
+  "length_m": 6833.4,
+  "z_range_m": [
+   2.42,
+   12.84
+  ],
+  "points": null
+ },
+ "mill": {
+  "lon": 0.0015091,
+  "lat": 44.8759811,
+  "d_m": 5833.4,
+  "ground_z_m_ngf": 12.0,
+  "ground_z_source": "IGN RGE ALTI (API altimetrie de la Geoplateforme), terrain au point du moulin, 11.6-12.7 m a moins de 60 m ; altitude du plancher inconnue",
+  "floor_z_m_ngf": null
+ },
+ "confluence": {
+  "label": "estime",
+  "upstream_station": "P555001001",
+  "downstream_station": "P577001001",
+  "ngf_zeros_m": {
+   "P555001001": 3.33,
+   "P577001001": -1.17
+  },
+  "alpha_downstream_weight": 0.2,
+  "envelope_hours": 12.5,
+  "formula": "Z_c = (1 - alpha) x (zero_Pessac + H_Pessac) + alpha x (zero_Libourne + H_Libourne)",
+  "lon": -0.034211,
+  "lat": 44.85216,
+  "d_m": 0.0,
+  "ground_z_m": 2.42,
+  "z_c_m_ngf": 8.648,
+  "inputs": {
+   "pessac_max_m": 6.53,
+   "pessac_max_m_ngf": 9.86,
+   "libourne_max_m": 4.97,
+   "libourne_max_m_ngf": 3.8
+  },
+  "instant": {
+   "z_c_m_ngf": 8.648,
+   "pessac_m": 6.53,
+   "pessac_time": "2026-02-12T14:00:00Z",
+   "libourne_m": 4.97,
+   "libourne_time": "2026-02-12T13:00:00Z",
+   "notes": []
+  },
+  "notes": []
+ },
+ "backwater": {
+  "label": "approximation plan d'eau horizontal",
+  "status": "partial",
+  "distance_m": 3087.6,
+  "lon": -0.008838,
+  "lat": 44.860233,
+  "z_m": 8.648,
+  "connected_distance_m": 3087.6,
+  "disconnected_low_points": false,
+  "distance_below_mill_m": 2745.8,
+  "reaches_mill": false,
+  "connected_distance_below_mill_m": 2745.8,
+  "method": "plan d'eau horizontal a Z_c depuis la confluence : distance_m = point le plus en amont du profil dont le terrain est <= Z_c (interpole jusqu'a l'echantillon suivant, borne haute) ; connected_distance_m = s'arrete au premier point du profil au-dessus de Z_c en remontant",
+  "limits": [
+   "ignore le debit propre de la Lidoire, la pente de la ligne d'eau, les ponts et les seuils",
+   "z du profil = point bas du terrain sur une section de +/- 30 m (pas le fond du lit)",
+   "Z_c est estime (aucune station a la confluence), enveloppe 12.5 h = pleine mer du cycle"
+  ],
+  "instant": {
+   "label": "approximation plan d'eau horizontal",
+   "status": "partial",
+   "distance_m": 3087.6,
+   "lon": -0.008838,
+   "lat": 44.860233,
+   "z_m": 8.648,
+   "connected_distance_m": 3087.6,
+   "disconnected_low_points": false,
+   "distance_below_mill_m": 2745.8,
+   "reaches_mill": false,
+   "connected_distance_below_mill_m": 2745.8
+  }
+ },
+ "margin": {
+  "mill_ground_minus_z_c_m": 3.35,
+  "label": "estime",
+  "note": "terrain au moulin moins Z_c ; ce n'est pas la marge au plancher (inconnu)"
+ },
+ "labels": {
+  "z_c": "estime",
+  "backwater": "approximation plan d'eau horizontal"
+ },
+ "errors": [],
+ "_fixture_note": "Real backend code; Pessac 6.53 m (CLAUDE.md, 2026-02-12), Libourne daily max."
+}

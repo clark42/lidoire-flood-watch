@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { RefreshCw } from 'lucide-react'
 import type {
+  EnsembleForecast,
   OutlookHorizon,
   RiskLevel,
   RiskOutlook,
@@ -10,9 +11,9 @@ import type {
 import LevelMeter from './ui/LevelMeter'
 import ValueTag from './ui/ValueTag'
 import InfoTooltip from './InfoTooltip'
+import ConfidencePanel from './ConfidencePanel'
 import { TOOLTIPS } from '../tooltipContent'
 import { buildVerdict } from '../utils/levels'
-import { CONFIDENCE_LEVEL_LABELS, confidenceItems, type ConfidenceKind } from '../utils/confidence'
 import { formatNumber, RISK_LEVEL_LABELS } from '../utils/format'
 import { formatParis, formatParisRelative } from '../utils/time'
 
@@ -22,11 +23,6 @@ const STRIPE: Record<RiskLevel, string> = {
   yellow: 'bg-lv-yellow',
   orange: 'bg-lv-orange',
   red: 'bg-lv-red',
-}
-const CONFIDENCE_CHIP: Record<RiskOutlook['confidence']['level'], string> = {
-  good: 'bg-lv-green-soft',
-  reduced: 'bg-lv-yellow-soft',
-  low: 'bg-lv-red-soft',
 }
 
 export interface VerdictHeroProps {
@@ -38,36 +34,12 @@ export interface VerdictHeroProps {
   current?: { score: number; level: RiskLevel } | null
   /** /api/status sources (freshness of Pessac and of the stored score) */
   sources?: Partial<Record<SourceFreshnessName, SourceFreshness>> | null
+  /** Rain ensembles for the confidence block (undefined = loading, null = unavailable) */
+  ensemble?: EnsembleForecast | null
   /** Official vigilances, under the confidence block */
   vigilance?: ReactNode
   now?: Date
 }
-
-function ConfidenceIcon({ kind }: { kind: ConfidenceKind }) {
-  if (kind === 'ok') {
-    return (
-      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" className="mt-[3px] text-lv-green">
-        <path d="M2.5 7.5l3 3 6-7" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    )
-  }
-  if (kind === 'warn') {
-    return (
-      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" className="mt-[3px] text-lv-orange">
-        <path d="M7 1.5l6 11H1z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
-        <path d="M7 5.5v3.2M7 10.3v.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      </svg>
-    )
-  }
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" className="mt-[3px] text-ink-3">
-      <circle cx="7" cy="7" r="5.8" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M7 6.2v4M7 3.9v.3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-const ICON_LABEL: Record<ConfidenceKind, string> = { ok: 'Fiable', warn: 'Attention', info: 'À savoir' }
 
 function HorizonTile({ horizon, now }: { horizon: OutlookHorizon; now: Date }) {
   return (
@@ -134,6 +106,7 @@ export default function VerdictHero({
   onRetry,
   current = null,
   sources = null,
+  ensemble,
   vigilance,
   now = new Date(),
 }: VerdictHeroProps) {
@@ -179,7 +152,6 @@ export default function VerdictHero({
 
   const verdict = buildVerdict(outlook, current?.level ?? null, now)
   const tide = outlook.next_high_tide
-  const items = confidenceItems(outlook.confidence, sources, now.getTime())
   const actions = outlook.checklist.actions.length
 
   return (
@@ -253,27 +225,7 @@ export default function VerdictHero({
       </div>
 
       <div className="grid min-w-0 content-start gap-3">
-        <section aria-labelledby="confidence-title" className="rounded-card border border-line bg-surface p-4">
-          <h3 id="confidence-title" className="flex flex-wrap items-center gap-2 font-display text-[19px] font-semibold tracking-[0.01em]">
-            Confiance
-            <span className={`rounded-full px-2.5 py-0.5 font-sans text-[12.5px] font-bold text-ink ${CONFIDENCE_CHIP[outlook.confidence.level]}`}>
-              {CONFIDENCE_LEVEL_LABELS[outlook.confidence.level]}
-            </span>
-          </h3>
-          <ul className="mt-2.5 grid gap-2">
-            {items.map((item) => (
-              <li key={item.lead + item.text} className="grid grid-cols-[18px_minmax(0,1fr)] gap-2 text-sm text-ink-2">
-                <ConfidenceIcon kind={item.kind} />
-                <span>
-                  <span className="sr-only">{ICON_LABEL[item.kind]} : </span>
-                  {item.lead && <b className="font-bold text-ink">{item.lead}</b>}
-                  {item.lead && ' : '}
-                  {item.text}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <ConfidencePanel confidence={outlook.confidence} sources={sources} ensemble={ensemble} now={now} />
         {vigilance}
       </div>
     </div>

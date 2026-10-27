@@ -9,7 +9,6 @@ import {
   Clock,
   AlertTriangle,
   RefreshCw,
-  CloudRain,
 } from 'lucide-react'
 import {
   getRealtimeData,
@@ -19,7 +18,6 @@ import {
   getBasinRainfall,
   getRealtimeDataAt,
   getEpisodesList,
-  getUnifiedTimeline,
 } from '../api'
 import type {
   RealtimeData,
@@ -28,7 +26,6 @@ import type {
   SystemStatus,
   BasinRainfallData,
   FloodEpisode,
-  UnifiedTimelineData,
 } from '../types'
 import DataCard from '../components/DataCard'
 import StationsPanel from '../components/StationsPanel'
@@ -40,7 +37,9 @@ import TimeMachineBanner from '../components/TimeMachineBanner'
 import SoilConditionsPanel from '../components/SoilConditionsPanel'
 import VigilanceBadges from '../components/VigilanceBadges'
 import ObservationQuickForm from '../components/ObservationQuickForm'
-import IndicatorsPanel from '../components/IndicatorsPanel'
+import MechanismCards from '../components/MechanismCards'
+import HorizonRibbon from '../components/HorizonRibbon'
+import TriggerList from '../components/TriggerList'
 import InfoTooltip from '../components/InfoTooltip'
 import VerdictHero from '../components/VerdictHero'
 import ActionChecklist from '../components/ActionChecklist'
@@ -49,6 +48,7 @@ import DashboardSection from '../components/DashboardSection'
 import LevelMeter from '../components/ui/LevelMeter'
 import { ValueTagLegend } from '../components/ui/ValueTag'
 import { useRiskOutlook } from '../hooks/useRiskOutlook'
+import { useEnsembleForecast } from '../hooks/useSharedResource'
 import { DASHBOARD_SECTIONS } from './dashboardSections'
 import { TOOLTIPS } from '../tooltipContent'
 import { formatAge, formatParis, parseApiDate } from '../utils/time'
@@ -63,11 +63,12 @@ const GlofasFan = lazy(() => import('../components/GlofasFan'))
 const ForecastVsObserved = lazy(() => import('../components/ForecastVsObserved'))
 // recharts (~100 kB gzip) is only needed below the verdict: the panels that
 // draw charts load in a separate chunk, after the decision is on screen
-const ForecastPanel = lazy(() => import('../components/ForecastPanel'))
 const EnsemblePanel = lazy(() => import('../components/EnsemblePanel'))
-const MetricSparkline = lazy(() => import('../components/MetricSparkline'))
 const NowcastRainChart = lazy(() => import('../components/NowcastRainChart'))
 const BasinRainfallGauge = lazy(() => import('../components/BasinRainfallGauge'))
+// Replay of the Lidoire profile and flood plane (d3-scale/shape): below the fold
+const ReplayPanel = lazy(() => import('../components/ReplayPanel'))
+const FloodPlanPanel = lazy(() => import('../components/FloodPlanPanel'))
 
 function PanelFallback({ height = 'h-40' }: { height?: string }) {
   return <div className={`${height} w-full animate-pulse rounded-card bg-surface-2`} aria-hidden="true" />
@@ -85,45 +86,6 @@ const POLL_INTERVAL_MS = 60_000
 // shorter threshold would flag normal operation.
 const STALE_AFTER_MS = 3 * 60 * 60_000
 const PESSAC_STATION_ID = 'P555001001'
-
-// Sparklines: last 24 h from /api/timeline/unified (re-seeded every 30 min),
-// live points appended between seeds.
-const SPARKLINE_WINDOW_MS = 24 * 3600_000
-const SPARKLINE_SEED_EVERY_MS = 30 * 60_000
-const SPARKLINE_SEED_RETRY_MS = 5 * 60_000
-const SPARKLINE_RAIN_SOURCE = 'open-meteo:Moulin-Lidoire'
-const SPARKLINE_SERIES = {
-  river: `river:${PESSAC_STATION_ID}`,
-  // Tide estimated at the Lidoire confluence (tide_port_confluence)
-  tide: 'tide:LIDOIRE',
-  rain: `rainfall:${SPARKLINE_RAIN_SOURCE}`,
-  risk: 'risk:score',
-} as const
-
-type SparkPoint = { t: number; v: number }
-type SparklineKey = keyof typeof SPARKLINE_SERIES
-type SparklineSet = Record<SparklineKey, SparkPoint[]>
-
-const EMPTY_SPARKLINES: SparklineSet = { river: [], tide: [], rain: [], risk: [] }
-
-/** Union by timestamp (newest value wins), limited to the last 24 h, sorted. */
-function mergeSparkPoints(prev: SparkPoint[], added: SparkPoint[], now: number): SparkPoint[] {
-  const byTime = new Map<number, number>()
-  for (const p of prev) byTime.set(p.t, p.v)
-  for (const p of added) byTime.set(p.t, p.v)
-  return Array.from(byTime, ([t, v]) => ({ t, v }))
-    .filter(p => p.t >= now - SPARKLINE_WINDOW_MS)
-    .sort((a, b) => a.t - b.t)
-}
-
-function seriesSparkPoints(data: UnifiedTimelineData, key: string): SparkPoint[] {
-  const points: SparkPoint[] = []
-  for (const p of data.series[key]?.data ?? []) {
-    const date = parseApiDate(p.timestamp)
-    if (date && p.value != null) points.push({ t: date.getTime(), v: p.value })
-  }
-  return points
-}
 
 /**
  * Time of the last measurement of the primary station (Pessac). RealtimeData
@@ -190,6 +152,8 @@ export default function Dashboard() {
 
   // 6 / 24 / 72 h outlook (verdict and checklist), live mode only
   const outlook = useRiskOutlook(!timeMachineActive)
+  // Rain ensembles (confidence block), shared with the ribbon and the cards
+  const ensemble = useEnsembleForecast(!timeMachineActive)
 
   // Refs used by the polling loop (avoid stale closures and overlapping polls)
   const inFlightRef = useRef(false)
@@ -198,47 +162,11 @@ export default function Dashboard() {
     timeMachineActiveRef.current = timeMachineActive
   }, [timeMachineActive])
 
-  // Sparklines: seeded with the last 24 h, then live points appended
-  const [sparklineData, setSparklineData] = useState<SparklineSet>(EMPTY_SPARKLINES)
-  const nextSeedAtRef = useRef(0)
-
-  const seedSparklines = useCallback(async () => {
-    const now = Date.now()
-    try {
-      const { data } = await getUnifiedTimeline(
-        new Date(now - SPARKLINE_WINDOW_MS).toISOString(),
-        new Date(now).toISOString(),
-        [PESSAC_STATION_ID],
-        [SPARKLINE_RAIN_SOURCE],
-        true, // tide
-        true, // risk score
-        '1h',
-        false, // soil
-        false, // infoclimat
-      )
-      setSparklineData(prev => {
-        const next = { ...prev }
-        for (const key of Object.keys(SPARKLINE_SERIES) as SparklineKey[]) {
-          next[key] = mergeSparkPoints(prev[key], seriesSparkPoints(data, SPARKLINE_SERIES[key]), now)
-        }
-        return next
-      })
-    } catch (err) {
-      // Non blocking: live points keep accumulating, retry sooner
-      console.error('Sparkline history unavailable:', err)
-      nextSeedAtRef.current = now + SPARKLINE_SEED_RETRY_MS
-    }
-  }, [])
-
   const fetchData = useCallback(async () => {
     // In-flight guard: a slow backend must not stack overlapping polls
     if (inFlightRef.current) return
     inFlightRef.current = true
     try {
-      if (Date.now() >= nextSeedAtRef.current) {
-        nextSeedAtRef.current = Date.now() + SPARKLINE_SEED_EVERY_MS
-        void seedSparklines()
-      }
       setLoading(true)
 
       // Fetch all data in parallel
@@ -273,21 +201,6 @@ export default function Dashboard() {
           setSelectedStation(prev => prev ?? primaryId)
         }
 
-        // Append live points (the tide curve comes from the seed only:
-        // /realtime has no current tide height)
-        const t = Date.now()
-        const pessac = d.stations?.stations.find(s => s.station_id === PESSAC_STATION_ID)
-        const pessacAt = parseApiDate(pessac?.current_level?.timestamp)
-        setSparklineData(prev => ({
-          // "Dordogne" reference is Pessac (Hub'Eau), not Libourne (tidal)
-          river: pessac && pessacAt
-            ? mergeSparkPoints(prev.river, [{ t: pessacAt.getTime(), v: pessac.current_level.height_m }], t)
-            : prev.river,
-          tide: prev.tide,
-          // Hourly rain (mm/h), same unit as the Open-Meteo history
-          rain: mergeSparkPoints(prev.rain, [{ t, v: d.rainfall.last_hour_mm }], t),
-          risk: mergeSparkPoints(prev.risk, [{ t, v: d.risk.score }], t),
-        }))
       } else {
         setError(errorMessage(realtimeResult.reason))
         setLastFailureAt(new Date())
@@ -309,7 +222,7 @@ export default function Dashboard() {
       inFlightRef.current = false
       setLoading(false)
     }
-  }, [seedSparklines])
+  }, [])
 
   const handleTimeMachineToggle = useCallback(() => {
     if (timeMachineActive) {
@@ -360,6 +273,14 @@ export default function Dashboard() {
       if (requestId === timeMachineRequestRef.current) setTimeMachineLoading(false)
     }
   }, [setSearchParams])
+
+  // Replay button "whole dashboard at this hour": TimeMachine mode + ?tm=
+  const openTimeMachineAt = useCallback((date: Date) => {
+    timeMachineActiveRef.current = true
+    setTimeMachineActive(true)
+    void handleTimeMachineDateChange(date)
+    requestAnimationFrame(() => document.getElementById('maintenant')?.scrollIntoView())
+  }, [handleTimeMachineDateChange])
 
   // On mount: if ?tm= is present, load TimeMachine data
   useEffect(() => {
@@ -430,7 +351,6 @@ export default function Dashboard() {
   if (!data) return null
 
   const stations = data.stations?.stations || []
-  const pessacStation = stations.find(s => s.station_id === PESSAC_STATION_ID)
 
   // Freshness is based on the primary station measurement, not on the request time
   const primaryName = stations.find(
@@ -540,6 +460,7 @@ export default function Dashboard() {
             onRetry={outlook.refresh}
             current={{ score: data.risk.score, level: data.risk.level }}
             sources={sources}
+            ensemble={ensemble.loading && !ensemble.data ? undefined : ensemble.data}
             vigilance={<VigilanceBadges />}
             now={new Date(now)}
           />
@@ -565,51 +486,18 @@ export default function Dashboard() {
 
       {/* 2. Why: measured drivers, hydrological indicators, score detail */}
       <DashboardSection id="pourquoi">
-        <Suspense fallback={<PanelFallback height="h-28" />}>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <MetricSparkline
-              title="Dordogne"
-              value={pessacStation ? `${pessacStation.current_level.height_m.toFixed(2)} m` : '- m'}
-              subtitle={pessacStation ? `Pessac · ${pessacStation.tendency}` : 'Pessac indisponible'}
-              data={sparklineData.river}
-              color="#0891b2"
-              icon={<Waves className="w-4 h-4" />}
-            />
-            <MetricSparkline
-              title="Marée"
-              value={`Coef ${data.tide.current_coefficient || '-'}`}
-              subtitle={
-                data.tide.next_high_tide
-                  ? `PM ${formatParis(data.tide.next_high_tide.timestamp, 'HH:mm')} · hauteur 24 h`
-                  : undefined
-              }
-              data={sparklineData.tide}
-              color="#3b82f6"
-              icon={<Waves className="w-4 h-4" />}
-            />
-            <MetricSparkline
-              title="Pluie bassin"
-              value={`${(basinRainfall?.available
-                ? basinRainfall.weighted_average_24h_mm
-                : data.rainfall.last_24h_mm
-              ).toFixed(1)} mm`}
-              subtitle={basinRainfall?.available
-                ? `24h Netatmo Lidoire (${basinRainfall.stations_count} st.)`
-                : '24h modèle · Netatmo indisponible'}
-              data={sparklineData.rain}
-              color="#6366f1"
-              icon={<CloudRain className="w-4 h-4" />}
-            />
-          </div>
-        </Suspense>
-        {!timeMachineActive && <IndicatorsPanel />}
+        {timeMachineActive ? (
+          <p className="text-ink-2">Mécanismes en direct uniquement : le détail du score ci-dessous suit la date choisie.</p>
+        ) : (
+          <MechanismCards realtime={data} outlook={outlook.data} now={new Date(now)} />
+        )}
         <RiskBreakdownPanel risk={data.risk} />
       </DashboardSection>
 
       {/* 3. Next hours: forecast score, nowcast, ensembles */}
       <DashboardSection id="prochaines-heures">
+        {!timeMachineActive && <HorizonRibbon realtime={data} now={new Date(now)} />}
         <Suspense fallback={<PanelFallback height="h-72" />}>
-          {!timeMachineActive && <ForecastPanel hours={168} autoRefresh={true} />}
           <NowcastRainChart data={data.nowcast_rain} />
           {!timeMachineActive && <EnsemblePanel />}
         </Suspense>
@@ -629,17 +517,27 @@ export default function Dashboard() {
               </p>
             )}
             <ObservationQuickForm />
+            <TriggerList realtime={data} outlook={outlook.data} />
           </div>
         )}
       </DashboardSection>
 
-      {/* 5. Replay (TimeMachine entry; the banner moves to the top once active) */}
+      {/* 5. Long profile + replay (opens the TimeMachine at the cursor; the
+          banner stays at the top while it is active) */}
       <DashboardSection id="replay">
-        {timeMachineActive ? (
-          <p className="text-ink-2">
-            TimeMachine actif : le bandeau en haut de page permet de changer de date ou de revenir au direct.
-          </p>
-        ) : timeMachineBanner}
+        <Suspense fallback={<PanelFallback height="h-[640px]" />}>
+          <ReplayPanel
+            focusAt={timeMachineActive ? timeMachineDate : null}
+            onOpenDashboardAt={openTimeMachineAt}
+          />
+        </Suspense>
+      </DashboardSection>
+
+      {/* 6. Flood plane: Eyraud discharge x Pessac, episodes, today's trail */}
+      <DashboardSection id="plan">
+        <Suspense fallback={<PanelFallback height="h-[480px]" />}>
+          <FloodPlanPanel />
+        </Suspense>
       </DashboardSection>
 
       {/* Analogs: nearest labelled episodes (at the TimeMachine date when active) */}
@@ -649,7 +547,7 @@ export default function Dashboard() {
         </Suspense>
       </DashboardSection>
 
-      {/* 6. Map and stations */}
+      {/* Map and stations */}
       <DashboardSection id="carte">
         <Suspense fallback={<PanelFallback height="h-[260px]" />}>
           <BasinMap
