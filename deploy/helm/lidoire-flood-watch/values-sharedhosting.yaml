@@ -17,10 +17,19 @@ frontend:
   service:
     clusterIP: 10.32.0.100
 
+# HTTPS on the tailnet, terminated by the frontend nginx (Service frontend
+# 443 -> 8443, 80 -> 8080 answers 301). Certificate by DNS-01 (Cloudflare).
+tls:
+  enabled: true
+  host: lidoire.ts.kamorion.cloud
+  issuer: letsencrypt-dns01-cloudflare
+  issuerKind: ClusterIssuer
+
 backend:
   config:
-    frontendUrl: "http://lidoire.ts.kamorion.cloud"
-    corsOrigins: "http://lidoire.ts.kamorion.cloud"
+    frontendUrl: "https://lidoire.ts.kamorion.cloud"
+    # http origin kept during the switch to https (cached tabs, old links)
+    corsOrigins: "https://lidoire.ts.kamorion.cloud,http://lidoire.ts.kamorion.cloud"
   # Owner-approved alert policy (scripts/eval/budget.py): ntfy alerts from
   # v3.4 red (>= 55) only, downgrade sent after 12 h (~6 alerts/yr, 5/5 floods
   # on the replay). Plain env wins over the external-apis Secret (envFrom).
