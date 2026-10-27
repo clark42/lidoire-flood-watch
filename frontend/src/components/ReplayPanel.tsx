@@ -91,7 +91,7 @@ export default function ReplayPanel({ focusAt = null, onOpenDashboardAt }: Repla
   const [index, setIndex] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [floorZ, setFloorZ] = useState<number | null>(null)
-  const [, setApiVersion] = useState(0)
+  const [apiVersion, setApiVersion] = useState(0)
 
   // Labels (hour-precise peaks of the presets) and the ground profile
   useEffect(() => {
@@ -242,10 +242,15 @@ export default function ReplayPanel({ focusAt = null, onOpenDashboardAt }: Repla
   const story = useMemo(() => {
     if (!data || times.length === 0) return ''
     const peakT = win.peak ? times[nearestIndex(times, win.peak.getTime())] : null
-    const atPeak = peakT != null ? replayFrame(series, peakT, points, millD, params) : null
-    const last = replayFrame(series, times[times.length - 1], points, millD, params)
+    // The server value of an hour replaces the local estimate, as under the
+    // cursor: the story and the readout give the same reach for the same hour
+    const frameAt = (t: number) => withApi(replayFrame(series, t, points, millD, params), PROFILE_CACHE.get(hourKey(t)))
+    const atPeak = peakT != null ? frameAt(peakT) : null
+    const last = frameAt(times[times.length - 1])
     return replayStory(presetId, series, win, atPeak, last)
-  }, [data, times, series, points, millD, params, presetId, win])
+    // apiVersion: a profile hour just arrived in PROFILE_CACHE (module cache)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, times, series, points, millD, params, presetId, win, apiVersion])
 
   const isLive = presetId === 'now' && index >= times.length - 1
   const marker = win.peak && (win.label?.outcome ?? 'flooded') === 'flooded' ? win.peak.getTime() : null
