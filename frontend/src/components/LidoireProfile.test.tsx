@@ -7,7 +7,7 @@ import profileLow from '../test-fixtures/geo-profile-2026-10-26T21.json'
 import profileUat from '../test-fixtures/geo-profile.json'
 import { buildMechanisms } from '../utils/mechanisms'
 import replayFeb2024 from '../test-fixtures/timeline-replay-2024-02.json'
-import { DEFAULT_CONFLUENCE_PARAMS } from '../utils/lidoireProfile'
+import { centredTextX, DEFAULT_CONFLUENCE_PARAMS, labelBoxX } from '../utils/lidoireProfile'
 import { hourlyTimes, nearestIndex, replayFrame, replaySeries, replayWindow } from '../utils/replay'
 import LidoireProfile, { LidoireProfileReadout } from './LidoireProfile'
 import ReplayPanel from './ReplayPanel'
@@ -113,6 +113,30 @@ describe('one backwater reach everywhere (UAT 2026-10-27: 4,9 vs 4,7 km)', () =>
     )
     expect(readout).toContain('Le remous s’arrête à ≈ 4,9 km sous le moulin à 27/10 00:10')
     expect(readout).not.toContain('4,7')
+  })
+})
+
+describe('labels stay inside the SVG (UAT: "plancher ?" clipped at 390 px)', () => {
+  for (const width of [320, 343, 375, 390, 560, 640, 960, 1280]) {
+    it(`keeps the floor pill and the gap label within ${width} px`, () => {
+      const html = renderToStaticMarkup(
+        <LidoireProfile profile={flood} zc={flood.confluence.z_c_m_ngf} reach={reachOf(flood)} floorZ={null} width={width} />,
+      )
+      const pill = html.match(/data-floor="unknown"><rect x="([\d.-]+)"[^>]*width="(\d+)"/)!
+      const x = Number(pill[1])
+      expect(x).toBeGreaterThanOrEqual(0)
+      expect(x + Number(pill[2])).toBeLessThanOrEqual(width)
+      const gap = html.match(/data-gap="[^"]+">[\s\S]*?<text x="([\d.-]+)"/)!
+      expect(Number(gap[1]) - 65).toBeGreaterThanOrEqual(0)
+      expect(Number(gap[1]) + 65).toBeLessThanOrEqual(width)
+    })
+  }
+
+  it('moves the pill to the left of the mill when the right side is too short', () => {
+    expect(labelBoxX(380, 66, 6, [2, 388])).toBe(308)
+    expect(labelBoxX(200, 66, 6, [2, 388])).toBe(206)
+    expect(labelBoxX(30, 66, 6, [2, 60])).toBe(2)
+    expect(centredTextX(380, 130, [2, 388])).toBe(323)
   })
 })
 
