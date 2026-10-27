@@ -1,0 +1,509 @@
+{
+ "generated_at": "2026-10-26T23:14:47.966498Z",
+ "model_input": false,
+ "labels_version": 2,
+ "labels_updated_at": "2026-10-26",
+ "windows": {
+  "pessac_m": "max de H Pessac sur (t - 12.5 h, t]",
+  "libourne_m": "max de H Libourne sur (t - 12.5 h, t]",
+  "eyraud_q_m3s": "max du debit de l'Eyraud sur (t - 12.5 h, t]",
+  "rain_72h_mm": "somme de la pluie horaire Open-Meteo au moulin sur (t - 72 h, t]",
+  "piezo_m_ngf": "dernier niveau de la nappe (Mouliets) <= t, au plus 48 h",
+  "glofas_m3s": "GloFAS p50, dernier run stocke pour le jour de t (souvent absent avant la collecte)",
+  "z_c_m_ngf": "estime : (1 - 0.2) x Pessac NGF + 0.2 x Libourne NGF, max sur 12.5 h"
+ },
+ "percentile_basis": {
+  "pessac": "max 12.5 h vs max journaliers de Pessac depuis 2022-11",
+  "eyraud_q": "max 12.5 h vs max journaliers de l'Eyraud depuis 2022-11",
+  "rain_72h": "cumul 72 h vs cumuls de 3 jours (octobre-avril) depuis 2022-11",
+  "piezo": "niveau vs moyennes journalieres depuis 2022-11",
+  "glofas": "p50 vs valeurs journalieres GloFAS stockees"
+ },
+ "history_counts": {
+  "pessac": 1455,
+  "eyraud_q": 1455,
+  "rain_72h": 0,
+  "piezo": 1455,
+  "glofas": 0
+ },
+ "confluence": {
+  "label": "estime",
+  "upstream_station": "P555001001",
+  "downstream_station": "P577001001",
+  "ngf_zeros_m": {
+   "P555001001": 3.33,
+   "P577001001": -1.17
+  },
+  "alpha_downstream_weight": 0.2,
+  "envelope_hours": 12.5,
+  "formula": "Z_c = (1 - alpha) x (zero_Pessac + H_Pessac) + alpha x (zero_Libourne + H_Libourne)"
+ },
+ "caveats": [
+  "peak_time des labels a la journee pres (06:00 ou 12:00 le plus souvent) : Pessac et l'Eyraud ne culminent pas forcement a cette heure",
+  "fenetres causales : seuls les points <= t sont lus",
+  "Z_c est une estimation (aucune station a la confluence)"
+ ],
+ "partial": false,
+ "errors": [],
+ "episodes": [
+  {
+   "key": "2023-01-18",
+   "peak_time": "2023-01-18T12:00:00Z",
+   "outcome": "false_positive",
+   "severity": 1,
+   "water_height_cm": null,
+   "notes": "pas inonde",
+   "flags": [],
+   "values": {
+    "pessac_m": 3.304,
+    "libourne_m": 4.628,
+    "eyraud_q_m3s": 7.452,
+    "rain_72h_mm": 36.9,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 6.54,
+    "piezo_time": "2023-01-18T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 5.999,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 90.6,
+    "eyraud_q": 98.1,
+    "rain_72h": null,
+    "piezo": 51.4,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2023-03-11",
+   "peak_time": "2023-03-11T12:00:00Z",
+   "outcome": "flooded",
+   "severity": 3,
+   "water_height_cm": null,
+   "notes": "Premiere inondation, infiltration (depuis colmate)",
+   "flags": [
+    "mechanism_infiltration_since_sealed"
+   ],
+   "values": {
+    "pessac_m": 2.715,
+    "libourne_m": 5.119,
+    "eyraud_q_m3s": 25.425,
+    "rain_72h_mm": 45.4,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 7.18,
+    "piezo_time": "2023-03-11T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 5.626,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 83.6,
+    "eyraud_q": 99.9,
+    "rain_72h": null,
+    "piezo": 97.5,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2023-11-30",
+   "peak_time": "2023-11-30T22:15:00Z",
+   "outcome": "flooded",
+   "severity": 5,
+   "water_height_cm": 25.0,
+   "notes": "Grosse inondation, 25 cm d'eau a l'interieur, vers 23:00-23:30 (Paris) dans la nuit du 30/11 au 01/12/2023. risk_v2: Pessac 4.11 m, 5 stations en hausse, 18 mm de pluie.",
+   "flags": [
+    "ep_number_conflict_ep14",
+    "rekeyed_from_2023-12-01"
+   ],
+   "values": {
+    "pessac_m": 3.53,
+    "libourne_m": 4.997,
+    "eyraud_q_m3s": null,
+    "rain_72h_mm": 31.2,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 7.33,
+    "piezo_time": "2023-11-30T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 6.253,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 92.1,
+    "eyraud_q": null,
+    "rain_72h": null,
+    "piezo": 99.2,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2023-12-11",
+   "peak_time": "2023-12-11T12:00:00Z",
+   "outcome": "near_miss",
+   "severity": 3,
+   "water_height_cm": null,
+   "notes": "Continuation decembre 2023 ; proprietaire : 'c'etait presque mais non' (pas inonde).",
+   "flags": [
+    "possible_same_event_as_2023-11-30",
+    "outcome_changed_flooded_to_near_miss"
+   ],
+   "values": {
+    "pessac_m": 4.562,
+    "libourne_m": 5.331,
+    "eyraud_q_m3s": 19.734,
+    "rain_72h_mm": 25.5,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 7.34,
+    "piezo_time": "2023-12-11T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 7.145,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 97.2,
+    "eyraud_q": 99.6,
+    "rain_72h": null,
+    "piezo": 99.3,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2024-02-26",
+   "peak_time": "2024-02-26T11:00:00Z",
+   "outcome": "flooded",
+   "severity": 5,
+   "water_height_cm": 25.0,
+   "notes": "20-25 cm d'eau a l'interieur du moulin, vers 12:00 (Paris).",
+   "flags": [
+    "water_height_range_20_25"
+   ],
+   "values": {
+    "pessac_m": 3.73,
+    "libourne_m": 5.63,
+    "eyraud_q_m3s": 23.064,
+    "rain_72h_mm": 50.9,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 7.21,
+    "piezo_time": "2024-02-26T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 6.54,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 93.4,
+    "eyraud_q": 99.9,
+    "rain_72h": null,
+    "piezo": 97.8,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2024-03-30",
+   "peak_time": "2024-03-30T12:00:00Z",
+   "outcome": "near_miss",
+   "severity": 2,
+   "water_height_cm": null,
+   "notes": "Ca a bien monte mais pas inonde. risk_v2: 5 stations en hausse, river=0.514, pas de pluie.",
+   "flags": [
+    "outcome_interpreted_from_notes"
+   ],
+   "values": {
+    "pessac_m": 2.904,
+    "libourne_m": 4.997,
+    "eyraud_q_m3s": 13.492,
+    "rain_72h_mm": 36.5,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 7.38,
+    "piezo_time": "2024-03-30T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 5.753,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 87.3,
+    "eyraud_q": 99.1,
+    "rain_72h": null,
+    "piezo": 99.5,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2024-05-09",
+   "peak_time": "2024-05-09T06:00:00Z",
+   "outcome": "false_positive",
+   "severity": 1,
+   "water_height_cm": null,
+   "notes": "Pas inonde. risk_v2: Pessac 4.92 m (ROUGE), 0 station en hausse, 0 mm de pluie.",
+   "flags": [],
+   "values": {
+    "pessac_m": 5.148,
+    "libourne_m": 5.613,
+    "eyraud_q_m3s": 1.763,
+    "rain_72h_mm": 12.9,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 6.67,
+    "piezo_time": "2024-05-09T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 7.671,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 98.2,
+    "eyraud_q": 89.6,
+    "rain_72h": null,
+    "piezo": 61.9,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2024-10-18",
+   "peak_time": "2024-10-18T06:00:00Z",
+   "outcome": "false_positive",
+   "severity": 2,
+   "water_height_cm": null,
+   "notes": "Pas inonde. risk_v2: 6 stations en hausse, river=0.353.",
+   "flags": [],
+   "values": {
+    "pessac_m": 2.407,
+    "libourne_m": 5.478,
+    "eyraud_q_m3s": 0.913,
+    "rain_72h_mm": 38.7,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 7.22,
+    "piezo_time": "2024-10-18T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 5.452,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 77.7,
+    "eyraud_q": 83.6,
+    "rain_72h": null,
+    "piezo": 98.1,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2024-11-27",
+   "peak_time": "2024-11-27T06:00:00Z",
+   "outcome": "false_positive",
+   "severity": 1,
+   "water_height_cm": null,
+   "notes": "pas inonde",
+   "flags": [],
+   "values": {
+    "pessac_m": 2.332,
+    "libourne_m": 4.217,
+    "eyraud_q_m3s": 0.628,
+    "rain_72h_mm": 3.2,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 6.75,
+    "piezo_time": "2024-11-27T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 5.139,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 75.5,
+    "eyraud_q": 78.9,
+    "rain_72h": null,
+    "piezo": 71.9,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2024-12-11",
+   "peak_time": "2024-12-11T06:00:00Z",
+   "outcome": "false_positive",
+   "severity": 1,
+   "water_height_cm": null,
+   "notes": "pas inonde",
+   "flags": [],
+   "values": {
+    "pessac_m": 2.266,
+    "libourne_m": 4.143,
+    "eyraud_q_m3s": 0.542,
+    "rain_72h_mm": 1.1,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 6.79,
+    "piezo_time": "2024-12-11T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 5.071,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 73.8,
+    "eyraud_q": 77.1,
+    "rain_72h": null,
+    "piezo": 77.0,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2025-01-12",
+   "peak_time": "2025-01-12T06:00:00Z",
+   "outcome": "false_positive",
+   "severity": 1,
+   "water_height_cm": null,
+   "notes": "Pas inonde. Pessac ORANGE, 1 station en hausse (risk_v2).",
+   "flags": [],
+   "values": {
+    "pessac_m": 4.455,
+    "libourne_m": 4.913,
+    "eyraud_q_m3s": 2.088,
+    "rain_72h_mm": 9.0,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 6.96,
+    "piezo_time": "2025-01-12T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 6.977,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 96.5,
+    "eyraud_q": 91.0,
+    "rain_72h": null,
+    "piezo": 91.2,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2025-04-21",
+   "peak_time": "2025-04-21T01:30:00Z",
+   "outcome": "flooded",
+   "severity": 4,
+   "water_height_cm": null,
+   "notes": "Inonde le 21/04/2025 vers 03:00-04:00 (Paris). L'ancienne cle 2025-04-23T16:00 etait fausse (etat 'post-pic toujours inonde' au 23/04). risk_v2 v3.2 (23/04) : Pessac 0.62, Abzac 0.93, Coutras 0.87 (3 au-dessus d'orange, 2 encore en hausse).",
+   "flags": [
+    "ep_number_conflict_ep14",
+    "rekeyed_from_2025-04-23"
+   ],
+   "values": {
+    "pessac_m": 4.362,
+    "libourne_m": 4.352,
+    "eyraud_q_m3s": 19.602,
+    "rain_72h_mm": 57.6,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 7.2,
+    "piezo_time": "2025-04-21T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 6.79,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 96.2,
+    "eyraud_q": 99.6,
+    "rain_72h": null,
+    "piezo": 97.6,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2025-11-25",
+   "peak_time": "2025-11-25T06:00:00Z",
+   "outcome": "near_miss",
+   "severity": 3,
+   "water_height_cm": null,
+   "notes": "Pas inonde, haut",
+   "flags": [
+    "outcome_interpreted_from_notes"
+   ],
+   "values": {
+    "pessac_m": 3.373,
+    "libourne_m": 4.544,
+    "eyraud_q_m3s": 3.884,
+    "rain_72h_mm": 50.8,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 7.07,
+    "piezo_time": "2025-11-25T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 6.037,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 91.1,
+    "eyraud_q": 95.3,
+    "rain_72h": null,
+    "piezo": 95.0,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2026-01-28",
+   "peak_time": "2026-01-28T06:00:00Z",
+   "outcome": "unknown",
+   "severity": 4,
+   "water_height_cm": null,
+   "notes": "En cours, pas encore inonde au moment de l'annotation",
+   "flags": [
+    "needs_relabel",
+    "labelled_while_ongoing"
+   ],
+   "values": {
+    "pessac_m": 2.92,
+    "libourne_m": 4.428,
+    "eyraud_q_m3s": 4.858,
+    "rain_72h_mm": 29.0,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 7.23,
+    "piezo_time": "2026-01-28T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 5.652,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 87.4,
+    "eyraud_q": 96.5,
+    "rain_72h": null,
+    "piezo": 98.3,
+    "glofas": null
+   },
+   "errors": []
+  },
+  {
+   "key": "2026-02-12",
+   "peak_time": "2026-02-12T16:00:00Z",
+   "outcome": "flooded",
+   "severity": 3,
+   "water_height_cm": null,
+   "notes": "Inonde le 12/02/2026 en fin d'apres-midi (Paris), hauteur inconnue. Crue record de la Dordogne (Pessac 7.88 m le 14/02).",
+   "flags": [
+    "severity_not_stated",
+    "water_height_unknown",
+    "added_from_owner_memory"
+   ],
+   "values": {
+    "pessac_m": 6.496,
+    "libourne_m": 4.8,
+    "eyraud_q_m3s": null,
+    "rain_72h_mm": 63.4,
+    "rain_72h_hours_found": 72,
+    "piezo_m_ngf": 7.47,
+    "piezo_time": "2026-02-12T01:00:00Z",
+    "glofas_m3s": null,
+    "z_c_m_ngf": 8.587,
+    "notes": []
+   },
+   "percentiles": {
+    "pessac": 99.3,
+    "eyraud_q": null,
+    "rain_72h": null,
+    "piezo": 100.0,
+    "glofas": null
+   },
+   "errors": []
+  }
+ ]
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { EpisodeDriversData, UnifiedTimelineData } from '../types'
-import driversFixture from '../test-fixtures/episode-drivers.json'
+import driversFixture from '../test-fixtures/episode-drivers-plan.json'
 import trailFeb2026 from '../test-fixtures/timeline-trail-2026-02.json'
 import trailNow from '../test-fixtures/timeline-trail-now.json'
 import { dailyTrail, episodePoints } from '../utils/phasePlane'

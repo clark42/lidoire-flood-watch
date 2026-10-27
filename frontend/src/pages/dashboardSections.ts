@@ -18,19 +18,19 @@ export const DASHBOARD_SECTIONS = [
     label: 'Pourquoi',
     title: 'Pourquoi ce niveau',
     description:
-      "Le moulin n'est jamais mesuré : on regarde ce qui l'inonde (remous de la Dordogne et de la marée, crue propre de la Lidoire, nappe) et le détail du score.",
+      "Le moulin n'est jamais mesuré : on regarde ce qui l'inonde. D'abord la crue propre de la Lidoire (ruissellement), puis la Dordogne aval qui la freine, le débordement direct (rare) et la nappe. Chaque rail place la valeur du moment parmi les crues passées.",
   },
   {
     id: 'prochaines-heures',
     label: '72 h',
     title: 'Les prochaines heures',
-    description: 'Score prévu, pluie immédiate et prévisions d’ensemble (heure de Paris).',
+    description: 'Score prévu, pluie d’ensemble, pleines mers et Pessac sur un même axe (heure de Paris, nuits grisées).',
   },
   {
     id: 'agir',
     label: 'Agir',
     title: 'Agir',
-    description: 'La liste du moulin pour le niveau prévu, et le relevé terrain qui manque au modèle.',
+    description: 'La liste du moulin pour le niveau prévu, le relevé terrain qui manque au modèle, et ce qui ferait changer d’avis.',
   },
   {
     id: 'replay',

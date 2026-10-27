@@ -44,7 +44,7 @@ npm test                                # Vitest (helpers, contrastes des jetons
 npm run build                           # tsc + vite build
 ```
 
-Tests : `frontend/src/**/*.test.{ts,tsx}` a cote du module (environnement node, pas de DOM : composants testes via `renderToStaticMarkup`), fixtures dans `src/test-fixtures/` : `outlook.json` et `timeline-*.json` lus en GET sur la prod ; `geo-profile-*.json`, `episode-drivers.json`, `episode-labels.json` calcules par le code backend de main a partir des series de la prod (routes absentes de la prod au 2026-10-27).
+Tests : `frontend/src/**/*.test.{ts,tsx}` a cote du module (environnement node, pas de DOM : composants testes via `renderToStaticMarkup`), fixtures de prod dans `src/test-fixtures/` (GET sur `lidoire.ts.kamorion.cloud/api/...` : outlook, realtime, status, indicators, vigilance, forecast/ensemble, risk/forecast). `episode-drivers.json` et `geo-profile*.json` sont produits par le vrai code backend sur les archives publiques, la prod (sha-1c08aad) ne servant pas encore ces routes (`_fixture_note`). Plan des crues et replay : `episode-drivers-plan.json`, `geo-profile-*.json` et `episode-labels.json` calcules par le code backend de main a partir des series de la prod, `timeline-*.json` lus en GET.
 
 ### Evaluation hors ligne
 ```bash
@@ -172,6 +172,11 @@ src/
 ├── utils/levels.ts      # Ordre et rang des niveaux, levelFromScore (15/35/55), buildVerdict (pire niveau 0-72 h)
 ├── utils/confidence.ts  # Raisons de confiance (Pessac a jour, notes de l'outlook, "cale sur 5 crues")
 ├── utils/scale.ts       # linearScale / logScale / niceTicks pour les SVG maison
+├── utils/rail.ts        # PercentileRail : domaine (log ou lineaire), positions, empilement des episodes, comparaison aux crues
+├── utils/mechanisms.ts  # Les 4 cartes mecanismes (pur) : ruissellement, Dordogne aval, debordement direct, nappe
+├── utils/ribbon.ts      # HorizonRibbon : fenetre, nuits 20 h-7 h Paris, graduations, fenetres d'ensemble 24 h, PM, Vigicrues
+├── utils/triggers.ts    # "Ce qui me ferait changer d'avis" : seuils lus dans les donnees et la config
+├── utils/ensemble.ts    # Fenetres et modeles de la pluie d'ensemble, accord des modeles (bloc Confiance)
 ├── utils/lidoireProfile.ts # PUR, miroir de services/lidoire_profile.py : Z_c, remous (plan d'eau horizontal), marches du terrain, geometrie du profil (d3-scale)
 ├── utils/replay.ts      # PUR : presets du replay (pics des labels a l'heure), index horaire, valeurs a t (enveloppe 12.5 h causale), phrase factuelle par preset
 ├── utils/phasePlane.ts  # PUR : plan des crues (log Eyraud x Pessac), traces journalieres (fenetres 1d datees par leur fin), lecture et legende calculees
@@ -180,6 +185,8 @@ src/
 ├── theme/               # theme.ts (preference systeme/clair/sombre, localStorage 'lfw_theme'), contrast.ts (WCAG)
 ├── styles/tokens.css    # Jetons clair/sombre (source unique), styles/fonts.css (@font-face woff2)
 ├── hooks/useRiskOutlook.ts # GET /api/risk/outlook toutes les 10 min (verdict + liste)
+├── hooks/useSharedResource.ts # Un fetch partage par route (indicators, drivers, geo/profile, ensemble, vigilance, forecast 168 h)
+├── hooks/useElementWidth.ts   # Largeur reelle des SVG (ResizeObserver), textes a taille fixe sur mobile
 ├── tooltipContent.ts    # Dictionnaire centralise des textes de tooltips
 ├── pages/
 │   ├── Dashboard.tsx    # Sections (dashboardSections.ts) : Maintenant, Pourquoi, 72 h, Agir, Coupe & replay (#replay), Plan des crues (#plan), Carte, Pluie et sol, Fiabilite ; TimeMachine ouvert depuis le replay (bandeau en haut une fois actif, ?tm= conserve) ; fraicheur = Pessac ; recharts, leaflet et panneaux d3 en lazy
@@ -187,18 +194,21 @@ src/
 │   ├── Episodes.tsx     # Liste/creation/analyse/issue des episodes
 │   └── Configuration.tsx # Statut, simulation, cle API ; version du modele lue dans l'API (`risk_model.version`, sinon `RiskScore.model_version`)
 └── components/
-    ├── VerdictHero.tsx  # Haut du Dashboard : verdict, tuiles 6/24/72 h, pourquoi, confiance, vigilances (slot)
-    ├── ActionChecklist.tsx (liste du moulin, outlook.checklist), SectionNav.tsx (barre collante), DashboardSection.tsx, ThemeToggle.tsx
+    ├── VerdictHero.tsx  # Haut du Dashboard : verdict, tuiles 6/24/72 h, pourquoi, ConfidencePanel, vigilances (slot)
+    ├── ConfidencePanel.tsx # Raisons de confiance + accord des ensembles de pluie (/api/forecast/ensemble)
+    ├── MechanismCards.tsx, MechanismCard.tsx, ui/PercentileRail.tsx # Section Pourquoi (rails SVG d3-scale)
+    ├── HorizonRibbon.tsx # Section 72 h : score, pluie d'ensemble (choix du modele), PM + Vigicrues Libourne, Pessac projete
+    ├── TriggerList.tsx  # Section Agir : seuils qui changeraient l'avis
+    ├── ActionChecklist.tsx (liste du moulin, outlook.checklist, textes par defaut marques "exemples" via `CHECKLIST_TEXT_IS_EXAMPLE`, coches en localStorage `lfw_checklist`), SectionNav.tsx (barre collante), DashboardSection.tsx, ThemeToggle.tsx
     ├── ui/LevelMeter.tsx (4 pastilles + mot), ui/ValueTag.tsx (+ ValueTagLegend, libelles dans ui/valueKinds.ts)
     ├── RiskBreakdownPanel.tsx (contributions = poids x score / denominateur x conjonction x amortisseur, gate maree), StationsPanel.tsx, RainfallPanel.tsx
     ├── ForecastSkillPanel.tsx (Configuration)
     ├── ReplayPanel.tsx  # Coupe & replay : LidoireProfile (+ Readout, curseur de plancher), ReplayScrubber (presets, lecture/pause, pas de 6 h en mouvement reduit), SyncStrips (Pessac/Libourne/Z_c NGF, Eyraud, score + shadows, pluie)
     ├── FloodPlanPanel.tsx # Plan des crues : FloodPhasePlane (episodes de /api/episodes/drivers, formes par issue, point du jour, traces 21 j et fevriers 2024/2026), legende, tableau
-    ├── ForecastPanel.tsx, BasinRainfallGauge.tsx, SoilConditionsPanel.tsx, NowcastRainChart.tsx
-    ├── HydroMap.tsx, MetricSparkline.tsx, TimeMachineBanner.tsx, TimelineSourceSelector.tsx
+    ├── BasinRainfallGauge.tsx, SoilConditionsPanel.tsx, NowcastRainChart.tsx
+    ├── HydroMap.tsx, TimeMachineBanner.tsx, TimelineSourceSelector.tsx
     ├── InfoTooltip.tsx, DataCard.tsx, DataSourcesStatus.tsx (bandeau des sources = `/api/status.sources`)
-    ├── IndicatorsPanel.tsx  # Indicateurs hydrologiques (Dashboard, autonome, /api/indicators)
-    ├── VigilanceBadges.tsx, ObservationQuickForm.tsx (Dashboard)
+    ├── VigilanceBadges.tsx (pastilles + mot, slot du verdict), ObservationQuickForm.tsx (Dashboard)
     ├── ObservationList.tsx, EpisodeObservationsPanel.tsx (Episodes)
     ├── EnsemblePanel.tsx  # Radar bassin, probabilites de pluie, eventail GloFAS (hors score)
     ├── BasinLayer.tsx   # Polygone du bassin sur HydroMap
@@ -278,7 +288,7 @@ Nouvelles series et routes, JAMAIS lues par le modele v3.4 (test `test_risk_mode
 - **Radar OPERA** (`opera_radar.py`, CC BY 4.0, attribution affichee) : composite ACRR (cumul 1 h finissant a l'heure du fichier) toutes les 15 min, 2 km, LAEA, COG `s3.waw3-1.cloudferro.com/openradar-24h` (24 h glissantes, ~10-20 min de latence, des creneaux manquent). Listing S3, en-tete + seules tuiles sous le bassin par requetes Range (64 Ko + une tuile de ~100-200 Ko au lieu de 4 Mo), lecteur TIFF maison (deflate, predicteurs 1/2/3) et LAEA ellipsoidale (Snyder, ecart < 1 mm avec pyproj) : aucune dependance ajoutee. Moyenne ponderee par la part de chaque pixel dans le polygone (8 x 8 sous-points), NaN = pas d'echo (0 mm), -9999000 = hors couverture (`coverage`). Mesure `radar_rain` (tags `source=opera`, `basin=LIDOIRE`, `product=ACRR` ; champs `basin_mean_mm`, `max_pixel_mm`, `coverage`, `quality`, `pixels`), images manquantes des 6 dernieres heures reprises (12 max par passage). `GET /api/realtime/radar` : cumuls 1/3/6/24 h = somme des images aux heures pleines depuis la derniere, `complete` si aucune heure manque, heure et age de la derniere image.
 - **GloFAS** (`glofas.py`) : Open-Meteo Flood `forecast_v4&ensemble=true`, 51 membres, 30 j, maille 44.875/-0.025 (proxy modelise, aucune jauge). Par jour : p10/p50/p90, min/max, P(> p95) et P(> p99) de la reanalyse `consolidated_v4` de la meme maille (1997-2025 : p95 3.12, p99 6.35 m3/s), climatologie calculee une fois (`glofas_climatology`). Chaque run est stocke (`glofas_forecast`, tags `cell`, `run` = date d'init via `meta.json`, `lead` en jours ; pas d'archive amont).
 - **Pluie d'ensemble** (`ensemble_rain.py`) : Open-Meteo Ensemble, `icon_d2` (20 membres, ~2.5 j), `icon_eu` (40, ~5.5 j), `ecmwf_ifs025` (51, 15 j), 3 points du bassin ponderes par l'aire des sous-bassins (`ensemble_rain_points`). Pluie horaire = cumul de l'heure precedente, fenetre (debut, fin]. P(24 h > 25/40/60 mm) et P(72 h > 50/80/120 mm) (seuils lus dans `get_model_params`), quantiles ; `blend` = moyenne des modeles couvrant la fenetre. Stockage de chaque run (`ensemble_rain`, tags `model`, `run` = `YYYY-MM-DDTHHZ`, `window` = `24h`/`72h`/`run`, `lead` en heures), fenetres ancrees sur l'init du run ; `meta.json` DWD perime => run ancre sur l'heure de collecte (`run_init_known=0`).
-- `GET /api/forecast/ensemble` : `rain.horizons["24h"|"72h"]` (fenetres depuis l'heure courante, par modele + `blend`) et `glofas.days` ; cache-through 3 h en memoire, la route n'ecrit jamais. Frontend `EnsemblePanel` (tableau des probabilites, eventail GloFAS, bande radar) sous `ForecastPanel`.
+- `GET /api/forecast/ensemble` : `rain.horizons["24h"|"72h"]` (fenetres depuis l'heure courante, par modele + `blend`) et `glofas.days` ; cache-through 3 h en memoire, la route n'ecrit jamais. Frontend : `HorizonRibbon` (fenetres 24 h, mediane, p10-p90, membre max), accord des modeles dans `ConfidencePanel`, `EnsemblePanel` (probabilites, eventail GloFAS, bande radar) dans la section 72 h.
 - Timeline : `include_radar=true` (`radar:LIDOIRE`, images aux heures pleines, sommes par fenetre au-dela de 1 h) et `include_glofas=true` (`glofas:LIDOIRE`, mediane du run le plus recent par jour) ; series stockees seulement, pas de cache-through.
 
 ### Profil en long, valeurs aux crues, analogues, image radar (hors modele)
@@ -297,7 +307,7 @@ Affichage seulement, JAMAIS lu par v3.4 (`tests/api360/test_api360_v34_unchanged
 
 ### Notifications
 
-`services/notifier.py`, job `notifier` (toutes les heures, 5 min apres `risk_scorer`), canal ntfy (`POST <NTFY_URL>/<NTFY_TOPIC>`, bearer `NTFY_TOKEN` optionnel, interface `Channel` pour d'autres canaux). Sans `NTFY_URL`/`NTFY_TOPIC` : aucun job, un log info au demarrage. Declencheurs : dernier score temps reel stocke passant en orange/rouge (immediat ; jaune seulement si `NOTIFY_YELLOW`), baisse envoyee apres `NOTIFY_DOWNGRADE_HOLD_HOURS` (3 h, le score oscille avec la maree) vers le plus haut niveau vu pendant l'attente ; max de la prevision sur `NOTIFY_FORECAST_HOURS` (48 h) en orange/rouge, une fois par evenement (nouvel envoi si escalade en rouge, fin apres la meme attente) ; Pessac sans point depuis 3 h ou aucun score stocke depuis 2 h (une alerte, un retablissement). Etat persistant en JSON dans la table PostgreSQL `notifier_state` (Redis non persistant en prod) ; une transition n'est acquittee qu'une fois le message delivre (reessai a l'execution suivante), un redemarrage ne renvoie rien. Messages en francais (niveau, score, Pessac, pluie 72 h, prochaine pleine mer, lien `FRONTEND_URL`). `POST /api/notify/test` envoie un message de test. En prod : cles `NTFY_*` dans le secret Scaleway `lidoire-external-apis` (`externalApis.enabled=true`).
+`services/notifier.py`, job `notifier` (toutes les heures, 5 min apres `risk_scorer`), canal ntfy (`POST <NTFY_URL>/<NTFY_TOPIC>`, bearer `NTFY_TOKEN` optionnel, interface `Channel` pour d'autres canaux). Sans `NTFY_URL`/`NTFY_TOPIC` : aucun job, un log info au demarrage. Niveau minimum d'alerte `NOTIFY_MIN_LEVEL` (`orange` par defaut = orange et rouge ; `red` = rouge seul, jaune et orange silencieux) ; `NOTIFY_YELLOW` n'agit qu'avec `orange`. Declencheurs : dernier score temps reel stocke montant au niveau minimum ou au-dessus (immediat ; jaune seulement si `NOTIFY_YELLOW`), baisse envoyee apres `NOTIFY_DOWNGRADE_HOLD_HOURS` (3 h par defaut, le score oscille avec la maree) vers le plus haut niveau vu pendant l'attente, seulement si le niveau quitte etait notifiable ; max de la prevision sur `NOTIFY_FORECAST_HOURS` (48 h) au niveau minimum ou au-dessus, une fois par evenement (nouvel envoi si escalade en rouge, fin apres la meme attente) ; tous les niveaux restent suivis dans l'etat, notifies ou non (changer `NOTIFY_MIN_LEVEL` ne demande aucune migration : un heads-up orange stocke se termine sans message sous `red`) ; Pessac sans point depuis 3 h ou aucun score stocke depuis 2 h (une alerte, un retablissement). Etat persistant en JSON dans la table PostgreSQL `notifier_state` (Redis non persistant en prod) ; une transition n'est acquittee qu'une fois le message delivre (reessai a l'execution suivante), un redemarrage ne renvoie rien. Messages en francais (niveau, score, Pessac, pluie 72 h, prochaine pleine mer, lien `FRONTEND_URL`). `POST /api/notify/test` envoie un message de test. En prod : cles `NTFY_*` dans le secret Scaleway `lidoire-external-apis` (`externalApis.enabled=true`) ; politique validee par le proprietaire `NOTIFY_MIN_LEVEL=red` + `NOTIFY_DOWNGRADE_HOLD_HOURS=12` dans `backend.extraEnv` de `values-sharedhosting.yaml` (env en clair, prioritaire sur l'`envFrom` du secret).
 
 ### Stations surveillees
 
@@ -465,7 +475,7 @@ Le proprietaire accepte ~5-10 alertes par an (fusion 12 h) et prefere les fausse
 | v3.4 >= 65 OU v4a >= 35 | 5.5 | 11.3 / 5.5 | 5/5 [48-100] | 8 / 17 | 62% | 18 / 0 | 0 / 11 / 18 / 18 / 51 |
 | v3.4 >= 35 ET v4a >= 15 | 4.0 | 6.3 / 4.0 | 4/5 [28-99] | 5 / 12 | 56% | 14 / 10 | - / 13 / 15 / 10 / 45 |
 
-Lecture : les alertes v4a orange sont incluses dans celles de v3.4 rouge et plus tardives (les combinaisons OU n'apportent rien) ; avec le hold de 3 h, les oscillations du score autour du seuil (maree) multiplient les messages par 2.5-3. Recommandation : declencher ntfy sur le score v3.4 temps reel stocke a partir du rouge (>= 55), `NOTIFY_DOWNGRADE_HOLD_HOURS=12`, `NOTIFY_YELLOW=false` : ~6.3 alertes/an, 5/5 crues, avance >= 12 h sur les 4 crues hors infiltration. Necessite un reglage `NOTIFY_MIN_LEVEL` (orange par defaut) lu par `_notifiable` et par `forecast_event` (seuil `_ORANGE` code en dur), non implemente ; a defaut, hold 12 h seul : 11.8 alertes/an. Le heads-up de prevision n'est pas evalue (pas d'archive de previsions sur la periode).
+Lecture : les alertes v4a orange sont incluses dans celles de v3.4 rouge et plus tardives (les combinaisons OU n'apportent rien) ; avec le hold de 3 h, les oscillations du score autour du seuil (maree) multiplient les messages par 2.5-3. Recommandation : declencher ntfy sur le score v3.4 temps reel stocke a partir du rouge (>= 55), `NOTIFY_DOWNGRADE_HOLD_HOURS=12`, `NOTIFY_YELLOW=false` : ~6.3 alertes/an, 5/5 crues, avance >= 12 h sur les 4 crues hors infiltration. En place en prod (`NOTIFY_MIN_LEVEL=red`, voir Notifications). Le script rejoue aussi le vrai `notifier.level_event` sur v3.4 (`replay_notifier`, `POLICIES`) : alertes ntfy/an (messages de niveau/an) orange + hold 3 h (defaut du code) 48.7 (96.1), orange + hold 12 h 18.1 (35.9), rouge + hold 12 h 6.3 (12.6) ; sous le minimum orange, l'escalade orange -> rouge est une 2e alerte, que `simulate_notifier` ne compte pas ; au rouge les deux sont identiques (test sur series synthetiques). Le heads-up de prevision n'est pas evalue (pas d'archive de previsions sur la periode).
 
 ### Controle physique du remous
 
@@ -485,7 +495,9 @@ Apport de Pessac (`scripts/eval/added_value.py`, regressions L2 emboitees, LOEO 
 - **Niveaux** : `LevelMeter` (pastilles 1 a 4 + mot + couleur), jamais la couleur seule. **Valeurs** : `ValueTag` `measured` | `estimated` (≈) | `model` (~) | `analog` | `mockup` | `unavailable` ; une prevision sans bande d'incertitude le dit ("sans bande").
 - **Verdict** : pire niveau entre maintenant et 72 h (horizons de l'outlook + score temps reel) -> "Rien a faire" / "Surveiller" / "Preparer le moulin" / "Agir maintenant" ; pourquoi = facteurs du pic 72 h ; confiance = liste de raisons, jamais un pourcentage.
 - **Mobile** : 375 px, goutiere 16 px (`.page-gutter`, safe-area), cibles 44 px, barre de sections collante et defilante ; deux colonnes a partir de 960 px. `prefers-reduced-motion` coupe animations, transitions et defilement doux.
-- **Bundle** : chemin critique du Dashboard ~115 Ko gzip (entree + Dashboard + CSS) ; recharts (~96 Ko) et leaflet (~48 Ko) en chunks differes.
+- **Bundle** : chemin critique du Dashboard ~137 Ko gzip (entree + Dashboard + d3-scale/d3-shape partages + CSS) ; recharts (~87 Ko) et leaflet (~48 Ko) en chunks differes.
+- **Section Pourquoi** (physique du "Controle physique du remous") : 1. crue propre de la Lidoire (Eyraud Q `analogue`, pluie passee et prevue), 2. Dordogne aval en modulateur (Pessac max 12,5 h, portee du remous `connected_distance_below_mill_m` de `/api/geo/profile`), 3. debordement direct (seuil inconnu = bande entre le plus haut Pessac reste sec et Pessac au terrain du moulin, 12,0 - 3,33 m), 4. nappe. Etats : cercle calme, triangle a surveiller, carre actif. Chaque rail : valeur du moment, episodes de `/api/episodes/drivers` par forme (disque inonde, anneau presque, croix pas inonde, pointille a annoter), seuils `*` = provisoires (en echantillon).
+- **Limites connues** : maintenant = Eyraud instantane contre max 12,5 h aux crues (pas de max 12,5 h dans `/api/indicators`) ; pluie d'ensemble par fenetres de 24 h (pas de serie horaire) ; pas de quantiles p50/p90/p99 en unites physiques dans l'API (rails gradues par les seuils de config).
 
 ## Tooltips pedagogiques
 
@@ -549,7 +561,7 @@ Fichier `.env` a la racine (voir `.env.example`) :
 - `DATABASE_URL`, `INFLUXDB_URL`, `REDIS_URL` : construits par compose, a definir seulement hors Docker
 - `SHOM_API_KEY`, `METEOFRANCE_API_KEY`, `INFOCLIMAT_API_KEY` (optionnels)
 - `NETATMO_CLIENT_ID`, `NETATMO_CLIENT_SECRET`, `NETATMO_REFRESH_TOKEN` (optionnels)
-- `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` (optionnels, notifications) ; reglages `NOTIFY_*` (voir `config.py`)
+- `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` (optionnels, notifications) ; reglages `NOTIFY_*` (voir `config.py`) : `NOTIFY_MIN_LEVEL` (`orange` | `red`, defaut `orange`, prod `red`), `NOTIFY_DOWNGRADE_HOLD_HOURS` (3, prod 12), `NOTIFY_YELLOW` (avec `orange` seulement), `NOTIFY_FORECAST_HOURS`, `NOTIFY_STATION_STALE_HOURS`, `NOTIFY_SCORE_STALE_HOURS`
 - `CAMERA_RTSP_URL` (optionnel), `LOG_LEVEL`
 - `APP_VERSION` (optionnel, defaut `dev`) : version renvoyee par `/api/status` (`version`, plus `model_version` = `MODEL_VERSION`) et `/` ; le chart Helm la fixe au tag d'image (`image.tag`, sinon `appVersion`)
 - `RADAR_ENABLED`, `GLOFAS_ENABLED`, `ENSEMBLE_RAIN_ENABLED` (optionnels, vrais par defaut ; previsions probabilistes et radar, hors score)
@@ -566,5 +578,4 @@ Installation existante : conserver l'ancien mot de passe Postgres et l'ancien je
 - Archiver aussi le shadow `3.4-gate` dans `forecast_runs` (une ligne par version) et ajouter les scores evenementiels (POD/FAR par episode) a `forecast-skill`.
 - Vigilance officielle (Vigicrues DO5, Meteo-France pluie-inondation/crues >= orange) comme feature candidate, une fois la serie `vigilance` accumulee ; observations terrain comme labels supplementaires.
 - v4-alpha en shadow `4.0a` (variante `v4a_joint`) : en place (serie `risk_score_shadow`, version `4.0a`, voir Stockage) ; comparer a v3.4 et `3.4-gate` cet hiver. Avec les pics a l'heure (labels 2026-10-26), v4a orange est en retard : pre-enregistrer un v4-beta centre ruissellement (voir Controle physique du remous).
-- Notifier : reglage `NOTIFY_MIN_LEVEL` (orange | red) pour n'alerter qu'au rouge v3.4 avec `NOTIFY_DOWNGRADE_HOLD_HOURS=12` (budget d'alertes ci-dessus).
 - Verifier sur place les deux ressauts du profil de la Lidoire (3.1 km et 5.3 km de la confluence) et le niveau du plancher du moulin.

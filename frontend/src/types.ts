@@ -30,10 +30,21 @@ export interface RiverLevel {
   tendency: Tendency | null
 }
 
+/** Official Vigicrues forecast at Libourne (next high waters, 80 % interval) */
+export interface VigicruesScenario {
+  timestamp: string
+  min_m: number
+  mean_m: number
+  max_m: number
+}
+
 export interface RiverLevelForecast {
   current: RiverLevel
   tendency: Tendency
-  forecast_scenarios: unknown[]
+  /** Vigicrues forecast at Libourne when `source` is "vigicrues" */
+  forecast_scenarios: VigicruesScenario[] | unknown[]
+  available?: boolean
+  source?: string
 }
 
 export interface RainfallSummary {
@@ -219,6 +230,15 @@ export interface ForecastPoint {
   tide_coefficient: number
   hours_to_high_tide: number
   projected_level_m: number
+  tide_available?: boolean
+  beyond_tide_horizon?: boolean
+}
+
+/** High tide estimated at the Lidoire confluence (forecast payload) */
+export interface ForecastHighTide {
+  timestamp: string
+  coefficient: number | null
+  estimated: boolean
 }
 
 export interface ForecastData {
@@ -235,6 +255,10 @@ export interface ForecastData {
     river: { status: string; stations?: number; error?: string }
     soil_wind: { status: string; error?: string }
   }
+  model_version?: string
+  tide_horizon?: string | null
+  high_tides?: ForecastHighTide[]
+  inputs_summary?: Record<string, unknown>
 }
 
 export interface SoilConditions {
