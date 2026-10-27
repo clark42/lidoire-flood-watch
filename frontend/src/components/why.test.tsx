@@ -87,7 +87,7 @@ describe('MechanismGrid', () => {
   })
 
   it('says where the backwater stops and shows the unknown overflow threshold as a band', () => {
-    expect(visible).toContain("Le remous s'arrête à ≈ 4,9 km sous le moulin.")
+    expect(visible).toContain("Le remous s'arrête à ≈ 4,9 km sous le moulin à 00:10 (eau connectée).")
     expect(visible).toContain('seuil inconnu')
     expect(html).toContain('url(#rail-hatch-')
   })

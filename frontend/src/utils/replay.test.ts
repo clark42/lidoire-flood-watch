@@ -133,7 +133,7 @@ describe('replayStory', () => {
     expect(story).toContain('Inondation labellisée le 26/02/2024 vers 12:00, 25 cm d’eau.'.replace('’', "'"))
     expect(story).toMatch(/L'Eyraud culmine à [\d,]+ m³\/s le \d\d\/\d\d à \d\d:\d\d/)
     expect(story).toMatch(/Pessac culmine à 5,14 m le 28\/02 à \d\d:\d\d, \d+ h après l'inondation/)
-    expect(story).toContain('le remous s’arrête à ≈ 2,8 km sous le moulin'.replace('’', "'"))
+    expect(story).toContain('le remous s’arrête à ≈ 3,4 km sous le moulin'.replace('’', "'"))
   })
 
   it('summarises a plain window without a label', () => {

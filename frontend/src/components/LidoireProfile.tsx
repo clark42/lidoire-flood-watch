@@ -1,7 +1,9 @@
 import { useId } from 'react'
 import type { LidoireProfileData } from '../types'
 import { formatNumber } from '../utils/format'
+import { formatParis } from '../utils/time'
 import {
+  backwaterGapBelowMill,
   backwaterPolygon,
   findSteps,
   groundAt,
@@ -60,7 +62,7 @@ export default function LidoireProfile({ profile, zc, reach, floorZ, width }: Li
   const millX = x(mill.d_m)
   const frontX = toD != null ? x(toD) : null
   const upperX = reach.disconnected_low_points && reach.distance_m != null ? x(reach.distance_m) : null
-  const gapM = reach.distanceBelowMillM
+  const gapM = backwaterGapBelowMill(reach)
   const zTicks: number[] = []
   for (let v = Math.ceil(zLo / 2) * 2; v <= zHi; v += 2) zTicks.push(v)
   const kmTicks: number[] = []
@@ -253,10 +255,14 @@ export function LidoireProfileReadout({
   zc,
   reach,
   floorZ,
-}: Omit<LidoireProfileProps, 'width'>) {
+  at = null,
+}: Omit<LidoireProfileProps, 'width'> & {
+  /** Hour of the values (ms): the time basis of the reach */
+  at?: number | null
+}) {
   const millGround = profile.mill.ground_z_m_ngf
   const points = profile.profile.points ?? []
-  const gap = reach.distanceBelowMillM
+  const gap = backwaterGapBelowMill(reach)
   const marginToGround = zc != null ? millGround - zc : null
   const floorGap = floorZ != null && zc != null ? floorZ - zc : null
   const groundAtFront = reach.connected_distance_m != null ? groundAt(points, reach.connected_distance_m) : null
@@ -272,6 +278,7 @@ export function LidoireProfileReadout({
         ) : (
           <>
             Le remous s’arrête à <b className="num text-[17px]">≈ {km(gap)} km</b> sous le moulin
+            {at != null && <> à <span className="font-mono text-[13px]">{formatParis(new Date(at), 'dd/MM HH:mm')}</span></>}
             {reach.connected_distance_m != null && (
               <> (eau connectée jusqu’à {km(reach.connected_distance_m, 2)} km de la confluence
                 {groundAtFront != null && <>, terrain {formatNumber(groundAtFront, 1)} m</>})</>

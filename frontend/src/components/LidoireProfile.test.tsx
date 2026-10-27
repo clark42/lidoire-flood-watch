@@ -4,6 +4,8 @@ import type { EpisodeLabelSet, LidoireProfileData, UnifiedTimelineData } from '.
 import labelsFixture from '../test-fixtures/episode-labels.json'
 import profileFlood from '../test-fixtures/geo-profile-2024-02-26T11.json'
 import profileLow from '../test-fixtures/geo-profile-2026-10-26T21.json'
+import profileUat from '../test-fixtures/geo-profile.json'
+import { buildMechanisms } from '../utils/mechanisms'
 import replayFeb2024 from '../test-fixtures/timeline-replay-2024-02.json'
 import { DEFAULT_CONFLUENCE_PARAMS } from '../utils/lidoireProfile'
 import { hourlyTimes, nearestIndex, replayFrame, replaySeries, replayWindow } from '../utils/replay'
@@ -57,7 +59,8 @@ describe('LidoireProfile (recorded payload of 2024-02-26 11:00)', () => {
     const t = text(html)
     expect(t).toContain('≈ 6,54 m NGF')
     expect(t).toContain('Dordogne à la confluence, estimé')
-    expect(t).toContain('≈ 2,8 km sans remous')
+    // Connected water (server connected_distance_below_mill_m = 3372.7 m), not the 2.8 km upper bound
+    expect(t).toContain('≈ 3,4 km sans remous')
     expect(html).toContain('aria-label="Profil en long de la Lidoire')
   })
 
@@ -94,14 +97,39 @@ describe('LidoireProfile (recorded payload of 2024-02-26 11:00)', () => {
   })
 })
 
+describe('one backwater reach everywhere (UAT 2026-10-27: 4,9 vs 4,7 km)', () => {
+  const uat = profileUat as unknown as LidoireProfileData
+  it('gives the same connected distance in the mechanism card and in the profile', () => {
+    // Upper bound 4.72 km, connected water 4.95 km below the mill: both places show the connected one
+    expect(uat.backwater.distance_below_mill_m).toBeCloseTo(4720.1)
+    const card = buildMechanisms({ profile: uat, now: new Date('2026-10-26T23:15:00Z') }).find((m) => m.id === 'backwater')!
+    expect(card.lead).toContain("Le remous s'arrête à ≈ 4,9 km sous le moulin à 00:10 (eau connectée).")
+    const svg = text(renderToStaticMarkup(<LidoireProfile profile={uat} zc={uat.confluence.z_c_m_ngf} reach={reachOf(uat)} floorZ={null} width={390} />))
+    expect(svg).toContain('≈ 4,9 km sans remous')
+    const readout = text(
+      renderToStaticMarkup(
+        <LidoireProfileReadout profile={uat} zc={uat.confluence.z_c_m_ngf} reach={reachOf(uat)} floorZ={null} at={Date.parse(uat.at)} />,
+      ),
+    )
+    expect(readout).toContain('Le remous s’arrête à ≈ 4,9 km sous le moulin à 27/10 00:10')
+    expect(readout).not.toContain('4,7')
+  })
+})
+
 describe('LidoireProfileReadout', () => {
   it('states the reach, the estimate and that the mill level is not measured', () => {
     const t = text(
       renderToStaticMarkup(
-        <LidoireProfileReadout profile={flood} zc={flood.confluence.z_c_m_ngf} reach={reachOf(flood)} floorZ={12.4} />,
+        <LidoireProfileReadout
+          profile={flood}
+          zc={flood.confluence.z_c_m_ngf}
+          reach={reachOf(flood)}
+          floorZ={12.4}
+          at={Date.parse(flood.at)}
+        />,
       ),
     )
-    expect(t).toContain('Le remous s’arrête à ≈ 2,8 km sous le moulin')
+    expect(t).toContain('Le remous s’arrête à ≈ 3,4 km sous le moulin à 26/02 12:00')
     expect(t).toContain('eau connectée jusqu’à 2,46 km de la confluence')
     expect(t).toContain('soit 5,5 m sous le terrain du moulin')
     expect(t).toContain('il manquerait 5,86 m au plan d’eau')

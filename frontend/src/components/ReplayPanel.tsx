@@ -286,7 +286,7 @@ export default function ReplayPanel({ focusAt = null, onOpenDashboardAt }: Repla
         {ground && frame ? (
           <>
             <LidoireProfile profile={ground} zc={frame.zc} reach={frame.reach} floorZ={floorZ} width={width} />
-            <LidoireProfileReadout profile={ground} zc={frame.zc} reach={frame.reach} floorZ={floorZ} />
+            <LidoireProfileReadout profile={ground} zc={frame.zc} reach={frame.reach} floorZ={floorZ} at={frame.t} />
           </>
         ) : groundError ? (
           <p role="alert" className="flex items-start gap-2 rounded-lg border border-line-2 px-3 py-2 text-[14px] text-ink-2">

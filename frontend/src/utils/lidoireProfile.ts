@@ -121,6 +121,16 @@ export interface ReachVsMill {
   reachesMill: boolean | null
 }
 
+/**
+ * Distance left between the end of the backwater and the mill, the single
+ * definition shown everywhere (mechanism card, profile, replay story): the
+ * connected water only, i.e. the server's `connected_distance_below_mill_m`
+ * (the upper bound `distance_below_mill_m` may jump a weir).
+ */
+export function backwaterGapBelowMill(reach: Pick<ReachVsMill, 'connectedDistanceBelowMillM'>): number | null {
+  return reach.connectedDistanceBelowMillM
+}
+
 export function reachRelativeToMill(reach: Reach, millD: number): ReachVsMill {
   const d = reach.distance_m
   const c = reach.connected_distance_m
