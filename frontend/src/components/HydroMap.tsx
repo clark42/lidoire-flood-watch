@@ -20,6 +20,7 @@ import type {
 } from '../types'
 import { formatDistanceKm } from '../utils/format'
 import BasinLayer from './BasinLayer'
+import { isTideStation, TIDE_STATION_LABEL } from '../utils/stations'
 
 interface HydroMapProps {
   stations: StationData[]
@@ -80,7 +81,8 @@ const ANCHOR_SVG = `
 
 function getStationColor(station: StationData): string {
   const height = station.current_level.height_m
-  if (height === 0) return '#9ca3af'
+  // Tidal station (Libourne): neutral, never coloured by its thresholds
+  if (height === 0 || isTideStation(station)) return '#9ca3af'
   if (height >= station.threshold_red) return '#ef4444'
   if (height >= station.threshold_orange) return '#f97316'
   if (height >= station.threshold_yellow) return '#eab308'
@@ -149,28 +151,6 @@ export default function HydroMap({
     [infoclimatStations]
   )
 
-  const pinchActive = useMemo(() => {
-    const pessac = stations.find((s) => s.station_id === 'P555001001')
-    const libourne = stations.find((s) => s.station_id === 'P577001001')
-    if (!pessac || !libourne) return false
-    return (
-      pessac.current_level.height_m >= pessac.threshold_yellow &&
-      libourne.current_level.height_m >= libourne.threshold_yellow
-    )
-  }, [stations])
-
-  const pinchLine = useMemo<LatLngExpression[] | null>(() => {
-    if (!pinchActive) return null
-    const pessac = stations.find((s) => s.station_id === 'P555001001')
-    const libourne = stations.find((s) => s.station_id === 'P577001001')
-    if (!pessac?.lat || !pessac?.lon || !libourne?.lat || !libourne?.lon) return null
-    return [
-      [pessac.lat, pessac.lon],
-      MOULIN_POSITION,
-      [libourne.lat, libourne.lon],
-    ]
-  }, [pinchActive, stations])
-
   return (
     <div className="relative w-full h-[380px] rounded-xl shadow overflow-hidden">
       <MapContainer
@@ -213,7 +193,7 @@ export default function HydroMap({
         <Marker position={LIBOURNE_PORT} icon={anchorIcon}>
           <Tooltip direction="top" offset={[0, -8]}>
             <div>
-              <span className="font-medium">Maree (estimee a la confluence)</span>
+              <span className="font-medium">Marée (estimée à la confluence)</span>
               {tide?.current_coefficient != null && (
                 <>
                   <br />
@@ -224,7 +204,7 @@ export default function HydroMap({
           </Tooltip>
           <Popup>
             <div className="text-sm space-y-1">
-              <div className="font-semibold">Maree estimee</div>
+              <div className="font-semibold">Marée estimée</div>
               <div className="text-xs text-gray-500">Confluence de la Lidoire (embouchure + 6 h)</div>
               {tide?.current_coefficient != null && (
                 <div>
@@ -259,11 +239,15 @@ export default function HydroMap({
                 <span className="font-medium">{station.station_name}</span>
                 {' - '}
                 <span>{station.current_level.height_m.toFixed(2)} m</span>
+                {isTideStation(station) && <span> ({TIDE_STATION_LABEL})</span>}
               </Tooltip>
               <Popup>
                 <div className="text-sm space-y-1">
                   <div className="font-semibold">{station.station_name}</div>
-                  <div className="text-xs text-gray-500">{station.river}</div>
+                  <div className="text-xs text-gray-500">
+                    {station.river}
+                    {isTideStation(station) && ` · ${TIDE_STATION_LABEL}`}
+                  </div>
                   <div>
                     Niveau :{' '}
                     <span className="font-bold">
@@ -277,8 +261,9 @@ export default function HydroMap({
                   </div>
                   <hr className="my-1" />
                   <div className="text-xs text-gray-400">
-                    Seuils : J={station.threshold_yellow}m / O=
-                    {station.threshold_orange}m / R={station.threshold_red}m
+                    {isTideStation(station)
+                      ? 'Niveau de marée : seuils non pertinents, exclu du score.'
+                      : `Seuils : J=${station.threshold_yellow} m / O=${station.threshold_orange} m / R=${station.threshold_red} m`}
                   </div>
                 </div>
               </Popup>
@@ -342,23 +327,11 @@ export default function HydroMap({
           </CircleMarker>
         ))}
 
-        {/* Pinch effect line */}
-        {pinchLine && (
-          <Polyline
-            positions={pinchLine}
-            pathOptions={{
-              color: '#ef4444',
-              weight: 4,
-              opacity: 0.8,
-            }}
-            className="pinch-line"
-          />
-        )}
       </MapContainer>
 
       {/* Legend overlay */}
       <div className="absolute bottom-3 left-3 z-[1000] bg-white/90 backdrop-blur-sm rounded-lg px-3 py-2 text-xs shadow-md space-y-1">
-        <div className="font-semibold text-gray-700 mb-1">Legende</div>
+        <div className="font-semibold text-gray-700 mb-1">Légende</div>
         <div className="flex items-center gap-1.5">
           <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#22c55e]" />
           <span>Vert - Normal</span>
@@ -376,16 +349,20 @@ export default function HydroMap({
           <span>Rouge - Danger</span>
         </div>
         <div className="flex items-center gap-1.5">
+          <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#9ca3af]" />
+          <span>Libourne : marée, hors score</span>
+        </div>
+        <div className="flex items-center gap-1.5">
           <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#3b82f6]" />
           <span>Pluie (Netatmo)</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="inline-block w-2.5 h-2.5 rounded-full border border-dashed border-[#8b5cf6]" style={{ backgroundColor: '#8b5cf620' }} />
-          <span>Meteo (Infoclimat)</span>
+          <span>Météo (Infoclimat)</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#2563eb]" />
-          <span>Maree (estimee)</span>
+          <span>Marée (estimée)</span>
         </div>
         <div className="flex items-center gap-1.5">
           <span className="inline-block w-2.5 h-2.5 rounded-sm border border-[#0d9488] bg-[#14b8a6]/20" />

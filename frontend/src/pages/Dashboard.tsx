@@ -53,6 +53,7 @@ import { DASHBOARD_SECTIONS } from './dashboardSections'
 import { TOOLTIPS } from '../tooltipContent'
 import { formatAge, formatParis, parseApiDate } from '../utils/time'
 import { formatNumber } from '../utils/format'
+import { isTideStation, rateTone, TIDE_STATION_HINT, TIDE_STATION_LABEL } from '../utils/stations'
 
 // Explore panels (basin map in SVG with d3-geo, analogs, GloFAS fan,
 // forecast skill): separate chunk, the decision renders first. Leaflet is
@@ -72,9 +73,9 @@ function PanelFallback({ height = 'h-40' }: { height?: string }) {
   return <div className={`${height} w-full animate-pulse rounded-card bg-surface-2`} aria-hidden="true" />
 }
 
-function TendencyIcon({ tendency }: { tendency: string | null }) {
-  if (tendency === 'hausse') return <TrendingUp className="w-4 h-4 text-red-500" />
-  if (tendency === 'baisse') return <TrendingDown className="w-4 h-4 text-green-500" />
+function TendencyIcon({ tendency, neutral = false }: { tendency: string | null; neutral?: boolean }) {
+  if (tendency === 'hausse') return <TrendingUp className={`w-4 h-4 ${neutral ? 'text-gray-400' : 'text-red-500'}`} />
+  if (tendency === 'baisse') return <TrendingDown className={`w-4 h-4 ${neutral ? 'text-gray-400' : 'text-green-500'}`} />
   return <Minus className="w-4 h-4 text-gray-400" />
 }
 
@@ -594,18 +595,23 @@ export default function Dashboard() {
                         {selected.current_level.height_m.toFixed(2)}
                       </span>
                       <span className="text-gray-500">m</span>
-                      <TendencyIcon tendency={selected.tendency} />
+                      <TendencyIcon tendency={selected.tendency} neutral={isTideStation(selected)} />
                     </div>
                   </div>
-                  <div className="text-sm text-gray-500 flex items-center gap-1">
+                  <div className="text-sm text-gray-500 flex flex-wrap items-center gap-1">
                     {selected.tendency === 'hausse' && (
-                      <span className="text-red-500">
+                      <span className={rateTone(selected) === 'rising' ? 'text-red-500' : 'text-gray-500'}>
                         +{selected.rate_cm_per_hour.toFixed(1)} cm/h
                       </span>
                     )}
                     {selected.tendency === 'baisse' && (
-                      <span className="text-green-500">
+                      <span className={rateTone(selected) === 'falling' ? 'text-green-500' : 'text-gray-500'}>
                         {selected.rate_cm_per_hour.toFixed(1)} cm/h
+                      </span>
+                    )}
+                    {isTideStation(selected) && (
+                      <span className="rounded bg-surface-2 px-2 py-0.5 text-xs text-ink-2" title={TIDE_STATION_HINT}>
+                        {TIDE_STATION_LABEL}
                       </span>
                     )}
                     {selected.tendency === 'stable' && 'Stable'}
