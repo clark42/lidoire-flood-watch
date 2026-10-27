@@ -48,7 +48,7 @@ import DashboardSection from '../components/DashboardSection'
 import LevelMeter from '../components/ui/LevelMeter'
 import { ValueTagLegend } from '../components/ui/ValueTag'
 import { useRiskOutlook } from '../hooks/useRiskOutlook'
-import { useEnsembleForecast } from '../hooks/useSharedResource'
+import { useEnsembleForecast, useIndicators, useLidoireProfile } from '../hooks/useSharedResource'
 import { DASHBOARD_SECTIONS } from './dashboardSections'
 import { TOOLTIPS } from '../tooltipContent'
 import { formatAge, formatParis, parseApiDate } from '../utils/time'
@@ -152,6 +152,9 @@ export default function Dashboard() {
   const outlook = useRiskOutlook(!timeMachineActive)
   // Rain ensembles (confidence block), shared with the ribbon and the cards
   const ensemble = useEnsembleForecast(!timeMachineActive)
+  // Eyraud and the Pessac envelope of the verdict's "why" (shared with the cards)
+  const indicators = useIndicators(!timeMachineActive)
+  const profile = useLidoireProfile(!timeMachineActive)
 
   // Refs used by the polling loop (avoid stale closures and overlapping polls)
   const inFlightRef = useRef(false)
@@ -460,6 +463,11 @@ export default function Dashboard() {
             sources={sources}
             ensemble={ensemble.loading && !ensemble.data ? undefined : ensemble.data}
             vigilance={<VigilanceBadges />}
+            mechanisms={{
+              indicators: indicators.loading && !indicators.data ? undefined : indicators.data,
+              realtime: data,
+              profile: profile.data,
+            }}
             now={new Date(now)}
           />
         )}

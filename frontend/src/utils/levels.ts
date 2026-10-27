@@ -2,6 +2,7 @@
 import type { OutlookHorizon, RiskLevel, RiskOutlook } from '../types'
 import { formatParisRelative, parseApiDate } from './time'
 import { formatNumber } from './format'
+import { mechanismWhy, type MechanismWhyInputs } from './verdictWhy'
 
 export const LEVEL_ORDER: readonly RiskLevel[] = ['green', 'yellow', 'orange', 'red']
 
@@ -46,10 +47,14 @@ export interface Verdict {
   title: string
   /** Second line of the title: when */
   detail: string
-  /** Horizon holding the 72 h maximum (its drivers explain the verdict) */
+  /** Horizon holding the 72 h maximum (its v3.4 drivers stay in the detail) */
   peak: OutlookHorizon | null
-  /** "Why" sentence: lead, then the driver texts (each carries its figure) */
-  why: { lead: string; reasons: string[] }
+  /**
+   * "Why": `score` = what the level comes from (score v3.4, max and time),
+   * then the mechanisms (runoff first, Dordogne only when high), each
+   * reason carrying its figure.
+   */
+  why: { score: string; lead: string; reasons: string[] }
 }
 
 /** Longest horizon (72 h): its maximum is the maximum of the whole window. */
@@ -86,27 +91,26 @@ function verdictDetail(level: RiskLevel, reachedAt: Date | null, now: Date): str
   }
 }
 
-function whySentence(peak: OutlookHorizon | null, now: Date): Verdict['why'] {
-  if (!peak) return { lead: 'Prévision du score indisponible.', reasons: [] }
+/** What the level comes from: the v3.4 score, its 72 h max and when. */
+function scoreSentence(peak: OutlookHorizon | null, version: string, now: Date): string {
+  if (!peak) return `Prévision du score v${version} indisponible.`
   const score = `${formatNumber(peak.max_score, 0)}/100`
   const when = peak.max_hours_ahead === 0
     ? 'dès maintenant'
     : formatParisRelative(parseApiDate(peak.max_at), now)
-  const reasons = peak.drivers.map((d) => d.text)
-  if (reasons.length === 0) {
-    return { lead: `Aucun facteur notable : score au plus ${score} d'ici ${peak.label}.`, reasons }
-  }
-  return { lead: `Maximum de ${score} ${when}, surtout :`, reasons }
+  return `Score v${version} au plus ${score} d'ici ${peak.label}, ${when}.`
 }
 
 /**
  * Verdict of the Dashboard: worst level between now and 72 h (the current
- * realtime level counts too), its wording, and the "why" of the 72 h peak.
+ * realtime level counts too), its wording, and the "why": the v3.4 score
+ * the level comes from, then the mechanisms (verdictWhy.ts).
  */
 export function buildVerdict(
-  outlook: Pick<RiskOutlook, 'horizons'>,
+  outlook: Pick<RiskOutlook, 'horizons'> & Partial<Pick<RiskOutlook, 'model_version' | 'inputs_summary'>>,
   currentLevel: RiskLevel | null = null,
   now: Date = new Date(),
+  mechanisms: MechanismWhyInputs = {},
 ): Verdict {
   const level = worstLevel([currentLevel, ...outlook.horizons.map((h) => h.level)])
   const reachedAt = currentLevel === level ? now : parseApiDate(firstAtLevel(outlook.horizons, level))
@@ -116,6 +120,9 @@ export function buildVerdict(
     title: VERDICT_TITLES[level],
     detail: verdictDetail(level, reachedAt, now),
     peak,
-    why: whySentence(peak, now),
+    why: {
+      score: scoreSentence(peak, outlook.model_version ?? '3.4', now),
+      ...mechanismWhy({ outlook: outlook as RiskOutlook, ...mechanisms }),
+    },
   }
 }
