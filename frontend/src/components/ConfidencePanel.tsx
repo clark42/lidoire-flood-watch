@@ -1,4 +1,5 @@
 import type { EnsembleForecast, OutlookConfidence, SourceFreshness, SourceFreshnessName } from '../types'
+import { netatmoAuthUrl } from '../api'
 import { CONFIDENCE_LEVEL_LABELS, confidenceItems, type ConfidenceKind } from '../utils/confidence'
 
 const CONFIDENCE_CHIP: Record<OutlookConfidence['level'], string> = {
@@ -66,6 +67,14 @@ export default function ConfidencePanel({ confidence, sources = null, ensemble, 
               {item.lead && <b className="font-bold text-ink">{item.lead}</b>}
               {item.lead && ' : '}
               {item.text}
+              {item.connectNetatmo && (
+                <>
+                  {' '}
+                  <a href={netatmoAuthUrl()} className="text-accent underline underline-offset-2">
+                    Connecter Netatmo
+                  </a>
+                </>
+              )}
             </span>
           </li>
         ))}

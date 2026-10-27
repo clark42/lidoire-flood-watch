@@ -2,6 +2,8 @@
 // freshness text of /api/status.sources.
 import type { SourceFreshness, SourceFreshnessState, SystemStatus } from '../types'
 import { formatAge, formatParis, parseApiDate } from './time'
+import { needsNetatmoConnect, plainText } from './userText'
+import { accentLabel } from './frenchText'
 
 export type SourceGroupId = 'critical' | 'inputs' | 'indicators' | 'probabilistic'
 
@@ -31,15 +33,8 @@ export const STATUS_LABELS: Record<SourceFreshnessState, string> = {
 
 /** Readable label: "Indicateur Debit Eyraud a La Force" -> "Débit Eyraud à La Force". */
 export function sourceLabel(label: string): string {
-  return label
-    .replace(/^Indicateur\s+/i, '')
-    .replace(/\bDebit\b/g, 'Débit')
-    .replace(/\bMarees?\b/g, (m) => (m.endsWith('s') ? 'Marées' : 'Marée'))
-    .replace(/\bobservee\b/g, 'observée')
-    .replace(/\bMeteo\b/g, 'Météo')
-    .replace(/\btemps reel\b/g, 'temps réel')
-    .replace(/ a venir\b/g, ' à venir')
-    .replace(/ a /g, ' à ')
+  // accentLabel keeps "Open-Meteo" and "Hub'Eau" as their owners write them
+  return accentLabel(label.replace(/^Indicateur\s+/i, ''))
 }
 
 /**
@@ -50,7 +45,7 @@ export function freshnessText(source: SourceFreshness, now: number): string {
   const last = parseApiDate(source.last_timestamp)
   if (!last) {
     if (source.status === 'unknown') return 'non vérifié'
-    return source.note ?? 'aucune donnée (30 j)'
+    return source.note ? plainText(source.note) : 'aucune donnée (30 j)'
   }
   if (last.getTime() > now) return `connue jusqu’au ${formatParis(last, 'EEE d MMM HH:mm')}`
   return formatAge(last, now)
@@ -65,6 +60,8 @@ export interface HealthItem {
   maxAgeHours: number
   note: string | null
   critical: boolean
+  /** The note asks to (re)authorise Netatmo: the row offers "Connecter Netatmo" */
+  connectNetatmo: boolean
 }
 
 export interface HealthGroup {
@@ -88,8 +85,9 @@ export function groupSources(sources: SystemStatus['sources'] | null | undefined
       status,
       freshness: freshnessText(s, now),
       maxAgeHours: s.max_age_hours,
-      note: s.error ?? (s.last_timestamp ? (s.note ?? null) : null),
+      note: s.error ?? (s.last_timestamp && s.note ? plainText(s.note) : null),
       critical: s.critical,
+      connectNetatmo: needsNetatmoConnect(s.note),
     })
   }
   return SOURCE_GROUPS.map((g) => ({

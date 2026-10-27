@@ -14,7 +14,8 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
-import { getStatus, getSourcesDetail, getCurrentRisk, simulateRisk, errorMessage, toActionError } from '../api'
+import { getStatus, getSourcesDetail, getCurrentRisk, simulateRisk, errorMessage, toActionError, netatmoAuthUrl } from '../api'
+import { needsNetatmoConnect, plainText } from '../utils/userText'
 import type { ActionErrorState } from '../api'
 import type {
   DependencyCheck,
@@ -77,7 +78,7 @@ function SourceFreshnessRow({ source }: { source: SourceFreshness }) {
   const badge = FRESHNESS_BADGE[source.status] ?? FRESHNESS_BADGE.unknown
   const limit =
     source.max_age_hours > 0 ? `périmé au-delà de ${source.max_age_hours} h` : 'doit couvrir le futur'
-  const detail = source.error ?? accentLabel(source.note)
+  const detail = source.error ?? accentLabel(source.note ? plainText(source.note) : source.note)
   return (
     <div className="text-sm">
       <div className="flex items-center justify-between gap-2">
@@ -102,6 +103,14 @@ function SourceFreshnessRow({ source }: { source: SourceFreshness }) {
       {detail && (
         <p className={`text-xs mt-0.5 text-right break-words ${source.error ? 'text-red-600' : 'text-gray-500'}`}>
           {detail}
+          {!source.error && needsNetatmoConnect(source.note) && (
+            <>
+              {' '}
+              <a href={netatmoAuthUrl()} className="text-indigo-600 underline">
+                Connecter Netatmo
+              </a>
+            </>
+          )}
         </p>
       )}
     </div>
