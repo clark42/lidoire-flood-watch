@@ -1,6 +1,8 @@
 """Application configuration."""
 
-from pydantic import model_validator
+from typing import Literal
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
@@ -370,12 +372,19 @@ class Settings(BaseSettings):
     ntfy_url: str = ""
     ntfy_topic: str = ""
     ntfy_token: str = ""  # Optional bearer token (access-controlled topic)
-    # Observed level: rising to orange/red is sent at once; a lower level is
-    # sent only once it has held notify_downgrade_hold_hours (the score
-    # oscillates around the thresholds with the tide).
-    notify_yellow: bool = False  # Also notify green <-> yellow transitions
+    # Observed level: rising to notify_min_level or above is sent at once; a
+    # lower level is sent only once it has held notify_downgrade_hold_hours
+    # (the score oscillates around the thresholds with the tide), and only
+    # when the level left was itself notifiable.
+    # "orange" (default): orange and red alert; "red": red only (owner policy,
+    # scripts/eval/budget.py: ~6 alerts/yr with a 12 h hold). The forecast
+    # heads-up uses the same minimum level.
+    notify_min_level: Literal["orange", "red"] = "orange"
+    # Also notify green <-> yellow transitions; only when notify_min_level is
+    # "orange" (ignored with "red").
+    notify_yellow: bool = False
     notify_downgrade_hold_hours: float = 3.0
-    # Forecast heads-up: max score over the next N hours reaches orange/red
+    # Forecast heads-up: max score over the next N hours reaches notify_min_level
     notify_forecast_hours: int = 48
     # Data staleness: primary station last point / last stored realtime score
     notify_station_stale_hours: float = 3.0
@@ -489,6 +498,12 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @field_validator("notify_min_level", mode="before")
+    @classmethod
+    def _lower_min_level(cls, value):
+        """NOTIFY_MIN_LEVEL=Red / RED read as red (anything else still rejected)."""
+        return value.strip().lower() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def _station_distances(self) -> "Settings":

@@ -21,6 +21,14 @@ backend:
   config:
     frontendUrl: "http://lidoire.ts.kamorion.cloud"
     corsOrigins: "http://lidoire.ts.kamorion.cloud"
+  # Owner-approved alert policy (scripts/eval/budget.py): ntfy alerts from
+  # v3.4 red (>= 55) only, downgrade sent after 12 h (~6 alerts/yr, 5/5 floods
+  # on the replay). Plain env wins over the external-apis Secret (envFrom).
+  extraEnv:
+    - name: NOTIFY_MIN_LEVEL
+      value: "red"
+    - name: NOTIFY_DOWNGRADE_HOLD_HOURS
+      value: "12"
   persistence:
     storageClass: sbs-default-retain
 
