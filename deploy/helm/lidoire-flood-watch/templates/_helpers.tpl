@@ -93,3 +93,28 @@ affinity:
 {{- define "lfw.backendSecret" -}}lidoire-backend{{- end }}
 {{- define "lfw.externalApisSecret" -}}lidoire-external-apis{{- end }}
 {{- define "lfw.backupSecret" -}}lidoire-backup-s3{{- end }}
+
+{{/*
+nginx server-level snippet of the frontend when tls.enabled (ConfigMap
+frontend-nginx-tls, mounted in /etc/nginx/server.d/). The single server block
+of frontend/nginx.conf then answers on 8080 (plain HTTP, 301 to https) and on
+8443 (TLS: dashboard and /api/ proxy, same headers and locations).
+*/}}
+{{- define "lfw.frontendTlsSnippet" -}}
+listen 8443 ssl;
+http2 on;
+
+ssl_certificate     /etc/nginx/tls/tls.crt;
+ssl_certificate_key /etc/nginx/tls/tls.key;
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+ssl_prefer_server_ciphers off;
+ssl_session_cache shared:lfw_tls:1m;
+ssl_session_timeout 1d;
+ssl_session_tickets off;
+
+# Plain HTTP (8080) -> https, every path: the probes use 8443 (scheme HTTPS).
+if ($scheme = http) {
+    return 301 https://$host$request_uri;
+}
+{{- end }}

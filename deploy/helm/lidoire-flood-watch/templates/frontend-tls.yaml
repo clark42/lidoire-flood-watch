@@ -1,0 +1,41 @@
+{{- if .Values.tls.enabled }}
+{{- $t := .Values.tls -}}
+{{- if not $t.host }}
+{{- fail "tls.host is required when tls.enabled=true" }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+{{- fail "tls.enabled and ingress.enabled are exclusive: the Ingress targets port http, which redirects to https" }}
+{{- end }}
+# TLS terminated by the frontend nginx (tailnet access). DNS-01: the host
+# needs no public exposure, only a zone handled by the issuer.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: frontend-tls
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "frontend") | nindent 4 }}
+spec:
+  secretName: {{ $t.secretName }}
+  dnsNames:
+    - {{ $t.host | quote }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  issuerRef:
+    group: cert-manager.io
+    kind: {{ $t.issuerKind }}
+    name: {{ $t.issuer }}
+---
+# Server-level snippet included by frontend/nginx.conf
+# (include /etc/nginx/server.d/*.conf).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx-tls
+  labels:
+    {{- include "lfw.labels" (dict "ctx" $ "component" "frontend") | nindent 4 }}
+data:
+  tls.conf: |
+    {{- include "lfw.frontendTlsSnippet" $ | nindent 4 }}
+{{- end }}

@@ -5,6 +5,9 @@ Dashboard (tailnet): {{ .Values.backend.config.frontendUrl }}  (Service frontend
 Check:
   kubectl get externalsecret,pods,pvc -n {{ .Release.Namespace }}
   kubectl logs deploy/backend -n {{ .Release.Namespace }}
+{{- if .Values.tls.enabled }}
+  kubectl get certificate frontend-tls -n {{ .Release.Namespace }}   # HTTPS {{ .Values.tls.host }} (443 -> 8443)
+{{- end }}
 
 The API key (X-API-Key for POST/PUT/DELETE) is in the Secret lidoire-backend, key API_KEY.
 {{- if .Values.backup.enabled }}
