@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { errorMessage, getEpisodeDrivers, getUnifiedTimeline } from '../api'
 import type { EpisodeDriversData, UnifiedTimelineData } from '../types'
-import { useElementWidth, useInView, usePrefersReducedMotion } from '../hooks/useChartFrame'
+import { useInView, usePrefersReducedMotion } from '../hooks/useChartFrame'
+import { useElementWidth } from '../hooks/useElementWidth'
 import {
   dailyTrail,
   dayWindow,
