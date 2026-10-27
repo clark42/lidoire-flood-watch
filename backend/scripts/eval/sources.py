@@ -65,6 +65,7 @@ HYDROPORTAIL_URL = "https://www.hydro.eaufrance.fr/stationhydro/ajax/{station_id
 HUBEAU_ELAB_URL = "https://hubeau.eaufrance.fr/api/v2/hydrometrie/obs_elab"
 OPEN_METEO_HIST_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+OPEN_METEO_PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 OPEN_METEO_MARINE_URL = "https://marine-api.open-meteo.com/v1/marine"
 OPEN_METEO_FLOOD_URL = "https://flood-api.open-meteo.com/v1/flood"
 HUBEAU_PIEZO_URL = "https://hubeau.eaufrance.fr/api/v1/niveaux_nappes/chroniques"
@@ -525,6 +526,75 @@ def download_rain(
         rain.by_point[pid] = values
         rain.era5_filled[pid] = filled
     return rain
+
+
+def download_era5_rain(
+    points: list[dict],
+    start: date,
+    end: date,
+    cache: RawCache,
+    client: Optional[PoliteClient],
+    refresh: bool = False,
+) -> dict[str, dict[datetime, float]]:
+    """ERA5 (Open-Meteo archive) hourly precipitation per basin point (v4-beta nowcast).
+
+    Same requests (and cache files) as the ERA5 gap filling of
+    :func:`download_rain`; label = end of the hour.
+    """
+    out: dict[str, dict[datetime, float]] = {}
+    for pt in points:
+        series = download_open_meteo_series(
+            OPEN_METEO_ARCHIVE_URL, "openmeteo_era5", pt["id"], pt["lat"], pt["lon"],
+            "precipitation", start, end, cache, client, refresh,
+        )
+        out[pt["id"]] = {ts: v for ts, v in series if v is not None}
+    return out
+
+
+PREVIOUS_RUNS_VARIABLES = ("precipitation_previous_day1", "precipitation_previous_day2")
+
+
+def download_previous_runs_rain(
+    points: list[dict],
+    model: str,
+    start: date,
+    end: date,
+    cache: RawCache,
+    client: Optional[PoliteClient],
+    refresh: bool = False,
+) -> dict[str, dict[str, dict[datetime, float]]]:
+    """Archived rain forecasts (Open-Meteo Previous Runs API) per point and lead day.
+
+    ``precipitation_previous_dayN`` at hour label T is the amount over the
+    preceding hour forecast by a run initialised at least N x 24 h before T
+    (lead N x 24 h to N x 24 + 23 h). Archive starts in 2024 (earlier
+    hours are null and dropped). Returns {variable: {point_id: {T: mm}}}.
+    """
+    out: dict[str, dict[str, dict[datetime, float]]] = {v: {} for v in PREVIOUS_RUNS_VARIABLES}
+    for pt in points:
+        series: dict[str, dict[datetime, float]] = {v: {} for v in PREVIOUS_RUNS_VARIABLES}
+        for c_start, c_end in year_chunks(start, end, cap=last_complete_day()):
+            key = f"{model}_{pt['id']}_{c_start.isoformat()}_{c_end.isoformat()}"
+            payload = cached_get(
+                cache, client, "openmeteo_prevruns", key, OPEN_METEO_PREVIOUS_RUNS_URL,
+                {
+                    "latitude": pt["lat"],
+                    "longitude": pt["lon"],
+                    "hourly": ",".join(PREVIOUS_RUNS_VARIABLES),
+                    "models": model,
+                    "start_date": c_start.isoformat(),
+                    "end_date": c_end.isoformat(),
+                    "timezone": "UTC",
+                },
+                refresh=refresh,
+            )
+            for var in PREVIOUS_RUNS_VARIABLES:
+                for ts, v in parse_open_meteo_hourly(payload, var):
+                    if v is not None:
+                        series[var][ts] = v
+        for var in PREVIOUS_RUNS_VARIABLES:
+            out[var][pt["id"]] = series[var]
+    return out
 
 
 def download_sea_level(

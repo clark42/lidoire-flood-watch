@@ -56,6 +56,8 @@ python -m scripts.eval.candidates --offline   # modeles candidats (data/eval_out
 python -m scripts.eval.climatology [--offline] # seuils a priori v4-alpha (climatologie <= 2022-09)
 python -m scripts.eval.budget --offline       # points de fonctionnement / budget d'alertes (data/eval_out/budget/)
 python -m scripts.eval.added_value --offline  # apport de Pessac a Eyraud + pluie (data/eval_out/added_value/)
+python -m scripts.eval.runoff_nowcast --offline # v4-beta : nowcast Eyraud cale sur 2010-2022 + ancres a priori
+python -m scripts.eval.v4beta --offline       # v4-beta pre-enregistre vs v3.4 rouge (data/eval_out/v4beta/)
 ```
 
 ## Architecture
@@ -150,7 +152,10 @@ scripts/eval/            # Harnais d'evaluation (python -m scripts.eval build|re
 ├── report.py            # summary.md, metrics.json, CSV
 ├── candidates.py        # Comparaison des modeles candidats (LOEO bloque)
 ├── budget.py            # Points de fonctionnement sous budget d'alertes, simulation du notifier
-└── added_value.py       # Apport de Pessac a Eyraud + pluie (regressions emboitees, LOEO bloque)
+├── added_value.py       # Apport de Pessac a Eyraud + pluie (regressions emboitees, LOEO bloque)
+├── runoff_nowcast.py    # v4-beta : regression Eyraud ~ Eyraud t-7 h + pluie ERA5 (climatologie 2010-2022)
+├── v4beta.py            # v4-beta : regle de decision pre-enregistree, avances par crue, sous-periode V1
+└── preregistration_v4beta.md  # Pre-enregistrement v4-beta (commit seul, avant toute metrique)
 scripts/build_lidoire_profile.py  # Construit data/lidoire_profile.json (Sandre WFS + API altimetrie IGN, reseau)
 tests/
 ├── risk/  storage/  security/  collectors/
@@ -492,9 +497,44 @@ Lecture : les alertes v4a orange sont incluses dans celles de v3.4 rouge et plus
 
 Profil RGE ALTI (API altimetrie IGN, sans cle, min de 5 points sur +/- 20 m tous les 25 m) le long de la BD TOPAGE "la Lidoire" : moulin a 5.83 km de la confluence (4 m de la ligne), sol ~12.0 m NGF ; confluence 2.4 m NGF ; deux ressauts (seuils ou ouvrages a verifier) a 3.1 km (6.5 -> 9.0 m) et 5.3 km (10.5-11.0 -> 11.9 m, aval du moulin). Approximation plan d'eau horizontal, niveau Dordogne = Pessac (+3.33 m NGF, borne haute) ou Z_c : au pic de chaque crue, Pessac 2.73-4.41 m (6.1-7.7 m NGF) pour 2023-03 -> 2025-04 => remous jusqu'a ~3.1 km seulement, 4.3-5.9 m sous le sol du moulin ; 2026-02-12 : 6.53 m (9.86 m NGF) => 3.1-4.2 km, 2.1 m sous le sol ; record 2026-02-14 (7.88 m, 11.21 m NGF) => 5.3 km (pied du seuil aval du moulin), encore 0.8 m sous le sol. Le remous seul n'atteint le moulin qu'a Pessac >= ~8.7 m (jamais observe). Chronologie : l'inondation tombe au pic de l'Eyraud (-1.5 a +5 h, median +2 h) et 25-42 h AVANT le pic de Pessac, encore sous l'orange (3.8 m) pour 3 crues sur 5.
 
-Apport de Pessac (`scripts/eval/added_value.py`, regressions L2 emboitees, LOEO bloque) : Eyraud + pluie 72 h AUC 0.902, pAUC (FPR <= 5%) 0.536 ; + H_aval 0.902 / 0.510 (IC 90% de la difference d'AUC -0.003 a +0.001) ; + Z_c, + API lente, + piezo : idem. Sans 2023-03-11 : 0.973 -> 0.972, pAUC 0.661 -> 0.629. Sans Eyraud, H_aval aide (pluie 72 h 0.908 -> 0.927) : Pessac est un indicateur d'humidite regionale, redondant avec le debit de l'Eyraud. Par episode, le max de l'Eyraud (sans latence) separe seul les crues (>= 25.9 m3/s) des negatives labellisees (<= 25.3 m3/s, 2023-12-11), marge tres faible ; H_aval ne les separe pas (2024-05-09 a 5.4 m sans crue). Consequence pour v4 : un mecanisme ruissellement (debit Lidoire/Eyraud, pluie observee et prevue pour l'avance) en tete, Pessac au plus comme modulateur aux tres hautes eaux (>= ~5.7 m, noyage du seuil a 3.1 km) ; pas de ET remous / ruissellement. A pre-enregistrer avant toute metrique (v4-beta).
+Apport de Pessac (`scripts/eval/added_value.py`, regressions L2 emboitees, LOEO bloque) : Eyraud + pluie 72 h AUC 0.902, pAUC (FPR <= 5%) 0.536 ; + H_aval 0.902 / 0.510 (IC 90% de la difference d'AUC -0.003 a +0.001) ; + Z_c, + API lente, + piezo : idem. Sans 2023-03-11 : 0.973 -> 0.972, pAUC 0.661 -> 0.629. Sans Eyraud, H_aval aide (pluie 72 h 0.908 -> 0.927) : Pessac est un indicateur d'humidite regionale, redondant avec le debit de l'Eyraud. Par episode, le max de l'Eyraud (sans latence) separe seul les crues (>= 25.9 m3/s) des negatives labellisees (<= 25.3 m3/s, 2023-12-11), marge tres faible ; H_aval ne les separe pas (2024-05-09 a 5.4 m sans crue). Consequence pour v4 : un mecanisme ruissellement (debit Lidoire/Eyraud, pluie observee et prevue pour l'avance) en tete, Pessac au plus comme modulateur aux tres hautes eaux (>= ~5.7 m, noyage du seuil a 3.1 km) ; pas de ET remous / ruissellement. Fait : v4-beta ci-dessous.
 
-`app/services/models_experimental.py` (gate remous, regles backwater, regression logistique, GR4H, wrapper v4-alpha) n'est importe par aucun code de production ; `risk_v4.py` n'est importe que par le wrapper et par le shadow `risk_shadow_v4.py` : un test (`test_models_experimental_not_imported_by_production`) l'impose.
+### Candidat v4-beta (`V4BetaModel`, pre-enregistre le 2026-10-27)
+
+Pre-enregistrement `scripts/eval/preregistration_v4beta.md`, commite seul avant tout score v4-beta sur la periode d'evaluation. Ruissellement en tete, aucun parametre cale sur les labels :
+- Q_R = max(Q Eyraud publie : max 12.5 h finissant a t - 7 h ; nowcast). Nowcast = MCO de log1p(max Q Eyraud sur [t, t + 6 h]) sur q7 (Eyraud a t - 7 h), d7 (hausse t - 10 h -> t - 7 h), pluie ERA5 du bassin (3 points) sur (t-6, t], (t-24, t-6], (t-72, t-24], (t-720, t-72] et q7 x pluie 6 h / 24 h, cale sur 2010-09 -> 2022-08 seulement (n = 100 894, R2 0.91, Hydroportail Q + Open-Meteo archive) ; repli pluie seule (R2 0.30) sans Eyraud.
+- R = graded(Q_R ; 0 / 1.89 / 4.72 / 13.22 m3/s = 0 / 0.10 / 0.25 / 0.70 x Q2) : plus petites fractions de Q2 dont le taux d'alertes climatologique (fusion 12 h) est <= 10 / 5 / 2.5 par an (0.25 Q2 : 4.9 alertes/an, 15/15 pics Eyraud >= Q2, avance mediane 24 h sur le pic Eyraud).
+- Pessac seulement en debordement : O = graded(H_aval ; 5.67 / 6.67 / 7.67 / 8.67 m), crete du ressaut de 3.1 km (9.0 m NGF) -> sol du moulin (12.0 m NGF). Score = max(R, O).
+- Variantes : V1 `v4b_fc` (+ branche prevision : meme regression sur [t, t + 24 h] avec la pluie prevue (t, t + 24 h], calee en prevision parfaite ERA5, appliquee a la pluie archivee Open-Meteo Previous Runs `meteofrance_seamless`, jour 1 pour t+1..t+20 h puis jour 2 : publiee avant t si le run sort en < 4 h ; archive depuis 2024-01-19) ; V2 `v4b_mod` (Q_R / (1 - g), g lineaire de 5.67 a 8.67 m, max 0.95) ; V3 `v4b_runoff` (sans Pessac).
+- Regle : v4b orange (>= 35) bat v3.4 rouge (>= 55, fusion 12 h, recalcule) si <= 10 alertes/an, les 4 crues de ruissellement (hors 2023-03-11, infiltration) detectees avec >= 6 h d'avance chacune, et (avance mediane >= celle de v3.4 rouge ET FA brutes <= les siennes) ou (avance mediane >= ref - 6 h ET FA brutes <= 0.75 x ref). Variantes non decisives.
+
+| Modele | Protocole | Niveau | Crues | Alertes | FA brutes (lab.+non lab.) | FAR brut / lab. | CSI | Avance med./min (h) | Alertes/an | AUC |
+|--------|-----------|--------|-------|---------|------|------|-----|------|------|-----|
+| v4b | pre-enregistre, 0 param. label | orange | 5/5 | 55 | 45 (12+33) | 90% / 71% | 0.10 | 20 / 2 | 13.8 | 0.926 [0.85-0.99] |
+| v4b | pre-enregistre | rouge | 5/5 | 23 | 18 (5+13) | 78% / 50% | 0.22 | 16 / 1 | 5.8 | |
+| v4b_fc (V1) | pre-enregistre | orange | 5/5 | 63 | 55 (12+43) | 92% / 71% | 0.08 | 22 / 2 | 15.8 | 0.922 [0.83-0.99] |
+| v4b_mod (V2) | pre-enregistre | orange | 5/5 | 54 | 44 (12+32) | 90% / 71% | 0.10 | 20 / 2 | 13.6 | 0.925 |
+| v4b_runoff (V3) | pre-enregistre | orange | 5/5 | 55 | 45 (12+33) | 90% / 71% | 0.10 | 20 / 2 | 13.8 | 0.926 |
+| v4b[Eyraud publie seul] | diagnostic | orange | 5/5 | 42 | 34 (12+22) | 87% / 71% | 0.13 | 18 / 1 | 10.5 | 0.892 |
+| v4b[Eyraud sans latence] | diagnostic optimiste | orange | 5/5 | 49 | 41 (11+30) | 89% / 69% | 0.11 | 28 / 9 | 12.3 | 0.958 |
+
+Budget (fusion 12 h, `budget.py`) :
+
+| Point de fonctionnement | Alertes/an | ntfy/an (hold 3 h / 12 h) | Crues | FA lab. / brutes | Avance med./min (h) | 2023-03-11 / 11-30 / 2024-02-26 / 2025-04-21 / 2026-02-12 |
+|---|---|---|---|---|---|---|
+| v3.4 >= 55 (reference) | 6.3 | 16.3 / 6.3 | 5/5 | 6 / 20 | 18 / 1 | 1 / 12 / 19 / 18 / 51 |
+| v4b >= 35 (pre-enregistre) | 8.3 | 12.0 / 8.3 | 5/5 | 9 / 27 | 20 / 2 | 2 / 16 / 60 / 20 / 51 |
+| v4b >= 45 | 7.3 | 8.3 / 7.3 | 5/5 | 5 / 22 | 20 / 2 | 2 / 15 / 57 / 20 / 48 |
+| v4b >= 55 | 4.8 | 5.0 / 4.8 | 5/5 | 4 / 14 | 16 / 1 | 1 / 15 / 16 / 18 / 45 |
+| v4b_fc >= 35 (V1) | 9.3 | 12.8 / 9.3 | 5/5 | 7 / 31 | 22 / 2 | 2 / 16 / 61 / 22 / 69 |
+| v4b_fc >= 55 | 5.8 | 7.3 / 5.8 | 5/5 | 4 / 17 | 20 / 1 | 1 / 15 / 58 / 20 / 48 |
+| v3.4 >= 55 OU v4b >= 35 | 8.0 | 13.8 / 8.0 | 5/5 | 9 / 26 | 20 / 2 | 2 / 16 / 60 / 20 / 51 |
+
+Verdict : la regle n'est PAS franchie. R1-R3 passent (8.3 alertes/an, 4/4, avances 16 / 60 / 20 / 51 h, mediane 36 h contre 18.5 h), mais 27 FA brutes fusionnees contre 20 (R4a) et > 15 (R4b). Pas de `risk_v4b.py` (test de garde). Exploratoire, NON un succes (point choisi apres coup) : v4b rouge satisferait la regle (4.8 alertes/an, 15 / 16 / 18 / 45 h, mediane 17 h, 14 FA brutes) ; sur la sous-periode des previsions archivees (2024-01-20 -> fin, 3 crues), V1 rouge : 6.1 alertes/an, 58 / 20 / 48 h et 13 FA brutes contre v3.4 rouge 19 / 18 / 51 h et 15. Lecture : Pessac n'apporte rien (V2, V3 = primaire ; O plafonne a 18.7 le 2026-02-12) ; le nowcast ajoute 1-5 h d'avance a l'Eyraud publie, a FA egales (AUC 0.926 contre 0.892) ; la latence de l'Eyraud coute 5-8 h ; avec le hold actuel de 3 h, 12 alertes ntfy/an contre 16.3 (pas d'oscillation de maree). Les FA labellisees au rouge sont les near_miss 2023-12-11 (deux alertes), 2024-03-30 et 2025-11-25 (Eyraud 20-25 m3/s) : indiscernables d'une crue pour tout modele de ruissellement.
+
+Precautions v4-beta : 5 crues dont 4 de ruissellement (IC 95% de 5/5 = 48-100%, aucun ecart significatif, une FA de plus ou de moins change le verdict) ; les FA brutes comptent les alertes non labellisees (labels non exhaustifs) ; structure et choix de l'Eyraud issus d'analyses sur les labels (biais de selection), ancres du profil tracees en connaissant les cotes de Pessac aux crues ; ERA5 tient lieu de pluie observee en temps reel (publie ~5 jours plus tard : en production il faudrait OPERA ou Open-Meteo, autre distribution) ; series Hydroportail validees (pas le flux temps reel) ; V1 suppose des runs publies en < 4 h. Avance de 60 h le 2024-02-26 : alerte orange longue d'un episode humide, pas une prevision a 60 h.
+
+`app/services/models_experimental.py` (gate remous, regles backwater, regression logistique, GR4H, wrapper v4-alpha, v4-beta) n'est importe par aucun code de production ; `risk_v4.py` n'est importe que par le wrapper et par le shadow `risk_shadow_v4.py` ; aucun fichier de production ne reference le code v4-beta : un test (`test_models_experimental_not_imported_by_production`) l'impose.
 
 ## Theme, polices, grammaire visuelle (refonte "Lidoire 360")
 
@@ -590,5 +630,6 @@ Installation existante : conserver l'ancien mot de passe Postgres et l'ancien je
 - Regression logistique / GR4H seulement quand davantage d'episodes seront labellises.
 - Archiver aussi le shadow `3.4-gate` dans `forecast_runs` (une ligne par version) et ajouter les scores evenementiels (POD/FAR par episode) a `forecast-skill`.
 - Vigilance officielle (Vigicrues DO5, Meteo-France pluie-inondation/crues >= orange) comme feature candidate, une fois la serie `vigilance` accumulee ; observations terrain comme labels supplementaires.
-- v4-alpha en shadow `4.0a` (variante `v4a_joint`) : en place (serie `risk_score_shadow`, version `4.0a`, voir Stockage) ; comparer a v3.4 et `3.4-gate` cet hiver. Avec les pics a l'heure (labels 2026-10-26), v4a orange est en retard : pre-enregistrer un v4-beta centre ruissellement (voir Controle physique du remous).
+- v4-alpha en shadow `4.0a` (variante `v4a_joint`) : en place (serie `risk_score_shadow`, version `4.0a`, voir Stockage) ; comparer a v3.4 et `3.4-gate` cet hiver. Avec les pics a l'heure (labels 2026-10-26), v4a orange est en retard.
+- v4-beta (ruissellement, voir Evaluation) : regle pre-enregistree non franchie a l'orange (trop de FA). Hypothese a pre-enregistrer a part : v4b rouge (>= 55), et V1 rouge avec la prevision, comme declencheur, d'abord en shadow avec la pluie temps reel (OPERA ou Open-Meteo, a comparer a ERA5) ; annoter les alertes non labellisees qui decident du verdict.
 - Verifier sur place les deux ressauts du profil de la Lidoire (3.1 km et 5.3 km de la confluence) et le niveau du plancher du moulin.

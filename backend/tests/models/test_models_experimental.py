@@ -49,6 +49,15 @@ def test_models_experimental_not_imported_by_production():
                  "episode_detector.py", "outlook.py", "forecast_archive.py"):
         text = (app_dir / "services" / name).read_text(encoding="utf-8")
         assert "risk_v4" not in text and "risk_shadow_v4" not in text, name
+    # v4-beta (pre-registered 2026-10-27) failed its decision rule: it lives only in
+    # models_experimental and scripts/eval, no production module or reference
+    assert not (app_dir / "services" / "risk_v4b.py").exists()
+    offenders_v4b = sorted(
+        p.name for p in app_dir.rglob("*.py")
+        if p.name != "models_experimental.py"
+        and any(s in p.read_text(encoding="utf-8") for s in ("V4BetaModel", "V4B_", "runoff_nowcast", "risk_v4b"))
+    )
+    assert offenders_v4b == []
 
 
 def test_v4_code_not_loaded_by_v34_forecast_or_notifier():
