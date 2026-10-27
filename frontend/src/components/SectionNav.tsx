@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { DashboardSectionDef } from '../pages/dashboardSections'
+import { requestOpenSection } from '../utils/sectionDisclosure'
 
 /**
  * Sticky, horizontally scrollable bar of the Dashboard sections. The link
@@ -53,7 +54,11 @@ export default function SectionNav({ sections }: { sections: readonly DashboardS
             key={s.id}
             href={`#${s.id}`}
             aria-current={on ? 'location' : undefined}
-            onClick={() => setActive(s.id)}
+            onClick={() => {
+              setActive(s.id)
+              // A collapsed section opens (also when the hash is already #id)
+              requestOpenSection(s.id)
+            }}
             className={`inline-flex min-h-[44px] flex-none items-center rounded-full px-3 text-[13.5px] sm:min-h-[34px] ${
               on ? 'bg-ink text-canvas' : 'text-ink-2 hover:bg-surface-2 hover:text-ink'
             }`}
