@@ -207,6 +207,14 @@ describe('VigilancePanel', () => {
     expect(visible).toContain('hors score')
   })
 
+  it('shows the issue time of each service (UAT: only the Vigicrues time was shown)', () => {
+    const later = structuredClone(vigilance)
+    later.meteofrance.issued_at = '2026-10-27T05:00:00Z'
+    const html = renderToStaticMarkup(<VigilancePanel data={later} now={new Date('2026-10-27T08:00:00Z')} />)
+    const issued = text(html.match(/data-testid="vigilance-issued">([^<]*)</)![1])
+    expect(issued).toBe("Vigicrues hier à 15:56 · Météo-France aujourd'hui à 06:00")
+  })
+
   it('reports an unavailable feed', () => {
     expect(text(renderToStaticMarkup(<VigilancePanel data={null} failed />))).toContain('Vigilance officielle indisponible.')
     expect(renderToStaticMarkup(<VigilancePanel data={null} />)).toBe('')

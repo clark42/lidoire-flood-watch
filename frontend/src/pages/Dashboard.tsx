@@ -51,7 +51,7 @@ import { useRiskOutlook } from '../hooks/useRiskOutlook'
 import { useEnsembleForecast, useIndicators, useLidoireProfile } from '../hooks/useSharedResource'
 import { DASHBOARD_SECTIONS } from './dashboardSections'
 import { TOOLTIPS } from '../tooltipContent'
-import { formatAge, formatParis, parseApiDate } from '../utils/time'
+import { formatAge, formatParis, formatParisRelative, parseApiDate } from '../utils/time'
 import { formatNumber } from '../utils/format'
 import { isTideStation, rateTone, TIDE_STATION_HINT, TIDE_STATION_LABEL } from '../utils/stations'
 
@@ -375,6 +375,10 @@ export default function Dashboard() {
       loading={timeMachineLoading}
     />
   )
+  // One source for the next high water (time and coefficient): the outlook's
+  // next_high_tide, as in the verdict; the realtime tide only as a fallback
+  // (TimeMachine, outlook not loaded yet)
+  const nextHighTide = (!timeMachineActive && outlook.data?.next_high_tide) || data.tide.next_high_tide
   const alerts = data.alerts.filter(a => !a.includes('Netatmo') && !a.includes('Mode TimeMachine'))
   const selected = stations.find((s) => s.station_id === selectedStation)
 
@@ -569,6 +573,7 @@ export default function Dashboard() {
           netatmoStations={netatmo?.lidoire_stations}
           infoclimatStations={infoclimat?.nearest_stations}
           tide={data.tide}
+          highTideCoefficient={nextHighTide?.coefficient ?? null}
         />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <StationsPanel
@@ -632,20 +637,20 @@ export default function Dashboard() {
               <div className="space-y-2">
                 <div className="flex justify-between">
                   <span className="text-gray-500 flex items-center gap-1">
-                    Coefficient
+                    Coefficient de la prochaine PM
                     <InfoTooltip {...TOOLTIPS.tideCoefficient} />
                   </span>
-                  <span className="font-bold text-lg">
-                    {data.tide.current_coefficient || '-'}
+                  <span className="font-bold text-lg" data-testid="tide-coefficient">
+                    {nextHighTide?.coefficient ?? '–'}
                   </span>
                 </div>
-                {data.tide.next_high_tide && (
+                {nextHighTide && (
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-500 flex items-center gap-1">
-                      Prochaine PM
+                      Prochaine PM (confluence, estimée)
                       <InfoTooltip {...TOOLTIPS.tidePhaseBmPm} />
                     </span>
-                    <span>{formatParis(data.tide.next_high_tide.timestamp, 'HH:mm')}</span>
+                    <span>{formatParisRelative(nextHighTide.timestamp, new Date(now))}</span>
                   </div>
                 )}
                 {data.tide.next_low_tide && (

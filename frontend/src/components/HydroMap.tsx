@@ -27,6 +27,8 @@ interface HydroMapProps {
   netatmoStations?: NetatmoStation[]
   infoclimatStations?: InfoclimatStation[]
   tide?: TideForecast | null
+  /** Coefficient of the next high water (the outlook's, same as the verdict) */
+  highTideCoefficient?: number | null
 }
 
 const MOULIN_POSITION: LatLngExpression = [44.876, 0.001]
@@ -107,7 +109,9 @@ export default function HydroMap({
   netatmoStations,
   infoclimatStations,
   tide,
+  highTideCoefficient,
 }: HydroMapProps) {
+  const coefficient = highTideCoefficient ?? tide?.next_high_tide?.coefficient ?? null
   const moulinIcon = useMemo(
     () =>
       new DivIcon({
@@ -194,10 +198,10 @@ export default function HydroMap({
           <Tooltip direction="top" offset={[0, -8]}>
             <div>
               <span className="font-medium">Marée (estimée à la confluence)</span>
-              {tide?.current_coefficient != null && (
+              {coefficient != null && (
                 <>
                   <br />
-                  Coef : {tide.current_coefficient}
+                  Coef. prochaine PM : {coefficient}
                 </>
               )}
             </div>
@@ -206,10 +210,10 @@ export default function HydroMap({
             <div className="text-sm space-y-1">
               <div className="font-semibold">Marée estimée</div>
               <div className="text-xs text-gray-500">Confluence de la Lidoire (embouchure + 6 h)</div>
-              {tide?.current_coefficient != null && (
+              {coefficient != null && (
                 <div>
-                  Coefficient :{' '}
-                  <span className="font-bold">{tide.current_coefficient}</span>
+                  Coefficient de la prochaine PM :{' '}
+                  <span className="font-bold">{coefficient}</span>
                 </div>
               )}
               <div className="text-xs text-gray-400">
